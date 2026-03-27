@@ -5,6 +5,8 @@ import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { GPSPoint } from "@/lib/media/GoProEngineClient";
 import { ActionSegment } from "@/lib/engine/TelemetryCrossRef";
+import { TelemetryHUD } from "./TelemetryHUD";
+import { AltimetryGraph } from "./AltimetryGraph";
 
 interface MapEngineProps {
   activityPoints: GPSPoint[];
@@ -35,7 +37,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
   const markerRef = useRef<mapboxgl.Marker | null>(null);
   const requestRef = useRef<number>(0);
 
-  const [viewMode, setViewMode] = useState<"INTRO" | "MAP" | "ACTION" | "BRAND">("MAP");
+  const [viewMode, setViewMode] = useState<"INTRO" | "MAP" | "ACTION" | "BRAND">("BRAND");
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   
@@ -48,7 +50,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
     lastTick: 0,
     isStarted: false,
     currentBearing: 0,
-    viewMode: "MAP" as "INTRO" | "MAP" | "ACTION" | "BRAND",
+    viewMode: "BRAND" as "INTRO" | "MAP" | "ACTION" | "BRAND",
     pitch: 60,
     zoom: 18,
     activeHighlightIndex: -1 // Rastreia qual highlight block está tocando (se existir)
@@ -297,6 +299,8 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
     start: startExperience,
   }));
 
+  const isEnding = activityPoints.length > 0 && currentIndex > 0 && currentIndex >= activityPoints.length - 20;
+
   return (
     <div className="relative w-full h-full bg-[#050505] overflow-hidden mapbox-wrapper-hack">
       <style dangerouslySetInnerHTML={{ __html: `
@@ -318,7 +322,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
            right: (viewMode === "MAP" || viewMode === "INTRO" || viewMode === "BRAND") ? "0px" : "16px",
            width: "100%",
            height: "100%",
-           transform: (viewMode === "MAP" || viewMode === "INTRO" || viewMode === "BRAND") ? "scale(1)" : "scale(0.28)",
+           transform: (viewMode === "MAP" || viewMode === "INTRO" || viewMode === "BRAND") ? "scale(1)" : "scale(0.42)",
            transition: "all 1000ms cubic-bezier(0.25, 1, 0.5, 1)",
         }}
         className={`absolute z-30 bg-zinc-900 overflow-hidden transform-gpu origin-bottom-right
@@ -331,7 +335,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
         `}
       />
 
-      {/* 2. VÍDEO FULLSCREEN & CINEMATIC BARS */}
+      {/* 2. VÍDEO FULLSCREEN */}
       <div
         className={`absolute inset-0 z-20 bg-black overflow-hidden transition-opacity duration-1000 ease-out ${viewMode === "ACTION" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
       >
@@ -340,27 +344,44 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
             ref={videoRef}
             src={videoUrl}
             preload="auto"
-            className={`w-full h-full object-cover transition-transform duration-[4000ms] ease-out will-change-transform ${viewMode === "ACTION" ? "scale-100" : "scale-110"}`}
+            className="w-full h-full object-cover"
             muted
             playsInline
           />
         )}
-        
-        {/* Letterbox Superior */}
-        <div className={`absolute top-0 left-0 w-full h-[12vh] bg-black z-30 transition-transform duration-1000 delay-300 ease-out ${viewMode === "ACTION" ? "translate-y-0" : "-translate-y-full"}`} />
-        {/* Letterbox Inferior */}
-        <div className={`absolute bottom-0 left-0 w-full h-[12vh] bg-black z-30 transition-transform duration-1000 delay-300 ease-out ${viewMode === "ACTION" ? "translate-y-0" : "translate-y-full"}`} />
-        
-        {/* Color Grading Gradient */}
-        <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-[#050505]/90 via-black/40 to-transparent z-40 pointer-events-none" />
       </div>
 
-      {/* 3. HUD DE PROGRESSO */}
-      <div className={`absolute top-10 left-6 z-40 pointer-events-none bg-black/60 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10 transition-all duration-700 ${viewMode === "MAP" ? "opacity-100 translate-y-0 scale-100" : "opacity-0 -translate-y-10 scale-95"}`}>
-        <p className="text-white font-mono text-sm font-bold uppercase tracking-widest flex items-center gap-2">
-          {Math.floor((currentIndex / activityPoints.length) * 100)}%{" "}
-          <span className="text-amber-500 font-sans text-xs">ROUTE</span>
-        </p>
+      {/* 2.5 GRÁFICO DE ALTIMETRIA INDEPENDENTE (GPU Scaled) */}
+      <div 
+        style={{
+           bottom: viewMode === "ACTION" ? "24px" : "0px",
+           left: viewMode === "ACTION" ? "24px" : "0px",
+           width: "100%",
+           height: "15vh",
+           transform: viewMode === "ACTION" ? "scale(0.45)" : "scale(1)",
+           transition: "all 1000ms cubic-bezier(0.25, 1, 0.5, 1)",
+           opacity: (viewMode === "INTRO" || viewMode === "BRAND" || isEnding) ? 0 : 1
+        }}
+        className={`absolute z-40 transform-gpu origin-bottom-left overflow-hidden ${
+           viewMode === "ACTION" 
+             ? "bg-[#050505]/80 backdrop-blur-xl rounded-[2rem] border-4 border-white/10 shadow-2xl" 
+             : "bg-transparent pointer-events-none"
+        }`}
+      >
+         <AltimetryGraph points={activityPoints} currentIndex={currentIndex} />
+      </div>
+
+      {/* 3. TELEMETRIA CONSTANTE DA ATIVIDADE (Atraso Cinemático de Entrada) */}
+      <div 
+         style={{
+            opacity: (viewMode === "INTRO" || viewMode === "BRAND" || isEnding) ? 0 : 1,
+            transition: (viewMode === "INTRO" || viewMode === "BRAND" || isEnding) 
+               ? "opacity 500ms ease-in" 
+               : "opacity 1500ms ease-out 1500ms"
+         }}
+         className="absolute inset-0 z-50 pointer-events-none"
+      >
+         <TelemetryHUD points={activityPoints as any} currentIndex={currentIndex} />
       </div>
 
       {/* 3.1 LOGO PERMANENTE */}

@@ -67,12 +67,14 @@ export class TelemetryCrossRef {
        }
     }
 
-    // Busca os picos isolados na Atividade
+    // Busca os picos isolados APENAS DENTRO do recorte de tempo do Vídeo
     let maxHrPt: EnhancedGPSPoint | null = null;
     let maxPowerPt: EnhancedGPSPoint | null = null;
     let maxSpeedPt: EnhancedGPSPoint | null = null;
 
-    for (const pt of activityPoints) {
+    const videoPointsInGPX = activityPoints.filter(p => p.time >= videoStart && p.time <= videoEnd);
+
+    for (const pt of videoPointsInGPX) {
       if (pt.hr && (!maxHrPt || pt.hr > maxHrPt.hr!)) maxHrPt = pt;
       if (pt.power && (!maxPowerPt || pt.power > maxPowerPt.power!)) maxPowerPt = pt;
       if (pt.speed && (!maxSpeedPt || pt.speed > maxSpeedPt.speed!)) maxSpeedPt = pt;
