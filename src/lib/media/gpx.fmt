@@ -1,0 +1,6 @@
+#[HEAD]<?xml version="1.0" encoding="utf-8"?>
+#[HEAD]<gpx version="1.0" creator="ExifTool $ExifToolVersion" xmlns="http://www.topografix.com/GPX/1/0">
+#[HEAD]<trk><trkseg>
+#[IF] $gpslatitude $gpslongitude
+#[BODY]<trkpt lat="$gpslatitude#" lon="$gpslongitude#"><ele>$gpsaltitude#</ele><time>${gpsdatetime#;DateFmt("%Y-%m-%dT%H:%M:%S%fZ")}</time></trkpt>
+#[TAIL]</trkseg></trk></gpx>
