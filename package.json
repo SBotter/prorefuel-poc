@@ -11,9 +11,11 @@
   "dependencies": {
     "exiftool-vendored": "^35.15.1",
     "gopro-telemetry": "^1.2.11",
+    "gpmf-extract": "^0.3.3",
     "jsdom": "^28.1.0",
     "lucide-react": "^1.7.0",
     "mapbox-gl": "^3.20.0",
+    "mp4box": "^2.3.0",
     "next": "16.2.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",

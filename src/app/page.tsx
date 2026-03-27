@@ -3,12 +3,12 @@
 import { useState, useRef } from "react";
 import { Upload, Play, CheckCircle2, Loader2, Gauge } from "lucide-react";
 import MapEngine from "@/components/MapEngine";
-import { GPSPoint } from "@/lib/media/GoProEngine";
-import { HighlightSegment } from "@/lib/engine/VideoAnalyzer";
+import { ActionSegment, TelemetryCrossRef } from "@/lib/engine/TelemetryCrossRef";
+import { GoProEngineClient } from "@/lib/media/GoProEngineClient";
 
 export default function ProRefuelPage() {
-  const [activityPoints, setActivityPoints] = useState<GPSPoint[]>([]);
-  const [highlight, setHighlight] = useState<HighlightSegment | null>(null);
+  const [activityPoints, setActivityPoints] = useState<any[]>([]);
+  const [highlights, setHighlights] = useState<ActionSegment[]>([]);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -25,7 +25,7 @@ export default function ProRefuelPage() {
     setProgress(0);
     setStatusMsg("Iniciando processamento...");
 
-    // Simulação de progresso baseada em tamanho (15MB/s)
+    // Simulação progressiva visual (fake load para encobrir o ArrayBuffer)
     const estimatedSecs = Math.max(8, file.size / (1024 * 1024 * 15) + 5);
     const interval = setInterval(() => {
       setProgress((prev) => {
@@ -35,43 +35,56 @@ export default function ProRefuelPage() {
     }, 100);
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
+      setStatusMsg("Lendo arquivo no navegador...");
+      await new Promise(resolve => setTimeout(resolve, 150)); // Libera a UI para renderizar o spinner
+      
+      const videoPoints = await GoProEngineClient.extractTelemetry(file);
 
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await response.json();
+      setStatusMsg("Mapeando Clímax...");
+      await new Promise(resolve => setTimeout(resolve, 50)); // Yield
 
-      if (!response.ok) throw new Error(data.error);
+      const segments = TelemetryCrossRef.findHighlights(activityPoints, videoPoints);
+
+      if (!segments || segments.length === 0) {
+        throw new Error("Nenhum dado de GPS pôde ser cruzado do vídeo.");
+      }
 
       clearInterval(interval);
       setProgress(100);
       setTimeout(() => {
-        setHighlight(data.highlight);
+        setHighlights(segments);
         setStep("READY");
         setLoading(false);
       }, 500);
     } catch (error: any) {
       clearInterval(interval);
-      alert(error.message || "Erro ao analisar.");
+      alert(error.message || "Erro nativo de extração.");
       setLoading(false);
     }
   };
 
-  // Funções handleGPXUpload e startShow permanecem as mesmas do código anterior...
   const handleGPXUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const text = await file.text();
     const parser = new DOMParser();
     const xml = parser.parseFromString(text, "text/xml");
-    const pts = Array.from(xml.querySelectorAll("trkpt")).map((pt) => ({
+    
+    // Função helper para puxar extensões do Garmin/Strava
+    const getExt = (pt: Element, tag: string) => {
+       const el = pt.getElementsByTagName(tag)[0] || pt.getElementsByTagName(`gpxtpx:${tag}`)[0] || pt.getElementsByTagName(`ns3:${tag}`)[0];
+       return el ? parseFloat(el.textContent || "0") : undefined;
+    };
+
+    const pts = Array.from(xml.querySelectorAll("trkpt")).map((pt: Element) => ({
       lat: parseFloat(pt.getAttribute("lat") || "0"),
       lon: parseFloat(pt.getAttribute("lon") || "0"),
       ele: parseFloat(pt.querySelector("ele")?.textContent || "0"),
       time: new Date(pt.querySelector("time")?.textContent || "").getTime(),
+      hr: getExt(pt, "hr"),
+      cad: getExt(pt, "cad"),
+      power: getExt(pt, "power") || getExt(pt, "watts"),
+      speed: getExt(pt, "speed"), // Pode estar gravado pelas extensoes GPX
     }));
     setActivityPoints(pts);
   };
@@ -98,13 +111,21 @@ export default function ProRefuelPage() {
               >
                 <label className="flex flex-col items-center cursor-pointer">
                   {activityPoints.length > 0 ? (
-                    <CheckCircle2 className="text-green-500 mb-2" />
+                    <>
+                      <CheckCircle2 className="text-green-500 mb-2" />
+                      <span className="text-xs font-bold uppercase tracking-widest">
+                        GPX Sincronizado
+                      </span>
+                    </>
                   ) : (
-                    <Upload className="text-zinc-500 mb-2" />
+                    <>
+                      <Gauge className="text-amber-500 mb-2" />
+                      <span className="text-xs font-bold uppercase tracking-widest text-center">
+                        Upload GPX Atividade
+                      </span>
+                      <span className="text-[10px] text-zinc-500 mt-1">Garmin / Strava Elevado</span>
+                    </>
                   )}
-                  <span className="text-xs font-bold uppercase tracking-widest">
-                    GPX Atividade
-                  </span>
                   <input
                     type="file"
                     accept=".gpx"
@@ -114,7 +135,7 @@ export default function ProRefuelPage() {
                 </label>
               </div>
               <div
-                className={`p-6 rounded-3xl border-2 border-dashed transition-all ${highlight ? "border-green-500/50 bg-green-500/5" : "border-zinc-700 bg-white/5"}`}
+                className={`p-6 rounded-3xl border-2 border-dashed transition-all ${highlights.length > 0 ? "border-green-500/50 bg-green-500/5" : "border-zinc-700 bg-white/5"}`}
               >
                 <label className="flex flex-col items-center cursor-pointer w-full text-center">
                   {loading ? (
@@ -127,60 +148,59 @@ export default function ProRefuelPage() {
                         />
                       </div>
                       <span className="text-[10px] font-black uppercase text-amber-500">
-                        {Math.round(progress)}% - Analisando Vídeo
+                        {Math.round(progress)}% - {statusMsg}
                       </span>
                     </div>
-                  ) : highlight ? (
+                  ) : highlights.length > 0 ? (
                     <>
                       <CheckCircle2 className="text-green-500 mb-2" />
-                      <span className="text-xs font-bold uppercase tracking-widest">
-                        Vídeo Sincronizado
+                      <span className="text-xs font-bold uppercase tracking-widest text-center">
+                        Vídeo Mapeado<br/>
+                        <span className="text-[10px] text-amber-500 mt-1">[{highlights.length} Cenas de Ação]</span>
                       </span>
                     </>
                   ) : (
                     <>
-                      <Gauge className="text-zinc-500 mb-2" />
-                      <span className="text-xs font-bold uppercase tracking-widest">
-                        Upload GoPro MP4
+                      <Upload className="text-zinc-400 mb-2" />
+                      <span className="text-xs font-bold uppercase tracking-widest text-zinc-400">
+                        Upload Vídeo Câmera
                       </span>
-                      <input
-                        type="file"
-                        accept="video/*"
-                        onChange={handleVideoUpload}
-                        className="hidden"
-                      />
+                      <span className="text-[10px] text-zinc-500 mt-1">.MP4 Direto Local</span>
                     </>
                   )}
+                  <input
+                    type="file"
+                    accept="video/mp4"
+                    disabled={loading || activityPoints.length === 0}
+                    onChange={handleVideoUpload}
+                    className="hidden"
+                  />
                 </label>
               </div>
-              {highlight && (
-                <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl animate-in fade-in slide-in-from-bottom-4 text-xs">
-                  <p className="font-black text-amber-500 uppercase">
-                    Vídeo Sincronizado:
-                  </p>
-                  <p className="mt-1">
-                    Duração Total: {highlight.duration.toFixed(1)}s |{" "}
-                    +{highlight.elevationGain.toFixed(1)}m Acumulado
-                  </p>
-                </div>
-              )}
             </div>
+
             <button
-              disabled={step !== "READY" || loading}
               onClick={startShow}
-              className="mt-8 w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-20 text-black py-5 rounded-[2rem] font-black italic uppercase tracking-tighter flex items-center justify-center gap-2 transition-all shadow-xl shadow-amber-500/20"
+              disabled={!highlights.length || !videoFile}
+              className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-all mt-6 ${
+                highlights.length && videoFile
+                  ? "bg-amber-500 text-black hover:bg-amber-400 hover:scale-[1.02]"
+                  : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
+              }`}
             >
-              <Play fill="black" size={20} /> Gerar Cinematic
+              <Play size={18} />
+              Gerar Cinematic
             </button>
           </div>
         ) : (
-          <MapEngine
-            ref={mapEngineRef}
-            activityPoints={activityPoints}
-            highlight={highlight!}
-            videoFile={videoFile}
-            onComplete={() => setStep("UPLOAD")}
-          />
+          <div className="w-full h-full relative">
+            <MapEngine
+              ref={mapEngineRef}
+              activityPoints={activityPoints}
+              highlights={highlights}
+              videoFile={videoFile}
+            />
+          </div>
         )}
       </div>
     </main>
