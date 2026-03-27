@@ -19,6 +19,7 @@
 
 # production
 /build
+/temp_gpx/
 
 # misc
 .DS_Store
