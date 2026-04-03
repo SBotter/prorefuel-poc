@@ -1,17 +1,21 @@
 "use client";
+// @ts-ignore - @ffmpeg/ffmpeg types
 
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { GPSPoint } from "@/lib/media/GoProEngineClient";
 import { ActionSegment } from "@/lib/engine/TelemetryCrossRef";
-import { TelemetryHUD } from "./TelemetryHUD";
+import { StoryPlan } from "@/lib/engine/StorytellingProcessor";
 import { AltimetryGraph } from "./AltimetryGraph";
+import { TelemetryHUD } from "./TelemetryHUD";
 
 interface MapEngineProps {
-  activityPoints: GPSPoint[];
+  activityPoints: any[];
   highlights: ActionSegment[];
+  storyPlan: StoryPlan | null;
   videoFile: File | null;
+  autoRecord?: boolean;
 }
 
 function calculateBearing(start: GPSPoint, end: GPSPoint) {
@@ -30,33 +34,56 @@ function getDistance(p1: GPSPoint, p2: GPSPoint) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngineProps, ref) => {
+const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, autoRecord = false }: MapEngineProps, ref) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const markerRef = useRef<mapboxgl.Marker | null>(null);
   const requestRef = useRef<number>(0);
+  const recordingRef = useRef<{ recorder: MediaRecorder; compositeLoop: number } | null>(null);
+  const autoRecordRef = useRef(autoRecord);
+  const startRecordingRef = useRef<(() => void) | null>(null);
+
+  // Lightweight Canvas 2D mini-map (replaces Mapbox in ACTION mode)
+  const miniMapCanvasRef = useRef<HTMLCanvasElement>(null);
+  const routeCacheRef = useRef<{
+    canvas: HTMLCanvasElement;
+    proj: { minLon: number; minLat: number; cosLat: number; scale: number; offX: number; offY: number; MH: number };
+  } | null>(null);
 
   const [viewMode, setViewMode] = useState<"INTRO" | "MAP" | "ACTION" | "BRAND">("BRAND");
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
-  
-  // Custom HUD para Scene (e.g. MAX HR)
-  const [activeTitle, setActiveTitle] = useState<string | null>(null);
-  const [activeValue, setActiveValue] = useState<string | null>(null);
+   const [isRecording, setIsRecording] = useState(false);
+   const [isTranscoding, setIsTranscoding] = useState(false);
+   const [isLongActivity, setIsLongActivity] = useState(false);
+  const [sceneLabel, setSceneLabel] = useState<string | null>(null);
+  const sceneLabelRef = useRef<string | null>(null);
+  const [mapLabel, setMapLabel] = useState<string | null>(null);
+  const mapLabelRef = useRef<string | null>(null);
+
 
   const state = useRef({
     virtualIndex: 0,
+    startTime: 0,
     lastTick: 0,
     isStarted: false,
+
     currentBearing: 0,
     viewMode: "BRAND" as "INTRO" | "MAP" | "ACTION" | "BRAND",
     pitch: 60,
     zoom: 18,
-    activeHighlightIndex: -1 // Rastreia qual highlight block está tocando (se existir)
+    activeHighlightIndex: -1, // Rastreia qual highlight block está tocando (se existir)
+    mapPointsPerSec: 10,
+    isLongActivity: false,
+    marathonSegments: [] as any[],
+    lastHighlightSyncIndex: -1,
+    lastPreSeekTarget: -1,   // videoStartTime we last pre-seeked to (avoids repeat seeks)
+    lastHudUpdateTime: 0,    // throttle setCurrentIndex React re-renders to ~10fps
+    lastMiniMapUpdate: 0,    // throttle Canvas 2D mini-map redraws to ~5fps
   });
 
-  const { totalDistKm, totalTimeMin } = React.useMemo(() => {
+  const { totalDistKm, totalTimeMin, avgSpeedKmh } = React.useMemo(() => {
     let d = 0;
     if (activityPoints.length > 1) {
       for (let i = 0; i < activityPoints.length - 1; i++) {
@@ -64,9 +91,17 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
       }
     }
     const tMs = activityPoints.length > 1 ? (activityPoints[activityPoints.length - 1].time - activityPoints[0].time) : 0;
-    const t = tMs / 1000 / 60;
-    return { totalDistKm: (d / 1000).toFixed(1), totalTimeMin: (!isNaN(t) && t > 0) ? t.toFixed(0) : "--" };
+    const tSecs = tMs / 1000;
+    const t = tSecs / 60;
+    const distKm = d / 1000;
+    const avg = tSecs > 0 ? (distKm / (tSecs / 3600)).toFixed(1) : "--";
+    return { totalDistKm: distKm.toFixed(1), totalTimeMin: (!isNaN(t) && t > 0) ? t.toFixed(0) : "--", avgSpeedKmh: avg };
   }, [activityPoints]);
+
+  const hrMax = React.useMemo(
+    () => Math.max(...activityPoints.map(p => (p as any).hr ?? 0), 1),
+    [activityPoints]
+  );
 
   useEffect(() => {
     if (videoFile) {
@@ -76,12 +111,61 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
     }
   }, [videoFile]);
 
+  // Pre-compute mini-map route cache once — draws the full polyline to an offscreen canvas
+  // so ACTION mode only needs drawImage + a dot each frame (no per-frame GPS iteration)
+  useEffect(() => {
+    if (!activityPoints.length) return;
+    const MW = 360, MH = 290, PAD = 14; // shorter + wider ratio for mini-map widget
+    const offscreen = document.createElement("canvas");
+    offscreen.width = MW;
+    offscreen.height = MH;
+    const c = offscreen.getContext("2d")!;
+
+    let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+    for (const p of activityPoints) {
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+      if (p.lon < minLon) minLon = p.lon;
+      if (p.lon > maxLon) maxLon = p.lon;
+    }
+    const latRange = (maxLat - minLat) || 0.001;
+    const lonRange = (maxLon - minLon) || 0.001;
+
+    // Aspect-ratio-preserving projection — 1° lon ≠ 1° lat, correct via cos(midLat)
+    const midLat  = (minLat + maxLat) / 2;
+    const cosLat  = Math.cos(midLat * Math.PI / 180);
+    const routeW  = lonRange * cosLat;
+    const routeH  = latRange;
+    const drawW   = MW - PAD * 2;
+    const drawH   = MH - PAD * 2;
+    const scale   = Math.min(drawW / routeW, drawH / routeH);
+    const offX    = PAD + (drawW - routeW * scale) / 2;
+    const offY    = PAD + (drawH - routeH * scale) / 2;
+
+    const toX = (lon: number) => offX + (lon - minLon) * cosLat * scale;
+    const toY = (lat: number) => MH - offY - (lat - minLat) * scale;
+
+    c.fillStyle = "rgba(8,8,8,0.82)";
+    c.fillRect(0, 0, MW, MH);
+
+    // Full route — bright enough to read the complete trail shape
+    c.strokeStyle = "rgba(255,255,255,0.38)";
+    c.lineWidth = 2;
+    c.lineJoin = "round";
+    c.lineCap = "round";
+    c.beginPath();
+    activityPoints.forEach((p, i) => {
+      i === 0 ? c.moveTo(toX(p.lon), toY(p.lat)) : c.lineTo(toX(p.lon), toY(p.lat));
+    });
+    c.stroke();
+
+    routeCacheRef.current = { canvas: offscreen, proj: { minLon, minLat, cosLat, scale, offX, offY, MH } };
+  }, [activityPoints]);
+
   useEffect(() => {
     if (!mapContainerRef.current || !activityPoints.length || mapRef.current) return;
 
     mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
-
-    // Evita o warning "The map container element should be empty" causado pelo StrictMode (HMR do Next.js) que re-injeta a canvas.
     mapContainerRef.current.innerHTML = "";
 
     const map = new mapboxgl.Map({
@@ -111,7 +195,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
           properties: {},
           geometry: {
             type: "LineString",
-            coordinates: activityPoints.map((pt) => [pt.lon, pt.lat]),
+            coordinates: activityPoints.map((pt: any) => [pt.lon, pt.lat]),
           },
         },
       });
@@ -128,13 +212,17 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
       });
 
       const el = document.createElement('div');
-      el.className = 'w-6 h-6 rounded-full bg-amber-500 border-4 border-white shadow-[0_0_20px_rgba(245,158,11,1)]';
+      el.className = 'w-6 h-6 rounded-full bg-amber-500 border-4 border-white shadow-[0_0_20px_rgba(245,158,11,1)] transition-all duration-300';
       
       markerRef.current = new mapboxgl.Marker(el)
         .setLngLat([activityPoints[0].lon, activityPoints[0].lat])
         .addTo(map);
 
       mapRef.current = map;
+
+      if (autoRecordRef.current && startRecordingRef.current) {
+        setTimeout(() => startRecordingRef.current!(), 100);
+      }
     });
 
     return () => {
@@ -147,198 +235,1407 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
   }, [activityPoints]);
 
   const startExperience = () => {
-    if (!mapRef.current) return;
+    if (!storyPlan) {
+      console.error("[MapEngine] Cannot start without a StoryPlan.");
+      return;
+    }
+
     state.current.lastTick = performance.now();
+    state.current.startTime = performance.now();
     state.current.isStarted = true;
+    state.current.lastHighlightSyncIndex = -1;
+    state.current.isLongActivity = storyPlan.isLongActivity;
+    setIsLongActivity(storyPlan.isLongActivity);
+
+    // MUDANÇA 1: map flight speed driven by editingRhythm
+    const rhythm = storyPlan.narrativePlan?.editingRhythm ?? "MEDIUM";
+    state.current.mapPointsPerSec = rhythm === "FAST" ? 14 : rhythm === "SLOW" ? 6 : 10;
 
     setViewMode("INTRO");
     state.current.viewMode = "INTRO";
 
-    setTimeout(() => {
-      if (state.current.viewMode === "INTRO") {
-        setViewMode("MAP");
-        state.current.viewMode = "MAP";
-      }
-    }, 6500);
-
     const animate = (now: number) => {
-      if (!state.current.isStarted || !mapRef.current) return;
-
-      const deltaMs = now - state.current.lastTick;
-      state.current.lastTick = now;
-
-      const speed = state.current.viewMode === "ACTION" ? 1 : 8;
-      // GPS/GPX roda a 1Hz. (1 ponto = 1 segundo real).  
-      // Então N pointsPerSec = N vezes a velocidade nominal.
-      const pointsPerSec = speed;
-      const deltaFrames = (deltaMs / 1000) * pointsPerSec;
+      if (!state.current.isStarted || !mapRef.current || !storyPlan) return;
       
-      if (isNaN(deltaFrames)) {
-          state.current.lastTick = now;
-          requestRef.current = requestAnimationFrame(animate);
-          return;
+      const elapsedTotal = (now - state.current.startTime) / 1000;
+      let runningTime = 0;
+      let currentSeg = null;
+      let segIdx = -1;
+
+      for (let i = 0; i < storyPlan.segments.length; i++) {
+        const s = storyPlan.segments[i];
+        if (elapsedTotal < runningTime + s.durationSec) {
+          currentSeg = s;
+          segIdx = i;
+          break;
+        }
+        runningTime += s.durationSec;
       }
 
-      state.current.virtualIndex = Math.min(
-        state.current.virtualIndex + deltaFrames,
-        activityPoints.length - 1
-      );
-      const idx = Math.floor(state.current.virtualIndex);
-
-      // Failsafe absoluto
-      if (isNaN(idx) || idx < 0) {
-          requestRef.current = requestAnimationFrame(animate);
-          return;
-      }
-
-      // Gatilho do Fim de Rota
-      if (idx >= activityPoints.length - 1) {
+      if (!currentSeg) {
         if (state.current.viewMode !== "BRAND") {
-          setViewMode("BRAND");
           state.current.viewMode = "BRAND";
+          setViewMode("BRAND");
         }
         return;
       }
 
-      setCurrentIndex(idx);
+      const progressInSeg = (elapsedTotal - runningTime) / currentSeg.durationSec;
+      const ptsInSeg = currentSeg.endIndex - currentSeg.startIndex;
 
-      // LÓGICA DO MULTI-HIGHLIGHT - Verifica em qual cena de ação nós estamos agora!
-      let foundHighlight = -1;
-      for (let i = 0; i < highlights.length; i++) {
-        if (idx >= highlights[i].startIndex && idx <= highlights[i].endIndex) {
-          foundHighlight = i;
-          break;
+      // ── GPS index computation ───────────────────────────────────────────────
+      // ACTION: binary-search activityPoints by the GPS timestamp the video is showing.
+      //   videoEpoch = GPS timestamp at video.currentTime=0
+      //              = activityPoints[startIndex].time - videoStartTime * 1000
+      //              = videoPoints[0].time  (GoPro GPS recording epoch)
+      //   targetMs   = videoEpoch + video.currentTime * 1000
+      //
+      // Why binary search instead of ratio interpolation:
+      //   • Eliminates the "GPS stuck" bug: previous fix clamped progress to [0,1],
+      //     freezing the index at endIndex while the video kept playing past the clip window.
+      //   • No dependency on gpsTimeSec/ptsInSeg ratio — works even when durationSec ≠ clipSec.
+      //   • Handles non-uniform GPS sample rates from Garmin tracks.
+      //
+      // MAP / INTRO / BRAND: no video, drive GPS from wall-clock elapsed time (unchanged).
+      if (
+        currentSeg.type === "ACTION" &&
+        videoRef.current &&
+        typeof currentSeg.videoStartTime === "number"
+      ) {
+        const videoEpoch = activityPoints[currentSeg.startIndex].time - currentSeg.videoStartTime * 1000;
+        const targetMs   = videoEpoch + videoRef.current.currentTime * 1000;
+
+        // Binary search: first index where activityPoints[i].time >= targetMs
+        let lo = 0, hi = activityPoints.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (activityPoints[mid].time < targetMs) lo = mid + 1;
+          else hi = mid;
+        }
+
+        // Sub-sample interpolation so the map/gauge glide smoothly between 1-Hz GPS points
+        let vi = lo;
+        if (lo > 0 && lo < activityPoints.length) {
+          const t0   = activityPoints[lo - 1].time;
+          const t1   = activityPoints[lo].time;
+          const span = t1 - t0;
+          if (span > 0) vi = lo - 1 + (targetMs - t0) / span;
+        }
+        state.current.virtualIndex = Math.max(0, Math.min(vi, activityPoints.length - 1));
+      } else {
+        state.current.virtualIndex = currentSeg.startIndex + (ptsInSeg * progressInSeg);
+      }
+      const idx = Math.floor(state.current.virtualIndex);
+      // Throttle React re-renders to ~10fps — map animation runs from state.current refs, not React state
+      if (now - state.current.lastHudUpdateTime > 100) {
+        state.current.lastHudUpdateTime = now;
+        setCurrentIndex(idx);
+      }
+
+      if (currentSeg.type !== state.current.viewMode) {
+         state.current.viewMode = currentSeg.type as any;
+         setViewMode(currentSeg.type as any);
+      }
+
+      // Scene label detection for ACTION mode
+      if (currentSeg.type === "ACTION" && storyPlan.detectedScenes) {
+        const scene = storyPlan.detectedScenes.find(s => s.startIndex <= idx && idx <= s.endIndex);
+        const newLabel = scene?.label ?? null;
+        if (newLabel !== sceneLabelRef.current) {
+          sceneLabelRef.current = newLabel;
+          setSceneLabel(newLabel);
+        }
+      } else if (sceneLabelRef.current !== null) {
+        sceneLabelRef.current = null;
+        setSceneLabel(null);
+      }
+
+      // Map label detection for MAP mode (MUDANÇA 4)
+      if (currentSeg.type === "MAP") {
+        const newMapLabel = currentSeg.title ?? null;
+        if (newMapLabel !== mapLabelRef.current) {
+          mapLabelRef.current = newMapLabel;
+          setMapLabel(newMapLabel);
+        }
+      } else if (mapLabelRef.current !== null) {
+        mapLabelRef.current = null;
+        setMapLabel(null);
+      }
+
+      if (videoRef.current) {
+        const vid = videoRef.current;
+        if (currentSeg.type === "ACTION" && typeof currentSeg.videoStartTime === 'number') {
+          // Enter ACTION: seek only once per segment, only if off by > 0.5s (pre-seek may have already done it)
+          if (state.current.lastHighlightSyncIndex !== segIdx) {
+            state.current.lastHighlightSyncIndex = segIdx;
+            if (Math.abs(vid.currentTime - currentSeg.videoStartTime) > 0.5) {
+              vid.currentTime = currentSeg.videoStartTime;
+            }
+            vid.play().catch(() => {});
+          }
+        } else {
+          // Non-ACTION (INTRO/MAP/BRAND): pause video and pre-seek to the NEXT action segment
+          // so the decoder is ready and playback starts instantly with no freeze
+          if (!vid.paused) vid.pause();
+          const nextAction = storyPlan.segments
+            .slice(segIdx + 1)
+            .find(s => s.type === "ACTION" && typeof s.videoStartTime === 'number');
+          if (nextAction?.videoStartTime !== undefined &&
+              nextAction.videoStartTime !== state.current.lastPreSeekTarget) {
+            state.current.lastPreSeekTarget = nextAction.videoStartTime;
+            vid.currentTime = nextAction.videoStartTime;
+          }
         }
       }
 
-      // Mudança de Estado de Ação
-      if (foundHighlight !== state.current.activeHighlightIndex) {
-         state.current.activeHighlightIndex = foundHighlight;
-
-         if (foundHighlight >= 0 && videoRef.current) {
-             const hl = highlights[foundHighlight];
-             const elapsedSecondsInRoute = (activityPoints[idx].time - hl.startPoint.time) / 1000;
-             // Sincroniza o relógio do vídeo com o exato instante em que o ponto ocorreu
-             videoRef.current.currentTime = hl.videoStartTime + elapsedSecondsInRoute;
-             videoRef.current.play().catch(e => console.error(e));
-             
-             setViewMode("ACTION");
-             state.current.viewMode = "ACTION";
-
-             setActiveTitle(hl.title);
-             setActiveValue(hl.value);
-
-             // Intercepta OnEnded para precaver
-             videoRef.current.onended = () => {
-                 if (state.current.viewMode === "ACTION") {
-                    setViewMode("MAP");
-                    state.current.viewMode = "MAP";
-                 }
-             };
-             
-         } else {
-             // Terminou a Action (saiu do Highlight Range) -> Corta de volta pro mapa 3D!
-             if (videoRef.current && state.current.viewMode !== "BRAND") {
-                 videoRef.current.pause();
-                 setViewMode("MAP");
-                 state.current.viewMode = "MAP";
-                 setActiveTitle(null);
-             }
-         }
-      }
-
-      // Smooth GPS Interpolation
       const pt1 = activityPoints[idx];
       const pt2 = activityPoints[Math.min(idx + 1, activityPoints.length - 1)];
-      
-      // Bloqueio de quebra de renderização
-      if (!pt1 || !pt2) {
-         requestRef.current = requestAnimationFrame(animate);
-         return;
-      }
+      if (pt1 && pt2) {
+        const fraction = state.current.virtualIndex - idx;
+        const interpLon = pt1.lon + (pt2.lon - pt1.lon) * fraction;
+        const interpLat = pt1.lat + (pt2.lat - pt1.lat) * fraction;
+        markerRef.current?.setLngLat([interpLon, interpLat]);
 
-      const fraction = state.current.virtualIndex - idx;
-      
-      const interpLon = pt1.lon + (pt2.lon - pt1.lon) * fraction;
-      const interpLat = pt1.lat + (pt2.lat - pt1.lat) * fraction;
-      markerRef.current?.setLngLat([interpLon, interpLat]);
+        const target = activityPoints[Math.min(idx + 15, activityPoints.length - 1)];
+        if (target) {
+            const tBearing = calculateBearing(pt1, target);
+            let diff = tBearing - state.current.currentBearing;
+            if (diff > 180) diff -= 360;
+            if (diff < -180) diff += 360;
+            state.current.currentBearing += diff * 0.1;
 
-      // Câmera & Bearing tracking
-      const target = activityPoints[Math.min(idx + 15, activityPoints.length - 1)];
-      if (pt1 && target) {
-        const distToTarget = getDistance(pt1, target);
-        if (distToTarget > 0.00005) {
-          const targetBearing = calculateBearing(pt1, target);
-          let diff = targetBearing - state.current.currentBearing;
-          if (diff > 180) diff -= 360;
-          if (diff < -180) diff += 360;
-          state.current.currentBearing += diff * 0.05;
+            // MUDANÇA 2+3: zoom and pitch respond to editingRhythm
+            const _rhythm = storyPlan?.narrativePlan?.editingRhythm ?? "MEDIUM";
+            const baseMapZoom  = _rhythm === "FAST" ? 17 : _rhythm === "SLOW" ? 19 : 18;
+            const basePitch    = _rhythm === "FAST" ? 70 : _rhythm === "SLOW" ? 45 : 60;
+            const tZoom  = currentSeg.type === "ACTION" ? 14 : baseMapZoom;
+            const tPitch = currentSeg.type === "ACTION"
+              ? (currentSeg.title?.includes("DOWNHILL") ? 85 : basePitch - 10)
+              : basePitch;
+            state.current.pitch += (tPitch - state.current.pitch) * 0.1;
+            state.current.zoom += (tZoom - state.current.zoom) * 0.1;
+
+            if (currentSeg.type === "ACTION") {
+              // ACTION mode: Mapbox goes completely idle — canvas 2D mini-map handles the widget
+              // Redraw mini-map at ~5fps (no need for 60fps on a small position indicator)
+              if (now - state.current.lastMiniMapUpdate > 200) {
+                state.current.lastMiniMapUpdate = now;
+                const miniCanvas = miniMapCanvasRef.current;
+                const cache = routeCacheRef.current;
+                if (miniCanvas && cache) {
+                  const mc = miniCanvas.getContext("2d");
+                  if (mc) {
+                    const MW = miniCanvas.width, MH = miniCanvas.height;
+                    const { minLon, minLat, cosLat, scale, offX, offY } = cache.proj;
+                    const toX = (lon: number) => offX + (lon - minLon) * cosLat * scale;
+                    const toY = (lat: number) => MH - offY - (lat - minLat) * scale;
+
+                    // Layer 1: cached background (dim full route) — stretched to canvas dimensions
+                    mc.drawImage(cache.canvas, 0, 0, MW, MH);
+
+                    // Layer 2: amber progress trail — full route from 0→idx (no window cap)
+                    mc.strokeStyle = "rgba(245,158,11,0.85)";
+                    mc.lineWidth = 2.5;
+                    mc.lineJoin = "round";
+                    mc.lineCap = "round";
+                    mc.beginPath();
+                    for (let i = 0; i <= idx; i++) {
+                      const p = activityPoints[i];
+                      const x = toX(p.lon), y = toY(p.lat);
+                      i === 0 ? mc.moveTo(x, y) : mc.lineTo(x, y);
+                    }
+                    mc.stroke();
+
+                    // Layer 3: current position dot + glow
+                    const cur = activityPoints[idx];
+                    const cx = toX(cur.lon), cy = toY(cur.lat);
+                    const glow = mc.createRadialGradient(cx, cy, 0, cx, cy, 14);
+                    glow.addColorStop(0, "rgba(245,158,11,0.55)");
+                    glow.addColorStop(1, "rgba(245,158,11,0)");
+                    mc.fillStyle = glow;
+                    mc.beginPath();
+                    mc.arc(cx, cy, 14, 0, Math.PI * 2);
+                    mc.fill();
+                    mc.strokeStyle = "#ffffff";
+                    mc.lineWidth = 2;
+                    mc.beginPath();
+                    mc.arc(cx, cy, 6, 0, Math.PI * 2);
+                    mc.stroke();
+                    mc.fillStyle = "#f59e0b";
+                    mc.beginPath();
+                    mc.arc(cx, cy, 4, 0, Math.PI * 2);
+                    mc.fill();
+                  }
+                }
+              }
+            } else {
+              // MAP / INTRO / BRAND: Mapbox runs normally
+              let shakeX = 0, shakeY = 0;
+              if (currentSeg.title?.includes("TECHNICAL")) {
+                shakeX = (Math.random() - 0.5) * 0.0005;
+                shakeY = (Math.random() - 0.5) * 0.0005;
+              }
+              mapRef.current!.jumpTo({
+                center: [interpLon + shakeX, interpLat + shakeY],
+                bearing: state.current.currentBearing,
+                pitch: state.current.pitch,
+                zoom: state.current.zoom,
+              });
+            }
         }
-
-        const targetPitch = state.current.viewMode === "ACTION" ? 0 : 60;
-        const targetZoom = state.current.viewMode === "ACTION" ? 14 : 18;
-
-        state.current.pitch += (targetPitch - state.current.pitch) * 0.05;
-        state.current.zoom += (targetZoom - state.current.zoom) * 0.05;
-
-        mapRef.current.jumpTo({
-          center: [interpLon, interpLat],
-          bearing: state.current.currentBearing,
-          pitch: state.current.pitch,
-          zoom: state.current.zoom,
-        });
       }
-
       requestRef.current = requestAnimationFrame(animate);
     };
-
     requestRef.current = requestAnimationFrame(animate);
   };
 
+
+
+  const startRecording = () => {
+    const mapCanvas = mapContainerRef.current?.querySelector("canvas") as HTMLCanvasElement | null;
+    const videoEl = videoRef.current;
+    if (!mapCanvas) return;
+
+    // FORCE 1080p Portrait (Cinematic High-Res)
+    const W = 1080;
+    const H = 1920;
+    const offscreen = document.createElement("canvas");
+    offscreen.width = W;
+    offscreen.height = H;
+
+    const ctx = offscreen.getContext("2d")!;
+
+    // Prefer H264-in-webm (Chrome supports this on Windows) → enables instant remux instead of slow transcode
+    const preferredTypes = [
+      "video/webm;codecs=avc1",
+      "video/webm;codecs=h264",
+      "video/webm;codecs=vp9",
+      "video/webm;codecs=vp8",
+      "video/webm",
+    ];
+    const mimeType = preferredTypes.find(t => MediaRecorder.isTypeSupported(t)) || "video/webm";
+    console.log("[ProRefuel] MediaRecorder mimeType selected:", mimeType);
+
+    const chunks: Blob[] = [];
+    const stream = offscreen.captureStream(30);
+    let recorder: MediaRecorder;
+    try {
+      // 15 Mbps for high quality — enough for crystal clear 1080p
+      recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 15_000_000 });
+    } catch {
+      try { recorder = new MediaRecorder(stream, { videoBitsPerSecond: 15_000_000 }); }
+      catch { recorder = new MediaRecorder(stream); }
+    }
+
+
+    const isH264Source = mimeType.includes("avc1") || mimeType.includes("h264");
+
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = async () => {
+      setIsRecording(false);
+      setIsTranscoding(true);
+      try {
+        const inputBlob = new Blob(chunks, { type: mimeType });
+        console.log("[ProRefuel] Recorded blob size:", inputBlob.size, "bytes | codec:", mimeType);
+
+        if (inputBlob.size === 0) throw new Error("Recording is empty — no data was captured.");
+
+        const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+        const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
+        const ffmpeg = new FFmpeg();
+        ffmpeg.on("log", ({ message }) => console.log("[FFmpeg]", message));
+
+        const baseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
+        console.log("[ProRefuel] Loading FFmpeg WASM...");
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+        });
+
+        await ffmpeg.writeFile("input.webm", await fetchFile(inputBlob));
+
+        let exitCode: number;
+        if (isH264Source) {
+          // Fast path: H264 already — just remux into MP4 container (virtually instant)
+          console.log("[ProRefuel] H264 source detected — remuxing (no transcode)...");
+          exitCode = await ffmpeg.exec([
+            "-i", "input.webm",
+            "-c", "copy",           // stream copy, no re-encode
+            "-movflags", "+faststart",
+            "output.mp4",
+          ]);
+        } else {
+          // Slow path: VP8/VP9 → must transcode to H264. Use ultrafast for max speed.
+          console.log("[ProRefuel] VP8/VP9 source — transcoding with high quality (CRF 20)...");
+          exitCode = await ffmpeg.exec([
+            "-i", "input.webm",
+            "-vf", "scale=1080:1920", // Force final output scale
+            "-r", "30",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",  // fastest possible in WASM
+            "-crf", "20",            // lower is better (20 is high quality)
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-an",
+            "output.mp4",
+          ]);
+
+        }
+
+        console.log("[ProRefuel] FFmpeg exit code:", exitCode);
+        if (exitCode !== 0) throw new Error(`FFmpeg exited with code ${exitCode}`);
+
+        const data = await ffmpeg.readFile("output.mp4") as Uint8Array<ArrayBuffer>;
+        console.log("[ProRefuel] MP4 size:", data.byteLength, "bytes");
+        if (data.byteLength === 0) throw new Error("FFmpeg produced an empty MP4.");
+
+        const mp4Blob = new Blob([data], { type: "video/mp4" });
+        const url = URL.createObjectURL(mp4Blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `ProRefuel_Cinematic_${Date.now()}.mp4`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } catch (err) {
+        console.error("[ProRefuel] FFmpeg error:", err);
+        const fallbackBlob = new Blob(chunks, { type: mimeType });
+        if (fallbackBlob.size > 0) {
+          const url = URL.createObjectURL(fallbackBlob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `ProRefuel_Cinematic_${Date.now()}.webm`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          alert("MP4 falhou — baixando como WebM. Veja o console para detalhes.");
+        } else {
+          alert("Erro na gravação: nenhum dado foi capturado.");
+        }
+      } finally {
+        setIsTranscoding(false);
+      }
+    };
+
+
+    // ── Pre-load logo image once ──────────────────────────────────────────────
+    const logoImg = new Image();
+    logoImg.src = "/prorefuel_logo.png";
+
+    // ── Pre-compute cumulative distances (meters) per GPS index ───────────────
+    const cumDist: number[] = [0];
+    for (let i = 1; i < activityPoints.length; i++) {
+      cumDist.push(cumDist[i - 1] + getDistance(activityPoints[i - 1], activityPoints[i]));
+    }
+    const realMaxSpeed = Math.max(...activityPoints.map(p => (p as any).speed || 0));
+    const STABLE_GAUGE_MAX = Math.max(50, Math.ceil(realMaxSpeed / 10) * 10);
+
+    // ── Pre-compute elevation bounds ──────────────────────────────────────────
+    let minE = Infinity, maxE = -Infinity, peakEleIdx = 0;
+    for (let i = 0; i < activityPoints.length; i++) {
+      const ele = activityPoints[i].ele;
+      if (ele < minE) minE = ele;
+      if (ele > maxE) { maxE = ele; peakEleIdx = i; }
+    }
+    const eRange = maxE - minE || 1;
+
+    // ── Pre-compute GPS bounds for broadmap (used every frame — compute once) ─
+    let bmMinLat = Infinity, bmMaxLat = -Infinity, bmMinLon = Infinity, bmMaxLon = -Infinity;
+    for (const p of activityPoints) {
+      if (p.lat < bmMinLat) bmMinLat = p.lat;
+      if (p.lat > bmMaxLat) bmMaxLat = p.lat;
+      if (p.lon < bmMinLon) bmMinLon = p.lon;
+      if (p.lon > bmMaxLon) bmMaxLon = p.lon;
+    }
+    const bmLatRange = (bmMaxLat - bmMinLat) || 0.001;
+    const bmLonRange = (bmMaxLon - bmMinLon) || 0.001;
+
+    // ── Pre-render static broadmap background to offscreen canvas (done ONCE) ─
+    const pipW = Math.round(W * 0.52);   // wider — uses horizontal space better
+    const pipH = Math.round(W * 0.34);   // enough height to read the full route shape
+    const pipX = W - pipW - Math.round(W * 0.04);
+    const pipY = Math.round(H * 0.07);
+
+    // ── Pre-project GPS→pixel for broadmap amber trail (eliminates per-point division every frame) ─
+    const bmProjX = new Float32Array(activityPoints.length);
+    const bmProjY = new Float32Array(activityPoints.length);
+    for (let i = 0; i < activityPoints.length; i++) {
+      const p = activityPoints[i];
+      bmProjX[i] = 32 + ((p.lon - bmMinLon) / bmLonRange) * (pipW - 64);
+      bmProjY[i] = pipH - 32 - ((p.lat - bmMinLat) / bmLatRange) * (pipH - 64);
+    }
+
+    const broadmapCache = document.createElement("canvas");
+    broadmapCache.width = pipW;
+    broadmapCache.height = pipH;
+    (() => {
+      const bc = broadmapCache.getContext("2d")!;
+      bc.fillStyle = "#080808";
+      bc.fillRect(0, 0, pipW, pipH);
+      bc.strokeStyle = "rgba(255,255,255,0.38)";
+      bc.lineWidth = 2;
+      bc.lineJoin = "round";
+      bc.beginPath();
+      activityPoints.forEach((p, i) => {
+        const px = 32 + ((p.lon - bmMinLon) / bmLonRange) * (pipW - 64);
+        const py = pipH - 32 - ((p.lat - bmMinLat) / bmLatRange) * (pipH - 64);
+        i === 0 ? bc.moveTo(px, py) : bc.lineTo(px, py);
+      });
+      bc.stroke();
+    })();
+
+    // ── Incremental trail cache — O(delta) per frame instead of O(idx) ────────
+    // Amber progress trail is painted once into this canvas and grows by 1 segment
+    // per GPS advance. No full-route redraw every frame.
+    const trailCache = document.createElement("canvas");
+    trailCache.width = pipW; trailCache.height = pipH;
+    const trailCtx = trailCache.getContext("2d")!;
+    trailCtx.strokeStyle = "rgba(245,158,11,0.85)";
+    trailCtx.lineWidth = 3; trailCtx.lineJoin = "round"; trailCtx.lineCap = "round";
+    let lastTrailIdx = -1;
+
+    // ── Pre-render static altimetry background to offscreen canvas (done ONCE) ─
+    // X axis = cumulative distance (not index) for accurate altitude×distance profile
+    const totalDistM = cumDist[cumDist.length - 1] || 1;
+    const ALT_H = Math.round(H * 0.12);
+    const ALT_PAD_TOP = 28; // px above curve for max label
+    const ALT_Y = H - ALT_H - ALT_PAD_TOP;
+    const altimetryCache = document.createElement("canvas");
+    altimetryCache.width = W;
+    altimetryCache.height = ALT_H + ALT_PAD_TOP;
+    (() => {
+      const ac = altimetryCache.getContext("2d")!;
+      const cH = ALT_H + ALT_PAD_TOP;
+      // Dark fade strip
+      const bgGrad = ac.createLinearGradient(0, 0, 0, cH);
+      bgGrad.addColorStop(0, "rgba(5,5,5,0)");
+      bgGrad.addColorStop(0.3, "rgba(5,5,5,0.75)");
+      bgGrad.addColorStop(1, "rgba(5,5,5,0.97)");
+      ac.fillStyle = bgGrad;
+      ac.fillRect(0, 0, W, cH);
+
+      // Area fill — distance-based X
+      const altGrad = ac.createLinearGradient(0, ALT_PAD_TOP, 0, ALT_PAD_TOP + ALT_H);
+      altGrad.addColorStop(0, "rgba(245,158,11,0.45)");
+      altGrad.addColorStop(1, "rgba(245,158,11,0)");
+      ac.fillStyle = altGrad;
+      ac.beginPath();
+      ac.moveTo(0, ALT_PAD_TOP + ALT_H);
+      activityPoints.forEach((p, i) => {
+        const x = (cumDist[i] / totalDistM) * W;
+        const y = ALT_PAD_TOP + ALT_H - ((p.ele - minE) / eRange) * (ALT_H * 0.85);
+        ac.lineTo(x, y);
+      });
+      ac.lineTo(W, ALT_PAD_TOP + ALT_H);
+      ac.closePath();
+      ac.fill();
+
+      // Curve line with glow
+      ac.strokeStyle = "#f59e0b";
+      ac.lineWidth = 2.5;
+      ac.lineJoin = "round";
+      ac.shadowColor = "rgba(245,158,11,0.45)";
+      ac.shadowBlur = 8;
+      ac.beginPath();
+      activityPoints.forEach((p, i) => {
+        const x = (cumDist[i] / totalDistM) * W;
+        const y = ALT_PAD_TOP + ALT_H - ((p.ele - minE) / eRange) * (ALT_H * 0.85);
+        i === 0 ? ac.moveTo(x, y) : ac.lineTo(x, y);
+      });
+      ac.stroke();
+      ac.shadowBlur = 0;
+
+      // ── Max elevation indicator: dotted line + amber dot + pill label ────────
+      const peakXc = (cumDist[peakEleIdx] / totalDistM) * W;
+      const peakYc = ALT_PAD_TOP + ALT_H - ((maxE - minE) / eRange) * (ALT_H * 0.85);
+
+      // Pill label dimensions
+      const labelFontSize = Math.round(W * 0.026);
+      ac.font = `800 ${labelFontSize}px sans-serif`;
+      const labelText = `▲ ${Math.round(maxE)}m`;
+      const textW = ac.measureText(labelText).width;
+      const pillW = textW + 20;
+      const pillH = labelFontSize + 10;
+      const pillGap = 6; // px gap between label bottom and dotted line
+      const pillX = Math.min(Math.max(peakXc - pillW / 2, 4), W - pillW - 4);
+      const pillY = Math.max(peakYc - pillH - pillGap - 8, 2); // sits above the peak
+
+      // Dotted vertical line: from pill bottom → just above peak dot
+      const dotRadius = Math.round(W * 0.008);
+      ac.save();
+      ac.setLineDash([4, 4]);
+      ac.strokeStyle = "rgba(245,158,11,0.55)";
+      ac.lineWidth = 1.5;
+      ac.beginPath();
+      ac.moveTo(peakXc, pillY + pillH + pillGap);
+      ac.lineTo(peakXc, peakYc - dotRadius - 1);
+      ac.stroke();
+      ac.setLineDash([]);
+      ac.restore();
+
+      // Peak amber dot
+      ac.save();
+      ac.beginPath();
+      ac.arc(peakXc, peakYc, dotRadius + 2, 0, Math.PI * 2);
+      ac.fillStyle = "rgba(0,0,0,0.75)";
+      ac.fill();
+      ac.beginPath();
+      ac.arc(peakXc, peakYc, dotRadius, 0, Math.PI * 2);
+      ac.fillStyle = "#f59e0b";
+      ac.fill();
+      ac.restore();
+
+      // Pill background
+      ac.save();
+      ac.shadowColor = "rgba(0,0,0,0.9)"; ac.shadowBlur = 8;
+      ac.fillStyle = "rgba(0,0,0,0.72)";
+      ac.beginPath();
+      const r = pillH / 2;
+      ac.roundRect(pillX, pillY, pillW, pillH, r);
+      ac.fill();
+      ac.shadowBlur = 0;
+      // Pill border
+      ac.strokeStyle = "rgba(245,158,11,0.55)";
+      ac.lineWidth = 1.2;
+      ac.beginPath();
+      ac.roundRect(pillX, pillY, pillW, pillH, r);
+      ac.stroke();
+      // Pill text
+      ac.fillStyle = "#fbbf24";
+      ac.textAlign = "center";
+      ac.textBaseline = "middle";
+      ac.fillText(labelText, pillX + pillW / 2, pillY + pillH / 2);
+      ac.restore();
+    })();
+
+    // ── Pre-project altimetry X/Y into Float32Arrays (O(1) lookup per frame) ───
+    const altProjX = new Float32Array(activityPoints.length);
+    const altProjY = new Float32Array(activityPoints.length);
+    for (let i = 0; i < activityPoints.length; i++) {
+      altProjX[i] = (cumDist[i] / totalDistM) * W;
+      altProjY[i] = ALT_Y + ALT_PAD_TOP + ALT_H - ((activityPoints[i].ele - minE) / eRange) * (ALT_H * 0.85);
+    }
+
+    // ── Pre-compute gauge geometry constants (used every frame — compute once) ──
+    const MAX_SPD = STABLE_GAUGE_MAX;
+    const gCX = W * 0.20;
+    const gCY = H * 0.15;
+    const gR  = W * 0.13;
+    const GAUGE_START = 0.75 * Math.PI;
+    const GAUGE_SWEEP = 1.5  * Math.PI;
+    const GAUGE_END   = GAUGE_START + GAUGE_SWEEP;
+    const speedToAngle = (s: number) => GAUGE_START + Math.min(s / MAX_SPD, 1) * GAUGE_SWEEP;
+    const arcFillGrad = (() => {
+      const g = ctx.createLinearGradient(gCX - gR, gCY, gCX + gR, gCY);
+      g.addColorStop(0, "#f59e0b"); g.addColorStop(1, "#fbbf24"); return g;
+    })();
+
+    // ── Pre-render gauge static layer (vignette + track arc + ticks + hub) ─────
+    // Sized to only the area the gauge occupies (top-left ~52%×44%) — not full 1080×1920
+    const gaugeCacheW = Math.round(W * 0.52);
+    const gaugeCacheH = Math.round(H * 0.44);
+    const gaugeCache = document.createElement("canvas");
+    gaugeCache.width = gaugeCacheW; gaugeCache.height = gaugeCacheH;
+    (() => {
+      const gc = gaugeCache.getContext("2d")!;
+      // Soft radial shadow behind gauge — subtle depth, no hard box
+      const vg = gc.createRadialGradient(gCX, gCY, 0, gCX, gCY, W * 0.42);
+      vg.addColorStop(0, "rgba(0,0,0,0.28)"); vg.addColorStop(1, "rgba(0,0,0,0)");
+      gc.fillStyle = vg;
+      gc.fillRect(0, 0, gaugeCacheW, gaugeCacheH);
+      // Track arc
+      gc.lineWidth = Math.round(W * 0.022); gc.lineCap = "round";
+      gc.strokeStyle = "rgba(255,255,255,0.12)";
+      gc.beginPath(); gc.arc(gCX, gCY, gR, GAUGE_START, GAUGE_END); gc.stroke();
+      // Tick marks + labels
+      gc.lineCap = "butt";
+      for (let spd = 0; spd <= MAX_SPD; spd += 10) {
+        const a = speedToAngle(spd), cosA = Math.cos(a), sinA = Math.sin(a);
+        const isMajor = spd % 20 === 0;
+        const outer = gR - Math.round(W * 0.024);
+        const inner = outer - (isMajor ? gR * 0.12 : gR * 0.07);
+        gc.strokeStyle = isMajor ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.15)";
+        gc.lineWidth = isMajor ? 2.5 : 1.5;
+        gc.beginPath();
+        gc.moveTo(gCX + cosA * outer, gCY + sinA * outer);
+        gc.lineTo(gCX + cosA * inner, gCY + sinA * inner);
+        gc.stroke();
+        if (isMajor) {
+          const lr = inner - gR * 0.12;
+          gc.shadowColor = "rgba(0,0,0,1)"; gc.shadowBlur = 10;
+          gc.font = `700 ${Math.round(W * 0.024)}px sans-serif`;
+          gc.fillStyle = "rgba(255,255,255,0.6)"; gc.textAlign = "center";
+          gc.fillText(String(spd), gCX + cosA * lr, gCY + sinA * lr + 5);
+          gc.shadowBlur = 0;
+        }
+      }
+      // Hub dot (static, dark center)
+      gc.fillStyle = "#1a1a1a";
+      gc.beginPath(); gc.arc(gCX, gCY, W * 0.022, 0, Math.PI * 2); gc.fill();
+      gc.strokeStyle = "rgba(255,255,255,0.15)"; gc.lineWidth = 1.5; gc.stroke();
+    })();
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    const shadow = (color: string, blur: number) => { ctx.shadowColor = color; ctx.shadowBlur = blur; };
+    const noShadow = () => { ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; };
+
+    // ── Draw telemetry HUD — dynamic parts only (cache handles static) ─────────
+    const drawTelemetry = (idx: number) => {
+      const pt1 = activityPoints[idx];
+      const pt2 = activityPoints[Math.min(idx + 1, activityPoints.length - 1)];
+      if (!pt1) return;
+      ctx.save();
+
+      // Layer 1: static gauge (vignette + track + ticks + hub) — small canvas blit
+      ctx.drawImage(gaugeCache, 0, 0, gaugeCacheW, gaugeCacheH);
+
+      const frac = state.current.virtualIndex - idx;
+      const s1 = Number((pt1 as any).speed) || 0;
+      const s2 = Number((pt2 as any).speed) || 0;
+      const speedNow = s1 + (s2 - s1) * frac;
+      if (speedNow > maxSpeedSeen) maxSpeedSeen = speedNow;
+
+      const d1 = cumDist[idx];
+      const d2 = cumDist[Math.min(idx + 1, cumDist.length - 1)];
+      const distKm = ((d1 + (d2 - d1) * frac) / 1000).toFixed(2);
+
+      const tNow = pt1.time + (pt2.time - pt1.time) * frac;
+      const secs = (tNow - activityPoints[0].time) / 1000;
+      const mm = Math.floor(secs / 60).toString().padStart(2, "0");
+      const ss = Math.floor(secs % 60).toString().padStart(2, "0");
+      const pt = (frac < 0.5 ? pt1 : pt2) as any;
+
+      // Layer 2: speed fill arc (dynamic)
+      if (speedNow > 0.5) {
+        ctx.strokeStyle = arcFillGrad;
+        ctx.lineWidth = Math.round(W * 0.022); ctx.lineCap = "round";
+        ctx.shadowColor = "rgba(245,158,11,0.4)"; ctx.shadowBlur = 18;
+        ctx.beginPath(); ctx.arc(gCX, gCY, gR, GAUGE_START, speedToAngle(speedNow)); ctx.stroke();
+        noShadow();
+      }
+
+      // Layer 3: max-speed red needle (only redrawn — rarely changes)
+      if (maxSpeedSeen > 0.5) {
+        const maxAngle = speedToAngle(maxSpeedSeen);
+        ctx.save();
+        ctx.translate(gCX, gCY); ctx.rotate(maxAngle);
+        ctx.strokeStyle = "#ef4444"; ctx.lineWidth = Math.round(W * 0.006);
+        ctx.shadowColor = "rgba(239,68,68,0.7)"; ctx.shadowBlur = 10; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(-gR * 0.12, 0); ctx.lineTo(gR * 0.82, 0); ctx.stroke();
+        ctx.fillStyle = "#ef4444"; ctx.shadowBlur = 14;
+        ctx.beginPath(); ctx.arc(gR * 0.82, 0, W * 0.006, 0, Math.PI * 2); ctx.fill();
+        ctx.restore(); noShadow();
+      }
+
+      // Layer 4: speed number + KM/H
+      shadow("rgba(0,0,0,0.9)", 20);
+      ctx.font = `900 ${Math.round(W * 0.13)}px sans-serif`;
+      ctx.fillStyle = speedNow > maxSpeedSeen * 0.9 ? "#fbbf24" : "#ffffff";
+      ctx.textAlign = "center";
+      ctx.fillText(Math.round(speedNow).toString(), gCX, gCY + Math.round(W * 0.015));
+      ctx.font = `700 ${Math.round(W * 0.028)}px sans-serif`;
+      ctx.fillStyle = "#f59e0b";
+      ctx.fillText("KM/H", gCX, gCY + Math.round(W * 0.016) + Math.round(W * 0.04));
+
+      // Layer 5: secondary metrics (distance, HR, power, time)
+      const metY = gCY + gR + Math.round(H * 0.04);
+      shadow("rgba(0,0,0,1)", 25);
+      ctx.font = `900 ${Math.round(W * 0.11)}px sans-serif`;
+      ctx.fillStyle = "#ffffff"; ctx.textAlign = "left";
+      ctx.fillText(distKm, W * 0.04, metY);
+      const dW = ctx.measureText(distKm).width;
+      ctx.font = `700 ${Math.round(W * 0.035)}px sans-serif`;
+      ctx.fillStyle = "#f59e0b";
+      ctx.fillText(" KM", W * 0.04 + dW, metY - 4);
+
+      const subY = metY + Math.round(H * 0.055);
+      let groupX = W * 0.04;
+      ctx.font = `900 ${Math.round(W * 0.07)}px sans-serif`;
+      if (pt.hr) {
+        shadow("rgba(0,0,0,1)", 20);
+        ctx.fillStyle = "#ff4d4d";
+        ctx.fillText(`\u2665 ${Math.round(pt.hr)}`, groupX, subY);
+        groupX += ctx.measureText(`\u2665 ${Math.round(pt.hr)}`).width + Math.round(W * 0.03);
+      }
+      if (pt.power) {
+        shadow("rgba(0,0,0,1)", 20);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(`\u26A1 ${Math.round(pt.power)}W`, groupX, subY);
+        groupX += ctx.measureText(`\u26A1 ${Math.round(pt.power)}W`).width + Math.round(W * 0.03);
+      }
+      shadow("rgba(0,0,0,1)", 20);
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.fillText(`\u23F1 ${mm}:${ss}`, groupX, subY);
+
+      // Intensity bar — top of canvas, full width
+      const iScore = storyPlan?.intensityScores?.[idx] ?? 0;
+      const barW = Math.round(W * iScore);
+      if (barW > 0) {
+        const barGrad = ctx.createLinearGradient(0, 0, W, 0);
+        barGrad.addColorStop(0,   "#f59e0b");
+        barGrad.addColorStop(0.6, "#f97316");
+        barGrad.addColorStop(1,   "#ef4444");
+        ctx.fillStyle = barGrad;
+        ctx.fillRect(0, 0, barW, 6);
+      }
+
+      ctx.restore();
+    };
+
+
+    // ── Draw logo PNG top-right ───────────────────────────────────────────────
+    const drawLogo = () => {
+      if (!logoImg.complete || logoImg.naturalWidth === 0) return;
+      ctx.save();
+      shadow("rgba(0,0,0,0.7)", 16);
+      const lH = Math.round(H * 0.028);
+      const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(logoImg, W - lW - Math.round(W * 0.06), Math.round(H * 0.04), lW, lH);
+      ctx.globalAlpha = 1;
+      noShadow();
+      ctx.restore();
+    };
+
+    // ── Draw GPS marker dot at current map position ───────────────────────────
+    const drawMarker = (idx: number, pip?: { x: number; y: number; w: number; h: number }) => {
+      if (!mapRef.current) return;
+      const pt1 = activityPoints[idx];
+      const pt2 = activityPoints[Math.min(idx + 1, activityPoints.length - 1)];
+      const frac = state.current.virtualIndex - idx;
+      const lon = pt1.lon + (pt2.lon - pt1.lon) * frac;
+      const lat = pt1.lat + (pt2.lat - pt1.lat) * frac;
+
+      // Project GPS → CSS px on Mapbox canvas
+      const containerRect = mapContainerRef.current!.getBoundingClientRect();
+      const projected = mapRef.current.project([lon, lat]);
+      const nx = projected.x / containerRect.width;
+      const ny = projected.y / containerRect.height;
+
+      const cx = pip ? pip.x + nx * pip.w : nx * W;
+      const cy = pip ? pip.y + ny * pip.h : ny * H;
+      const dotR = pip ? pip.w * 0.05 : W * 0.015; 
+      const glowR = dotR * 3;
+
+      ctx.save();
+      // Glow — two concentric alpha circles (no gradient object allocation per frame)
+      const pulse = 1 + Math.sin(performance.now() / 200) * 0.2;
+      ctx.fillStyle = `rgba(245,158,11,${(0.28 * pulse).toFixed(2)})`;
+      ctx.beginPath(); ctx.arc(cx, cy, glowR, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(245,158,11,0.18)";
+      ctx.beginPath(); ctx.arc(cx, cy, glowR * 0.55, 0, Math.PI * 2); ctx.fill();
+      // White ring
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(cx, cy, dotR * 1.2, 0, Math.PI * 2); ctx.stroke();
+      // Amber fill
+      ctx.fillStyle = "#f59e0b";
+      ctx.beginPath(); ctx.arc(cx, cy, dotR, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    };
+
+    const drawBroadMap = (idx: number, x: number, y: number, w: number, h: number) => {
+        ctx.save();
+        ctx.globalAlpha = 0.78; // semi-transparent so video shows through
+
+        // Clip to rounded rect
+        ctx.beginPath();
+        (ctx as any).roundRect?.(x, y, w, h, 28);
+        ctx.clip();
+
+        // Layer 1: pre-cached background (full route dim line) — single drawImage, O(1)
+        ctx.drawImage(broadmapCache, x, y, w, h);
+
+        // Layer 2: amber progress trail — incremental paint (O(delta) not O(idx))
+        if (idx > lastTrailIdx) {
+          const from = Math.max(lastTrailIdx, 0);
+          trailCtx.beginPath();
+          trailCtx.moveTo(bmProjX[from], bmProjY[from]);
+          for (let i = from + 1; i <= idx; i++) {
+            trailCtx.lineTo(bmProjX[i], bmProjY[i]);
+          }
+          trailCtx.stroke();
+          lastTrailIdx = idx;
+        }
+        ctx.drawImage(trailCache, 0, 0, pipW, pipH, x, y, w, h);
+
+        // Layer 3: current position dot + glow
+        const cx = x + bmProjX[idx];
+        const cy = y + bmProjY[idx];
+        ctx.shadowBlur = 18;
+        ctx.shadowColor = "rgba(245,158,11,0.8)";
+        ctx.fillStyle = "#f59e0b";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Border on top
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "rgba(255,255,255,0.18)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        (ctx as any).roundRect?.(x, y, w, h, 28);
+        ctx.stroke();
+
+        ctx.restore();
+    };
+
+
+    // ── Draw altimetry sparkline — full width, bottom of canvas ──────────────
+    // All X/Y pre-computed into Float32Arrays — zero arithmetic per frame
+    const drawAltimetry = (idx: number) => {
+      ctx.save();
+
+      // Layer 1: cached background (gradient + area fill + curve + labels) — single blit
+      ctx.drawImage(altimetryCache, 0, ALT_Y);
+
+      // Layer 2: cursor — O(1) array lookups only, NO shadowBlur
+      const curX = altProjX[idx];
+      const curY = altProjY[idx];
+
+      // Dashed vertical line
+      ctx.strokeStyle = "rgba(255,255,255,0.4)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(curX, ALT_Y + ALT_PAD_TOP);
+      ctx.lineTo(curX, ALT_Y + ALT_PAD_TOP + ALT_H);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Outer ring (static, no pulsing — no Math.sin per frame)
+      ctx.strokeStyle = "rgba(255,255,255,0.22)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(curX, curY, 8, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // White dot — NO shadowBlur
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(curX, curY, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Amber core — NO shadowBlur
+      ctx.fillStyle = "#f59e0b";
+      ctx.beginPath();
+      ctx.arc(curX, curY, 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Elevation label — single text draw, shadow reset after
+      shadow("rgba(0,0,0,0.9)", 10);
+      ctx.font = `800 ${Math.round(W * 0.03)}px sans-serif`;
+      ctx.fillStyle = "#fbbf24";
+      ctx.textAlign = "center";
+      ctx.fillText(`${Math.round(activityPoints[idx].ele)}m`,
+        Math.min(Math.max(curX, 40), W - 40), curY - 10);
+      noShadow();
+
+      ctx.restore();
+    };
+
+    // ── Pre-create intro gradients once — reused every frame, no per-frame allocation ──
+    const introVignette = ctx.createRadialGradient(W / 2, H * 0.45, 0, W / 2, H * 0.45, W * 1.2);
+    introVignette.addColorStop(0, "rgba(0,0,0,0.22)");
+    introVignette.addColorStop(0.6, "rgba(0,0,0,0.48)");
+    introVignette.addColorStop(1, "rgba(0,0,0,0.88)");
+    const introSepGrad = ctx.createLinearGradient(W / 2 - W * 0.3, 0, W / 2 + W * 0.3, 0);
+    introSepGrad.addColorStop(0, "transparent");
+    introSepGrad.addColorStop(0.5, "#f59e0b");
+    introSepGrad.addColorStop(1, "transparent");
+
+    // ── Draw INTRO cinematic screen — animated reveal ─────────────────────────
+    const drawIntro = (elapsed: number) => {
+      const easeOut = (x: number) => 1 - Math.pow(1 - Math.min(Math.max(x, 0), 1), 3);
+      const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+      const clamp01 = (x: number) => Math.min(Math.max(x, 0), 1);
+
+      ctx.save();
+
+      // ── 1. Cinematic vignette — reuse pre-created gradient (no allocation per frame) ──
+      ctx.fillStyle = introVignette;
+      ctx.fillRect(0, 0, W, H);
+
+      // ── 2. Letterbox bars — retract from 30% → 5px over 700ms ─────────────
+      const barProg = easeOut(elapsed / 700);
+      const barH = Math.round(lerp(H * 0.30, 5, barProg));
+      ctx.fillStyle = "#050505";
+      ctx.fillRect(0, 0, W, barH);           // top bar
+      ctx.fillRect(0, H - barH, W, barH);    // bottom bar
+      // Amber accent on bar edge
+      ctx.fillStyle = "#f59e0b";
+      ctx.fillRect(0, barH - 4, W, 4);
+      ctx.fillRect(0, H - barH, W, 4);
+
+      // ── 3. Logo — fades in at 500ms ────────────────────────────────────────
+      const logoAlpha = easeOut(clamp01((elapsed - 500) / 400));
+      if (logoAlpha > 0.01 && logoImg.complete && logoImg.naturalWidth > 0) {
+        const lH = Math.round(H * 0.03);
+        const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
+        const logoY = H * 0.17 + (1 - logoAlpha) * 20;
+        ctx.globalAlpha = logoAlpha * 0.85;
+        shadow("rgba(0,0,0,0.8)", 20);
+        ctx.drawImage(logoImg, (W - lW) / 2, logoY, lW, lH);
+        ctx.globalAlpha = 1;
+        noShadow();
+      }
+
+      // ── 4. "EPIC" — scales in + fades from 750ms ──────────────────────────
+      const epicAlpha = easeOut(clamp01((elapsed - 750) / 450));
+      if (epicAlpha > 0.01) {
+        const epicScale = lerp(1.14, 1.0, easeOut(clamp01((elapsed - 750) / 550)));
+        ctx.save();
+        ctx.globalAlpha = epicAlpha;
+        shadow("rgba(0,0,0,1)", 60);
+        ctx.font = `900 italic ${Math.round(W * 0.20)}px sans-serif`;
+        ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "center";
+        ctx.translate(W / 2, H * 0.36);
+        ctx.scale(epicScale, epicScale);
+        ctx.fillText("EPIC", 0, 0);
+        ctx.restore();
+        noShadow();
+      }
+
+      // ── 5. "RIDE" amber — fades in 200ms after EPIC ───────────────────────
+      const rideAlpha = easeOut(clamp01((elapsed - 1050) / 450));
+      if (rideAlpha > 0.01) {
+        const rideScale = lerp(1.1, 1.0, easeOut(clamp01((elapsed - 1050) / 450)));
+        ctx.save();
+        ctx.globalAlpha = rideAlpha;
+        shadow("rgba(245,158,11,0.5)", 60);
+        ctx.font = `900 italic ${Math.round(W * 0.20)}px sans-serif`;
+        ctx.fillStyle = "#f59e0b";
+        ctx.textAlign = "center";
+        ctx.translate(W / 2, H * 0.49);
+        ctx.scale(rideScale, rideScale);
+        ctx.fillText("RIDE", 0, 0);
+        ctx.restore();
+        noShadow();
+      }
+
+      // ── 6. Separator line draws left → right ──────────────────────────────
+      const sepProg = easeOut(clamp01((elapsed - 1450) / 350));
+      if (sepProg > 0.01) {
+        const sepAlpha = Math.min(sepProg * 2, 1);
+        const sepY = H * 0.555;
+        const sepHalfMax = W * 0.3;
+        ctx.globalAlpha = sepAlpha * 0.7;
+        // Reuse pre-created intro separator gradient (no allocation per frame)
+        ctx.strokeStyle = introSepGrad;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(W / 2 - sepHalfMax * sepProg, sepY);
+        ctx.lineTo(W / 2 + sepHalfMax * sepProg, sepY);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        noShadow();
+      }
+
+      // ── 7. Stats — 3 cards with count-up animation, staggered ───────────────
+      const totalSecs = activityPoints.length > 1
+        ? (activityPoints[activityPoints.length - 1].time - activityPoints[0].time) / 1000 : 0;
+      const finalDistKm  = cumDist[cumDist.length - 1] / 1000;
+      const finalMin     = Math.floor(totalSecs / 60);
+      const finalAvgSpd  = totalSecs > 0 ? finalDistKm / (totalSecs / 3600) : 0;
+
+      const STAT_START = 1800;
+      const COUNT_DUR  = 700;
+
+      const stats = [
+        { finalNum: finalDistKm,  format: (v: number) => v.toFixed(1), unit: "KM",   label: "Distância",      delay: STAT_START },
+        { finalNum: finalMin,     format: (v: number) => Math.round(v).toString(), unit: "MIN",  label: "Duração",   delay: STAT_START + 150 },
+        { finalNum: finalAvgSpd,  format: (v: number) => v.toFixed(1), unit: "KM/H", label: "Vel. Média",      delay: STAT_START + 300 },
+      ];
+
+      const colW = W / stats.length;
+      const baseY = H * 0.68;
+
+      stats.forEach((s, i) => {
+        const alpha = easeOut(clamp01((elapsed - s.delay) / 400));
+        if (alpha < 0.01) return;
+
+        const countProg = easeOut(clamp01((elapsed - s.delay) / COUNT_DUR));
+        const displayVal = s.format(s.finalNum * countProg);
+        const cx2 = colW * i + colW / 2;
+        const slideY = (1 - alpha) * 20;
+        const y = baseY + slideY;
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+
+        // Subtle amber glow pill behind the number
+        const pillW = colW * 0.72, pillH = Math.round(H * 0.095);
+        const pillX = cx2 - pillW / 2, pillY = y - pillH * 0.78;
+        ctx.fillStyle = "rgba(245,158,11,0.06)";
+        (ctx as any).roundRect?.(pillX, pillY, pillW, pillH, 16);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(245,158,11,0.18)";
+        ctx.lineWidth = 1.5;
+        (ctx as any).roundRect?.(pillX, pillY, pillW, pillH, 16);
+        ctx.stroke();
+
+        // Value — large, bold, counting up
+        shadow("rgba(0,0,0,1)", 24);
+        ctx.font = `900 ${Math.round(W * 0.10)}px sans-serif`;
+        ctx.fillStyle = countProg >= 0.98 ? "#ffffff" : "#fbbf24"; // amber while counting, white when done
+        ctx.textAlign = "center";
+        ctx.fillText(displayVal, cx2, y);
+
+        // Unit — amber caps
+        ctx.font = `700 ${Math.round(W * 0.028)}px sans-serif`;
+        ctx.fillStyle = "#f59e0b";
+        ctx.fillText(s.unit, cx2, y + Math.round(H * 0.034));
+
+        // Label — dim small caps
+        noShadow();
+        ctx.font = `500 ${Math.round(W * 0.024)}px sans-serif`;
+        ctx.fillStyle = "rgba(255,255,255,0.35)";
+        ctx.fillText(s.label, cx2, y + Math.round(H * 0.062));
+
+        // Divider between cols
+        if (i < stats.length - 1) {
+          ctx.strokeStyle = "rgba(255,255,255,0.1)";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(colW * (i + 1), baseY + slideY - Math.round(H * 0.06));
+          ctx.lineTo(colW * (i + 1), baseY + slideY + Math.round(H * 0.075));
+          ctx.stroke();
+        }
+
+        ctx.restore();
+        noShadow();
+      });
+
+      ctx.restore();
+    };
+
+    // ── Pre-create brand glow gradient (constant geometry, only opacity varies) ─
+    const brandGlowGrad = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, W * 0.7);
+    brandGlowGrad.addColorStop(0, "rgba(245,158,11,0.15)");
+    brandGlowGrad.addColorStop(1, "rgba(245,158,11,0)");
+
+    // ── Draw BRAND finale screen (cinematic) ─────────────────────────────────
+    const drawBrand = (progress: number) => {
+      // progress: 0 → 1 mapped over BRAND_DURATION ms
+      ctx.save();
+
+      // Phase 1 (0→0.35): expanding dark circle wipes the screen
+      const wipeP = Math.min(progress / 0.35, 1);
+      const r = wipeP * W * 1.8;
+      ctx.fillStyle = "#060606";
+      ctx.beginPath();
+      ctx.arc(W / 2, H / 2, r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Phase 2 (0.3→1): fade in amber radial glow + content
+      if (progress > 0.3) {
+        const fadeIn = Math.min((progress - 0.3) / 0.3, 1);
+
+        // Amber radial glow — reuse pre-created gradient, scale via globalAlpha
+        ctx.globalAlpha = fadeIn;
+        ctx.fillStyle = brandGlowGrad;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.globalAlpha = fadeIn;
+        shadow("rgba(0,0,0,0.9)", 30);
+
+        // "DEVELOPED BY"
+        ctx.font = `300 ${Math.round(W * 0.048)}px sans-serif`;
+        ctx.fillStyle = "rgba(180,180,180,0.8)";
+        ctx.textAlign = "center";
+        ctx.letterSpacing = "0.3em";
+        ctx.fillText("DEVELOPED BY", W / 2, H * 0.37);
+        ctx.letterSpacing = "0em";
+
+        // ProRefuel logo large + glow
+        if (logoImg.complete && logoImg.naturalWidth > 0) {
+          const lH = Math.round(H * 0.09);
+          const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
+          // Amber glow under logo
+          ctx.shadowColor = "rgba(245,158,11,0.6)";
+          ctx.shadowBlur = 60;
+          ctx.drawImage(logoImg, (W - lW) / 2, H * 0.41, lW, lH);
+          noShadow();
+        }
+
+        // Tagline
+        if (progress > 0.65) {
+          const tagAlpha = Math.min((progress - 0.65) / 0.2, 1);
+          ctx.globalAlpha = fadeIn * tagAlpha;
+          ctx.font = `400 ${Math.round(W * 0.032)}px sans-serif`;
+          ctx.fillStyle = "rgba(245,158,11,0.7)";
+          ctx.fillText("prorefuel.app", W / 2, H * 0.555);
+        }
+
+        // Amber bottom accent line
+        ctx.globalAlpha = fadeIn;
+        ctx.fillStyle = "#f59e0b";
+        ctx.fillRect(0, H - 4, W, 4);
+
+        ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+    };
+    const BRAND_DURATION = 3500; // ms — recording stays alive 3.5s for full brand reveal
+
+    // ── Brand timing tracker ──────────────────────────────────────────────────
+    let brandStartTime = 0;
+    let introStartTime = 0;
+    let brandStopScheduled = false;
+    let maxSpeedSeen = 0; // tracks peak speed for frozen red needle
+
+    // ── Main composite loop — rAF with 30ms guard (exactly 2 rAF ticks at 60Hz) ──
+    // rAF fires every 16.67ms. Guard of 30ms ensures we always land on tick #2 (33ms = 30fps).
+    // Using 33.3ms was the bug: it sat exactly at the 2-tick boundary so any jitter bumped it
+    // to tick #3 (50ms = 20fps). 30ms is safely below 2 ticks → always fires at 33ms.
+    // rAF is critical vs setInterval: ctx.drawImage(videoEl) syncs with the video frame update
+    // cycle. setInterval fires mid-decode and captures duplicate/stale frames → jerky motion.
+    const TARGET_FPS = 30;
+    const FRAME_MS = 1000 / TARGET_FPS;
+    let lastFrameCount = -1;
+    let recordingStartTime = 0;
+
+    // ── Cross-dissolve transition buffer ─────────────────────────────────────
+    const transCanvas = document.createElement("canvas");
+    transCanvas.width = W; transCanvas.height = H;
+    const transCtx = transCanvas.getContext("2d")!;
+    let prevVm = "INTRO";
+    let transStart = -1;
+    const rhythm = storyPlan?.narrativePlan?.editingRhythm ?? "MEDIUM";
+    const TRANS_DUR = rhythm === "FAST" ? 280 : rhythm === "SLOW" ? 750 : 480;
+
+    const compositeLoop = (now: DOMHighResTimeStamp) => {
+      if (!recordingRef.current) return;
+
+      if (recordingStartTime === 0) recordingStartTime = now;
+      const frameCount = Math.floor((now - recordingStartTime) / FRAME_MS);
+      if (frameCount <= lastFrameCount) {
+        recordingRef.current.compositeLoop = requestAnimationFrame(compositeLoop as FrameRequestCallback);
+        return;
+      }
+      lastFrameCount = frameCount;
+
+      const vm = state.current.viewMode;
+      const idx = Math.floor(state.current.virtualIndex);
+
+      // Detect mode change → snapshot last complete frame of old mode
+      if (vm !== prevVm) {
+        transCtx.drawImage(offscreen, 0, 0);
+        transStart = now;
+        prevVm = vm;
+      }
+
+      // Background
+      ctx.fillStyle = "#050505";
+      ctx.fillRect(0, 0, W, H);
+
+      if (vm === "BRAND") {
+        if (brandStartTime === 0) brandStartTime = performance.now();
+        const elapsed = performance.now() - brandStartTime;
+        const progress = Math.min(elapsed / BRAND_DURATION, 1);
+        // Draw map base then overlay brand wipe
+        try { ctx.drawImage(mapCanvas, 0, 0, W, H); } catch {}
+        drawBrand(progress);
+        
+        // Stop recording only after full brand animation completes
+        if (progress >= 1 && !brandStopScheduled && recordingRef.current) {
+          brandStopScheduled = true;
+          const { recorder: rec, compositeLoop: cl } = recordingRef.current;
+          cancelAnimationFrame(cl);
+          recordingRef.current = null;
+          if (rec.state === "recording") rec.stop();
+          return;
+        }
+      } else if (vm === "ACTION") {
+        // GO PRO VIDEO CENTRIC (Highlight clips only)
+        // compositeLoop NEVER touches play/pause — animate loop is the sole video controller
+        if (videoEl) {
+          try {
+            // object-fit: cover — fill canvas height, crop sides (matches Engine 1 DOM behavior)
+            const vW = videoEl.videoWidth || 1920;
+            const vH = videoEl.videoHeight || 1080;
+            const canvasAR = W / H;   // 1080/1920 = 0.5625 (portrait)
+            const vidAR = vW / vH;    // e.g. 1920/1080 = 1.778 (landscape)
+            let sx = 0, sy = 0, sw = vW, sh = vH;
+            if (vidAR > canvasAR) {
+              // Video wider than canvas: crop left/right
+              sw = Math.round(vH * canvasAR);
+              sx = Math.round((vW - sw) / 2);
+            } else {
+              // Video taller than canvas: crop top/bottom
+              sh = Math.round(vW / canvasAR);
+              sy = Math.round((vH - sh) / 2);
+            }
+            if (videoEl.readyState >= 2) {
+              ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H);
+            }
+          } catch { /* cross-origin or not-ready — skip frame */ }
+        }
+
+        // --- NEW PREMIUM HUD LAYOUT for 1080p ---
+        // (W=1080, H=1920)
+        
+        // 1. Map Broad View Widget (Top-Right) — pipX/pipY/pipW/pipH pre-computed above startRecording
+        drawBroadMap(idx, pipX, pipY, pipW, pipH);
+
+        // 2. Altimetry (Bottom-Left / Bottom)
+        drawAltimetry(idx);
+
+        // 3. Telemetry HUD (Top-Left)
+        drawTelemetry(idx);
+        drawLogo();
+
+      } else {
+
+        // Scenario A: Short Activity or INTRO — Map layout
+        try { ctx.drawImage(mapCanvas, 0, 0, W, H); } catch {}
+
+        if (vm === "INTRO") {
+          if (introStartTime === 0) introStartTime = performance.now();
+          drawIntro(performance.now() - introStartTime);
+        } else if (vm === "MAP") {
+          drawTelemetry(idx);
+          drawLogo();
+          drawMarker(idx);
+          drawAltimetry(idx);
+        }
+      }
+
+      // Cross-dissolve: overlay the previous-mode snapshot fading out
+      if (transStart > 0 && now - transStart < TRANS_DUR) {
+        const t = (now - transStart) / TRANS_DUR;
+        // easeInQuad fade-out: starts opaque, accelerates to transparent
+        ctx.globalAlpha = Math.pow(1 - t, 1.6);
+        ctx.drawImage(transCanvas, 0, 0, W, H);
+        ctx.globalAlpha = 1;
+      }
+
+      recordingRef.current.compositeLoop = requestAnimationFrame(compositeLoop as FrameRequestCallback);
+    };
+
+    recorder.start();
+    recordingRef.current = { recorder, compositeLoop: requestAnimationFrame(compositeLoop as FrameRequestCallback) };
+    setIsRecording(true);
+    startExperience();
+
+  };
+
+
+  // Wire the ref so the map 'load' closure can access startRecording safely
+  startRecordingRef.current = startRecording;
+
   useImperativeHandle(ref, () => ({
     start: startExperience,
+    startRecording,
+    isRecording,
   }));
+
+  // Recording stop is handled exclusively inside compositeLoop (brandStopScheduled flag)
+  // to ensure the full 3.5s brand animation is captured before stopping.
 
   const isEnding = activityPoints.length > 0 && currentIndex > 0 && currentIndex >= activityPoints.length - 20;
 
   return (
     <div className="relative w-full h-full bg-[#050505] overflow-hidden mapbox-wrapper-hack">
+
+      {/* TRANSCODING OVERLAY */}
+      {isTranscoding && (
+        <div className="absolute inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center gap-4">
+          <svg className="animate-spin text-amber-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" width="40" height="40">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+          </svg>
+          <p className="text-white text-xs font-black uppercase tracking-[0.3em]">Gerando MP4...</p>
+          <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Aguarde a transcodificação</p>
+        </div>
+      )}
       <style dangerouslySetInnerHTML={{ __html: `
-        .mapbox-wrapper-hack .mapboxgl-canvas {
-          width: 100% !important;
-          height: 100% !important;
+        .mapbox-wrapper-hack .mapboxgl-canvas { width: 100% !important; height: 100% !important; }
+        .mapbox-wrapper-hack { outline: none; }
+
+        @keyframes introBarTop    { from { height: 30% } to { height: 5px } }
+        @keyframes introBarBot    { from { height: 30% } to { height: 5px } }
+        @keyframes introFadeSlide { from { opacity: 0; transform: translateY(14px) } to { opacity: 1; transform: translateY(0) } }
+        @keyframes introScaleIn   { from { opacity: 0; transform: scale(1.14) } to { opacity: 1; transform: scale(1) } }
+        @keyframes introSepDraw   { from { width: 0; opacity: 0 } to { width: 60%; opacity: 1 } }
+        @keyframes introStatUp    { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: translateY(0) } }
+        @keyframes cutFlash {
+          0%   { opacity: 0; animation-timing-function: ease-in; }
+          28%  { opacity: 1; animation-timing-function: ease-out; }
+          100% { opacity: 0; }
         }
-        .mapbox-wrapper-hack {
-           /* Tweak global para ocultar outlines feios no PIP */
-           outline: none;
+        @keyframes sceneLabelIn {
+          from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+          to   { opacity: 1; transform: translateY(0)    scale(1);    }
         }
+
+        .intro-bar-top  { animation: introBarTop  700ms cubic-bezier(0.16,1,0.3,1) 0ms    both; }
+        .intro-bar-bot  { animation: introBarBot  700ms cubic-bezier(0.16,1,0.3,1) 0ms    both; }
+        .intro-logo     { animation: introFadeSlide 450ms ease-out              500ms  both; }
+        .intro-epic     { animation: introScaleIn   500ms cubic-bezier(0.16,1,0.3,1) 750ms  both; }
+        .intro-ride     { animation: introScaleIn   500ms cubic-bezier(0.16,1,0.3,1) 1050ms both; }
+        .intro-sep      { animation: introSepDraw   400ms ease-out              1450ms both; }
+        .intro-stat-0   { animation: introStatUp    450ms ease-out              1800ms both; }
+        .intro-stat-1   { animation: introStatUp    450ms ease-out              1950ms both; }
+        .intro-stat-2   { animation: introStatUp    450ms ease-out              2100ms both; }
       `}} />
 
-      {/* 1. MAPA DYNAMIC LAYER (GPU Accelerated Scale) */}
+      {/* 1. MAPA DYNAMIC LAYER — Mapbox fullscreen (MAP/INTRO/BRAND only; idle in ACTION) */}
       <div
         ref={mapContainerRef}
-        style={{
-           bottom: (viewMode === "MAP" || viewMode === "INTRO" || viewMode === "BRAND") ? "0px" : "24px",
-           right: (viewMode === "MAP" || viewMode === "INTRO" || viewMode === "BRAND") ? "0px" : "16px",
-           width: "100%",
-           height: "100%",
-           transform: (viewMode === "MAP" || viewMode === "INTRO" || viewMode === "BRAND") ? "scale(1)" : "scale(0.42)",
-           transition: "all 1000ms cubic-bezier(0.25, 1, 0.5, 1)",
-        }}
-        className={`absolute z-30 bg-zinc-900 overflow-hidden transform-gpu origin-bottom-right
-          ${viewMode === "MAP" || viewMode === "INTRO"
-            ? "border-0 opacity-100 rounded-none shadow-none"
-            : viewMode === "ACTION"
-              ? "rounded-[3rem] border-[12px] border-amber-500 shadow-[0_0_100px_rgba(245,158,11,0.5)] opacity-100"
-              : "rounded-[3rem] border-0 opacity-0 pointer-events-none"
+        style={{ width: "100%", height: "100%", transition: "opacity 800ms ease" }}
+        className={`absolute z-30 bg-zinc-900 overflow-hidden
+          ${viewMode === "ACTION"
+            ? "opacity-0 pointer-events-none"
+            : "opacity-100"
           }
         `}
+      />
+
+      {/* 1a. MAP LABEL — segment title overlay during MAP mode */}
+      {viewMode === "MAP" && mapLabel && (
+        <div
+          key={mapLabel}
+          className="absolute bottom-[18%] left-0 right-0 flex justify-center pointer-events-none z-[35]"
+          style={{ animation: "sceneLabelIn 400ms ease-out forwards" }}
+        >
+          <span style={{
+            fontFamily: "sans-serif",
+            fontWeight: 700,
+            fontSize: "clamp(0.9rem, 4vw, 1.4rem)",
+            letterSpacing: "0.2em",
+            textTransform: "uppercase",
+            color: "rgba(255,255,255,0.7)",
+            textShadow: "0 2px 16px rgba(0,0,0,1)",
+          }}>
+            {mapLabel}
+          </span>
+        </div>
+      )}
+
+      {/* 1b. MINI-MAP Canvas 2D (ACTION mode only) — polyline + dot, Mapbox-free, low CPU */}
+      <canvas
+        ref={miniMapCanvasRef}
+        width={360}
+        height={290}
+        className={`absolute z-40 rounded-[1.2rem] shadow-[0_8px_32px_rgba(0,0,0,0.7)]
+          transition-opacity duration-700 pointer-events-none
+          ${viewMode === "ACTION" ? "opacity-85" : "opacity-0"}
+        `}
+        style={{ top: "20px", right: "3%", width: "47%", aspectRatio: "360/290" }}
       />
 
       {/* 2. VÍDEO FULLSCREEN */}
       <div
         className={`absolute inset-0 z-20 bg-black overflow-hidden transition-opacity duration-1000 ease-out ${viewMode === "ACTION" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
       >
+
         {videoUrl && (
           <video
             ref={videoRef}
@@ -349,24 +1646,39 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
             playsInline
           />
         )}
+
+        {viewMode === "ACTION" && sceneLabel !== null && (
+          <div
+            key={sceneLabel}
+            className="absolute top-[12%] left-0 right-0 flex justify-center pointer-events-none z-[45]"
+            style={{ animation: "sceneLabelIn 300ms ease-out forwards" }}
+          >
+            <span style={{
+              fontFamily: "sans-serif",
+              fontWeight: 900,
+              fontSize: "clamp(1.2rem, 6vw, 2rem)",
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+              color: "#f59e0b",
+              textShadow: "0 2px 24px rgba(0,0,0,1), 0 0 40px rgba(245,158,11,0.4)",
+            }}>
+              {sceneLabel}
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* 2.5 GRÁFICO DE ALTIMETRIA INDEPENDENTE (GPU Scaled) */}
-      <div 
+      {/* 2.5 GRÁFICO DE ALTIMETRIA — full width, bottom, always */}
+      <div
         style={{
-           bottom: viewMode === "ACTION" ? "24px" : "0px",
-           left: viewMode === "ACTION" ? "24px" : "0px",
+           bottom: 0,
+           left: 0,
            width: "100%",
            height: "15vh",
-           transform: viewMode === "ACTION" ? "scale(0.45)" : "scale(1)",
-           transition: "all 1000ms cubic-bezier(0.25, 1, 0.5, 1)",
+           transition: "opacity 800ms ease",
            opacity: (viewMode === "INTRO" || viewMode === "BRAND" || isEnding) ? 0 : 1
         }}
-        className={`absolute z-40 transform-gpu origin-bottom-left overflow-hidden ${
-           viewMode === "ACTION" 
-             ? "bg-[#050505]/80 backdrop-blur-xl rounded-[2rem] border-4 border-white/10 shadow-2xl" 
-             : "bg-transparent pointer-events-none"
-        }`}
+        className="absolute z-40 pointer-events-none"
       >
          <AltimetryGraph points={activityPoints} currentIndex={currentIndex} />
       </div>
@@ -381,24 +1693,12 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
          }}
          className="absolute inset-0 z-50 pointer-events-none"
       >
-         <TelemetryHUD points={activityPoints as any} currentIndex={currentIndex} />
+         <TelemetryHUD points={activityPoints as any} currentIndex={currentIndex} hrMax={hrMax} intensityScores={storyPlan?.intensityScores} />
       </div>
 
       {/* 3.1 LOGO PERMANENTE */}
       <div className={`absolute top-10 right-6 z-50 pointer-events-none drop-shadow-xl transition-opacity duration-500 ${viewMode === "BRAND" || viewMode === "INTRO" ? "opacity-0" : "opacity-90"}`}>
         <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[22px] w-auto object-contain" />
-      </div>
-
-      {/* 3.2 ACTION HUD (Picos) */}
-      <div className={`absolute inset-0 flex flex-col justify-end pb-[16vh] pl-8 z-50 transition-all duration-1000 ease-[cubic-bezier(0.175,0.885,0.32,1.275)] pointer-events-none ${viewMode === "ACTION" && activeTitle ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-32"}`}>
-        <div className="flex flex-col items-start gap-[2px]">
-          <div className="bg-amber-500 text-black px-4 py-1 skew-x-[-15deg] shadow-lg border-l-4 border-white">
-              <span className="block skew-x-[15deg] text-[10px] font-black uppercase tracking-[0.3em]">{activeTitle}</span>
-          </div>
-          <div className="bg-black/90 backdrop-blur-md px-6 py-2 skew-x-[-15deg] border-l-4 border-amber-500 shadow-2xl">
-              <span className="block skew-x-[15deg] text-white text-4xl font-black italic tracking-tighter">{activeValue}</span>
-          </div>
-        </div>
       </div>
 
       {/* 4. BRANDING FINAL */}
@@ -416,24 +1716,89 @@ const MapEngine = forwardRef(({ activityPoints, highlights, videoFile }: MapEngi
         <img src="/prorefuel_logo.png" alt="ProRefuel" className="w-1/2 max-w-[200px] drop-shadow-[0_0_30px_rgba(245,158,11,0.2)] animate-pulse" />
       </div>
 
-      {/* 0. INTRO SCREEN */}
+      {/* Cut flash — re-keyed on viewMode so it replays on every transition */}
       <div
-        className={`absolute inset-0 z-50 bg-black/40 flex flex-col items-center justify-center transition-opacity duration-1000 backdrop-blur-[2px] ${viewMode === "INTRO" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        key={`flash-${viewMode}`}
+        className="absolute inset-0 pointer-events-none bg-[#050505]"
+        style={{ zIndex: 9999, animation: 'cutFlash 680ms forwards' }}
+      />
+
+      {/* 0. INTRO SCREEN — cinematic animated */}
+      <div
+        key={viewMode === "INTRO" ? "intro-on" : "intro-off"}
+        className={`absolute inset-0 z-50 flex flex-col items-center justify-center transition-opacity duration-700 ${viewMode === "INTRO" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        style={{ background: 'radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.85) 100%)' }}
       >
-        <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-4 w-auto mb-10 opacity-70" />
-        <h2 className="text-white text-4xl font-black italic tracking-tighter mb-8 text-center leading-none drop-shadow-2xl">
-          PROREFUEL<br /><span className="text-amber-500">EPIC RIDE</span>
-        </h2>
-        <div className="flex gap-8 text-center bg-black/50 p-6 rounded-3xl border border-white/10 shadow-2xl backdrop-blur-md">
-          <div className="flex flex-col items-center">
-            <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-widest mb-1">Distância</p>
-            <p className="text-white text-2xl font-black">{totalDistKm} <span className="text-amber-500 text-sm">km</span></p>
-          </div>
-          <div className="w-[1px] bg-white/10 h-10 self-center" />
-          <div className="flex flex-col items-center">
-            <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-widest mb-1">Tempo</p>
-            <p className="text-white text-2xl font-black">{totalTimeMin} <span className="text-amber-500 text-sm">min</span></p>
-          </div>
+        {/* Cinematic letterbox — bars retract from 30% → 5px */}
+        <div className="intro-bar-top absolute top-0 left-0 right-0 bg-[#050505] origin-top"
+          style={{ boxShadow: '0 4px 0 0 #f59e0b' }} />
+        <div className="intro-bar-bot absolute bottom-0 left-0 right-0 bg-[#050505] origin-bottom"
+          style={{ boxShadow: '0 -4px 0 0 #f59e0b' }} />
+
+        {/* Logo */}
+        <img src="/prorefuel_logo.png" alt="ProRefuel"
+          className="intro-logo absolute w-auto opacity-80 drop-shadow-2xl"
+          style={{ height: '3vh', top: '17%' }} />
+
+        {/* EPIC */}
+        <span className="intro-epic font-black uppercase italic select-none"
+          style={{
+            fontSize: 'clamp(3rem, 17vw, 5.8rem)',
+            letterSpacing: '-0.02em',
+            color: '#ffffff',
+            textShadow: '0 4px 40px rgba(0,0,0,1), 0 0 80px rgba(0,0,0,0.9)',
+            marginTop: '-2vh', lineHeight: 1,
+          }}>
+          EPIC
+        </span>
+
+        {/* RIDE */}
+        <span className="intro-ride font-black uppercase italic select-none"
+          style={{
+            fontSize: 'clamp(3rem, 17vw, 5.8rem)',
+            letterSpacing: '-0.02em',
+            color: '#f59e0b',
+            textShadow: '0 4px 40px rgba(0,0,0,1), 0 0 60px rgba(245,158,11,0.4)',
+            marginTop: '-0.1em', lineHeight: 1,
+          }}>
+          RIDE
+        </span>
+
+        {/* Separator — draws left→right */}
+        <div className="intro-sep rounded-full mt-5 mb-5"
+          style={{ height: '1.5px', background: 'linear-gradient(to right, transparent, rgba(245,158,11,0.8), transparent)' }} />
+
+        {/* Stats grid */}
+        <div className="flex w-[88%] text-center items-start justify-between">
+          {[
+            { val: totalDistKm, unit: 'KM', label: 'Distância', cls: 'intro-stat-0' },
+            { val: totalTimeMin, unit: 'MIN', label: 'Duração', cls: 'intro-stat-1' },
+            { val: avgSpeedKmh, unit: 'KM/H', label: 'Vel. Média', cls: 'intro-stat-2' },
+          ].map((s, i, arr) => (
+            <React.Fragment key={i}>
+              <div className={`${s.cls} flex flex-col items-center flex-1`}>
+                {/* Large value */}
+                <span className="text-white font-black tabular-nums leading-none"
+                  style={{ fontSize: 'clamp(1.8rem, 10vw, 3rem)', textShadow: '0 2px 20px rgba(0,0,0,1)' }}>
+                  {s.val}
+                </span>
+                {/* Unit pill */}
+                <span className="mt-1 px-2 py-0.5 rounded-full font-bold uppercase tracking-widest"
+                  style={{ fontSize: '9px', background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.35)', color: '#f59e0b' }}>
+                  {s.unit}
+                </span>
+                {/* Label */}
+                <span className="mt-1.5 font-semibold uppercase tracking-wider"
+                  style={{ fontSize: '8px', color: 'rgba(255,255,255,0.35)' }}>
+                  {s.label}
+                </span>
+              </div>
+              {i < arr.length - 1 && (
+                <div className="w-px self-stretch rounded-full mx-1"
+                  style={{ background: 'rgba(255,255,255,0.08)' }} />
+              )}
+            </React.Fragment>
+          ))}
         </div>
       </div>
     </div>

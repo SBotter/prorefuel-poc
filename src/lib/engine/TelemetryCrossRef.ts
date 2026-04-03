@@ -1,4 +1,6 @@
 import { GPSPoint } from "../media/GoProEngineClient";
+import { computeIntensity } from "./IntensityEngine";
+import { detectScenes, SceneCandidate } from "./SceneDetector";
 
 export interface HighlightSegment {
   startPoint: GPSPoint;
@@ -14,7 +16,10 @@ export interface EnhancedGPSPoint extends GPSPoint {
   cad?: number;
   power?: number;
   speed?: number; // km/h
+  accel?: number; // m/s^2 (Z-axis)
+  gyro?: number;  // rad/s (Yaw)
 }
+
 
 export interface ActionSegment extends HighlightSegment {
   title: string;
@@ -36,119 +41,97 @@ export class TelemetryCrossRef {
     if (videoPoints.length === 0 || activityPoints.length === 0) return [];
 
     const videoStart = videoPoints[0].time;
-    const videoEnd = videoPoints[videoPoints.length - 1].time;
+    const videoEnd   = videoPoints[videoPoints.length - 1].time;
 
-    // Calcula velocidades da atividade filtrando rúidos de GPS (Jitter)
-    const rawSpeeds: number[] = new Array(activityPoints.length).fill(0);
+    // ── Speed smoothing (unchanged — needed before IntensityEngine) ───────────
     for (let i = 1; i < activityPoints.length; i++) {
-        if (activityPoints[i].speed) {
-            // Se o arquivo já tem 'speed' gravado pelo Garmin, usa o dele!
-            rawSpeeds[i] = activityPoints[i].speed!;
-        } else {
-            const d = this.getDistance(activityPoints[i - 1], activityPoints[i]);
-            const t = (activityPoints[i].time - activityPoints[i - 1].time) / 1000;
-            // Descarta pulos absurdos de mais de 10s (ex: Pausou o relógio ou perdeu satélite)
-            if (t > 0 && t < 10) rawSpeeds[i] = (d / t) * 3.6;
-        }
+      if (!activityPoints[i].speed) {
+        const d = this.getDistance(activityPoints[i - 1], activityPoints[i]);
+        const t = (activityPoints[i].time - activityPoints[i - 1].time) / 1000;
+        if (t > 0 && t < 10) activityPoints[i].speed = (d / t) * 3.6;
+      }
     }
-
-    // Aplica o "Filtro de Média Móvel" (Rolling Average de janela 5) para suavizar
     const WINDOW = 5;
+    const rawSpeeds = activityPoints.map(p => p.speed ?? 0);
     for (let i = 0; i < activityPoints.length; i++) {
-       let sum = 0;
-       let count = 0;
-       for (let w = Math.max(0, i - WINDOW); w <= Math.min(activityPoints.length - 1, i + WINDOW); w++) {
-          sum += rawSpeeds[w];
-          count++;
-       }
-       // Só substitui a velocidade se o array nativo não tinha uma gravada por sensor magnético
-       if (!activityPoints[i].speed) {
-           activityPoints[i].speed = sum / count;
-       }
+      if (!activityPoints[i].speed) {
+        let sum = 0, count = 0;
+        for (let w = Math.max(0, i - WINDOW); w <= Math.min(activityPoints.length - 1, i + WINDOW); w++) {
+          sum += rawSpeeds[w]; count++;
+        }
+        activityPoints[i].speed = sum / count;
+      }
     }
 
-    // Busca os picos isolados APENAS DENTRO do recorte de tempo do Vídeo
-    let maxHrPt: EnhancedGPSPoint | null = null;
-    let maxPowerPt: EnhancedGPSPoint | null = null;
-    let maxSpeedPt: EnhancedGPSPoint | null = null;
+    // ── IntensityEngine + SceneDetector ───────────────────────────────────────
+    const intensity = computeIntensity(activityPoints);
+    const scenes    = detectScenes(activityPoints, intensity);
 
-    const videoPointsInGPX = activityPoints.filter(p => p.time >= videoStart && p.time <= videoEnd);
+    console.log(`[TelemetryCrossRef] Profile: ${intensity.profile} | Scenes detected: ${scenes.length}`);
+    scenes.forEach(s => console.log(`  ${s.id} ${s.label} [${s.startIndex}→${s.endIndex}] score=${s.score.toFixed(3)}`));
 
-    for (const pt of videoPointsInGPX) {
-      if (pt.hr && (!maxHrPt || pt.hr > maxHrPt.hr!)) maxHrPt = pt;
-      if (pt.power && (!maxPowerPt || pt.power > maxPowerPt.power!)) maxPowerPt = pt;
-      if (pt.speed && (!maxSpeedPt || pt.speed > maxSpeedPt.speed!)) maxSpeedPt = pt;
-    }
-
-    const segments: ActionSegment[] = [];
-
-    // Função local para checar se o pico fisiológico ocorreu ENQUANTO a GoPro gravava
-    const processPeak = (peak: EnhancedGPSPoint | null, titleStr: string, valueStr: string) => {
-      if (!peak) return;
-      // Estabelece a Cena do Clímax: 5s antes do pico até 5s depois (Total 10s)
-      const clipStart = peak.time - 5000;
-      const clipEnd = peak.time + 5000;
-
-      // O pico esteve dentro do vídeo?
-      if (peak.time >= videoStart && peak.time <= videoEnd) {
-        // Encontra o Index do mapa onde a cena começa e termina
-        let mapIdx = activityPoints.findIndex(p => p.time >= clipStart);
-        let endIdx = activityPoints.findIndex(p => p.time >= clipEnd);
-
-        if (mapIdx === -1) mapIdx = 0;
-        if (endIdx === -1) endIdx = activityPoints.length - 1;
-
-        // Identifica onde exatamente fazer o "seek" no MP4
-        const videoStartTimeSecs = Math.max(0, (clipStart - videoStart) / 1000);
-
-        segments.push({
-          startPoint: activityPoints[mapIdx],
-          endPoint: activityPoints[endIdx],
-          startIndex: mapIdx,
-          endIndex: endIdx,
-          videoStartTime: videoStartTimeSecs,
-          duration: 10,
-          title: titleStr,
-          value: valueStr
-        });
+    // ── Map SceneCandidate → ActionSegment (filter to video window) ───────────
+    const labelFor = (s: SceneCandidate): { title: string; value: string } => {
+      const m = s.metadata;
+      switch (s.id) {
+        case "C1": return { title: "SUBIDA BRUTAL",    value: `${m.avgGradient?.toFixed(1)}%` };
+        case "C2": return { title: "DESCIDA SELVAGEM", value: `${m.maxSpeed?.toFixed(1)} KM/H` };
+        case "C3": return { title: "SPRINT",           value: `+${m.speedDelta?.toFixed(1)} KM/H` };
+        case "C4": return { title: "TÉCNICO",          value: `${m.avgSpeed?.toFixed(1)} KM/H` };
+        case "C5": return { title: "ZONA VERMELHA",    value: `${Math.round(m.avgHR ?? 0)} BPM` };
+        case "C6": return { title: "ALÍVIO",           value: `${m.climbGradient?.toFixed(1)}% → ${m.descentSpeed?.toFixed(1)} KM/H` };
+        default:   return { title: s.label,            value: "" };
       }
     };
 
-    processPeak(maxHrPt, "MAX HEART RATE", `${maxHrPt?.hr} BPM`);
-    processPeak(maxPowerPt, "MAX POWER", `${maxPowerPt?.power} W`);
-    processPeak(maxSpeedPt, "MAX SPEED", `${maxSpeedPt?.speed?.toFixed(1)} KM/H`);
+    const segments: ActionSegment[] = [];
 
-    // Remove overlapping segments (Múltiplos picos próximos podem causar sobreposição no mesmo trecho temporal)
-    const filteredSegments: ActionSegment[] = [];
-    for (const seg of segments.sort((a, b) => a.startIndex - b.startIndex)) {
-      const isOverlapping = filteredSegments.some(f => seg.startIndex < f.endIndex && seg.endIndex > f.startIndex);
-      if (!isOverlapping) {
-        filteredSegments.push(seg);
-      }
-    }
+    for (const scene of scenes) {
+      const ptStart = activityPoints[scene.startIndex];
+      const ptEnd   = activityPoints[scene.endIndex];
 
-    // Fallback: Se não houve NENHUM pico biológico que calhasse com o vídeo, 
-    // ou se o GPX era simples demais sem sensores, toca o Vídeo Inteiro como 1 grande Highlight!
-    if (filteredSegments.length === 0) {
-      console.log("[TelemetryCrossRef] Nenhum pico cruzou com o vídeo. Gerando Full Action Segment.");
-      let mapStartIdx = activityPoints.findIndex(p => p.time >= videoStart);
-      let mapEndIdx = activityPoints.findIndex(p => p.time >= videoEnd);
+      // Only include scenes whose window overlaps with the video time range
+      if (ptEnd.time < videoStart || ptStart.time > videoEnd) continue;
 
-      if (mapStartIdx === -1) mapStartIdx = 0;
-      if (mapEndIdx === -1) mapEndIdx = activityPoints.length - 1;
+      // Clamp to video bounds
+      const clampedStart = Math.max(ptStart.time, videoStart);
+      const clampedEnd   = Math.min(ptEnd.time,   videoEnd);
+      const videoStartTimeSecs = Math.max(0, (clampedStart - videoStart) / 1000);
+      const duration           = Math.max(1, (clampedEnd - clampedStart) / 1000);
 
-      filteredSegments.push({
-        startPoint: activityPoints[mapStartIdx],
-        endPoint: activityPoints[mapEndIdx],
-        startIndex: mapStartIdx,
-        endIndex: mapEndIdx,
-        videoStartTime: 0,
-        duration: (videoEnd - videoStart) / 1000,
-        title: "",
-        value: ""
+      const { title, value } = labelFor(scene);
+
+      segments.push({
+        startPoint:     ptStart,
+        endPoint:       ptEnd,
+        startIndex:     scene.startIndex,
+        endIndex:       scene.endIndex,
+        videoStartTime: videoStartTimeSecs,
+        duration,
+        title,
+        value,
       });
     }
 
-    return filteredSegments;
+    // ── Fallback: no scenes crossed the video window → play full video ─────────
+    if (segments.length === 0) {
+      console.log("[TelemetryCrossRef] Nenhuma cena cruzou com o vídeo. Gerando Full Action Segment.");
+      let s = activityPoints.findIndex(p => p.time >= videoStart);
+      let e = activityPoints.findIndex(p => p.time >= videoEnd);
+      if (s === -1) s = 0;
+      if (e === -1) e = activityPoints.length - 1;
+      segments.push({
+        startPoint:     activityPoints[s],
+        endPoint:       activityPoints[e],
+        startIndex:     s,
+        endIndex:       e,
+        videoStartTime: 0,
+        duration:       (videoEnd - videoStart) / 1000,
+        title:          "",
+        value:          "",
+      });
+    }
+
+    return segments;
   }
 }

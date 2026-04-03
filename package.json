@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "exiftool-vendored": "^35.15.1",
     "gopro-telemetry": "^1.2.11",
     "gpmf-extract": "^0.3.3",
