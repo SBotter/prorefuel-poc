@@ -46,6 +46,8 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
   // Lightweight Canvas 2D mini-map (replaces Mapbox in ACTION mode)
   const miniMapCanvasRef = useRef<HTMLCanvasElement>(null);
+  // Audio context — created once per video element to avoid duplicate createMediaElementSource calls
+  const audioCtxRef = useRef<{ ctx: AudioContext; dest: MediaStreamAudioDestinationNode } | null>(null);
   const routeCacheRef = useRef<{
     canvas: HTMLCanvasElement;
     proj: { minLon: number; minLat: number; cosLat: number; scale: number; offX: number; offY: number; MH: number };
@@ -518,13 +520,41 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
     const chunks: Blob[] = [];
     const stream = offscreen.captureStream(30);
+
+    // ── Audio: bridge GoPro audio into the recording stream ───────────────────
+    // createMediaElementSource must only be called once per element — reuse ref.
+    if (videoEl && !audioCtxRef.current) {
+      try {
+        const ctx = new AudioContext();
+        const source = ctx.createMediaElementSource(videoEl);
+        const dest = ctx.createMediaStreamDestination();
+        source.connect(dest);
+        source.connect(ctx.destination); // preserve audio to speakers during export
+        audioCtxRef.current = { ctx, dest };
+      } catch (e) {
+        console.warn("[ProRefuel] AudioContext setup failed — recording video-only:", e);
+      }
+    }
+    // Resume context if browser suspended it (happens when created before user gesture)
+    audioCtxRef.current?.ctx.resume().catch(() => {});
+
+    // Combine canvas video track + GoPro audio track into one stream for MediaRecorder
+    let recordStream = stream;
+    if (audioCtxRef.current) {
+      const audioTrack = audioCtxRef.current.dest.stream.getAudioTracks()[0];
+      if (audioTrack) {
+        recordStream = new MediaStream([...stream.getVideoTracks(), audioTrack]);
+        console.log("[ProRefuel] Audio track added to recording stream ✓");
+      }
+    }
+
     let recorder: MediaRecorder;
     try {
       // 15 Mbps for high quality — enough for crystal clear 1080p
-      recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 15_000_000 });
+      recorder = new MediaRecorder(recordStream, { mimeType, videoBitsPerSecond: 15_000_000 });
     } catch {
-      try { recorder = new MediaRecorder(stream, { videoBitsPerSecond: 15_000_000 }); }
-      catch { recorder = new MediaRecorder(stream); }
+      try { recorder = new MediaRecorder(recordStream, { videoBitsPerSecond: 15_000_000 }); }
+      catch { recorder = new MediaRecorder(recordStream); }
     }
 
 
@@ -556,11 +586,16 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
         let exitCode: number;
         if (isH264Source) {
-          // Fast path: H264 already — just remux into MP4 container (virtually instant)
-          console.log("[ProRefuel] H264 source detected — remuxing (no transcode)...");
+          // Fast path: H264 video — copy video stream (no re-encode), transcode audio Opus→AAC.
+          // "-c copy" would embed Opus in MP4 which most players reject; audio must be AAC.
+          console.log("[ProRefuel] H264 source detected — remuxing video, transcoding audio Opus→AAC...");
           exitCode = await ffmpeg.exec([
             "-i", "input.webm",
-            "-c", "copy",           // stream copy, no re-encode
+            "-c:v", "copy",          // copy H264 video — lossless, instant
+            "-c:a", "aac",           // transcode Opus → AAC (MP4-compatible)
+            "-b:a", "192k",
+            "-ar", "48000",          // 48kHz — standard for video
+            "-ac", "2",              // stereo
             "-movflags", "+faststart",
             "output.mp4",
           ]);
@@ -575,8 +610,9 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
             "-preset", "ultrafast",  // fastest possible in WASM
             "-crf", "20",            // lower is better (20 is high quality)
             "-pix_fmt", "yuv420p",
+            "-c:a", "aac",           // encode audio track (GoPro original)
+            "-b:a", "128k",
             "-movflags", "+faststart",
-            "-an",
             "output.mp4",
           ]);
 
@@ -1642,7 +1678,6 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
             src={videoUrl}
             preload="auto"
             className="w-full h-full object-cover"
-            muted
             playsInline
           />
         )}
