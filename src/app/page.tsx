@@ -19,7 +19,7 @@ export default function ProRefuelPage() {
   const [statusMsg, setStatusMsg] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const mapEngineRef = useRef<{ start: () => void; startRecording: () => void; isRecording: boolean }>(null);
+  const mapEngineRef = useRef<{ start: () => void; startRecording: () => Promise<void>; isRecording: boolean }>(null);
 
 
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

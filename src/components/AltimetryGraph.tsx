@@ -22,15 +22,15 @@ export function AltimetryGraph({ points, currentIndex }: Props) {
     }
     const totalDist = cumDist[cumDist.length - 1] || 1;
 
-    let minE = Infinity, maxE = -Infinity;
+    let minE = Infinity, maxE = -Infinity, peakIdx = 0;
     for (let i = 0; i < points.length; i++) {
       const ele = points[i].ele;
       if (ele < minE) minE = ele;
-      if (ele > maxE) maxE = ele;
+      if (ele > maxE) { maxE = ele; peakIdx = i; }
     }
     const eRange = maxE - minE || 1;
 
-    return { cumDist, totalDist, minE, maxE, eRange };
+    return { cumDist, totalDist, minE, maxE, eRange, peakIdx };
   }, [points]);
 
   // Watch canvas size via ResizeObserver — invalidates static cache on resize
@@ -61,7 +61,7 @@ export function AltimetryGraph({ points, currentIndex }: Props) {
     const canvas = canvasRef.current;
     if (!canvas || !data || !points[currentIndex]) return;
 
-    const { cumDist, totalDist, minE, maxE, eRange } = data;
+    const { cumDist, totalDist, minE, maxE, eRange, peakIdx } = data;
     const { W, H } = dimsRef.current;
     if (W === 0 || H === 0) return;
 
@@ -118,6 +118,32 @@ export function AltimetryGraph({ points, currentIndex }: Props) {
       ac.shadowBlur = 0;
       ac.restore();
 
+
+      // Peak altitude indicator
+      const pkX = distToX(cumDist[peakIdx]);
+      const pkY = eleToY(points[peakIdx].ele);
+      ac.save();
+      ac.setLineDash([3, 3]);
+      ac.strokeStyle = 'rgba(251,191,36,0.5)';
+      ac.lineWidth   = 1;
+      ac.beginPath();
+      ac.moveTo(pkX, ALT_PAD_TOP);
+      ac.lineTo(pkX, pkY);
+      ac.stroke();
+      ac.setLineDash([]);
+      ac.fillStyle = '#fbbf24';
+      ac.beginPath();
+      ac.arc(pkX, pkY, 4, 0, Math.PI * 2);
+      ac.fill();
+      ac.shadowColor = 'rgba(0,0,0,0.9)';
+      ac.shadowBlur  = 8;
+      ac.font        = `700 ${Math.round(W * 0.026)}px sans-serif`;
+      ac.fillStyle   = '#fbbf24';
+      ac.textAlign   = 'center';
+      ac.textBaseline = 'alphabetic';
+      ac.fillText(`▲ ${Math.round(points[peakIdx].ele)}m`, Math.min(Math.max(pkX, 40), W - 40), pkY - 10);
+      ac.shadowBlur  = 0;
+      ac.restore();
 
       // X axis labels
       ac.font        = `600 ${Math.round(W * 0.022)}px sans-serif`;
