@@ -4,6 +4,7 @@ import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { EnhancedGPSPoint, ActionSegment } from "@/lib/engine/TelemetryCrossRef";
 import { FrameCompositor } from "@/lib/engine/FrameCompositor";
+import { playIntroWithDataImpacts, getToneOutputStream, stopAll, disconnectToneOutputStream } from "@/lib/audio/AudioEngine";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -109,15 +110,32 @@ export function CanvasRenderer({ activityPoints, highlights, videoFile, onComple
           videoEl.play().catch(() => {});
         }
 
-        // Setup MediaRecorder
-        let recorder: MediaRecorder;
+        // ── Cinematic audio for Engine 2 ──────────────────────────────────────
+        // Play intro audio (wind + heartbeat) and tap Tone.js output into a
+        // MediaStream so the MediaRecorder captures it in the exported file.
+        let audioTracks: MediaStreamTrack[] = [];
         try {
-          const stream = masterCanvas.captureStream(30);
-          recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+          await playIntroWithDataImpacts();
+          const audioStream = await getToneOutputStream();
+          audioTracks = audioStream.getAudioTracks();
         } catch {
-          // Fallback sem mimeType específico
-          const stream = masterCanvas.captureStream(30);
-          recorder = new MediaRecorder(stream);
+          // Audio capture failed — record video-only rather than abort
+        }
+
+        // Setup MediaRecorder with video + audio
+        let recorder: MediaRecorder;
+        const videoStream = masterCanvas.captureStream(30);
+        const combinedStream = audioTracks.length > 0
+          ? new MediaStream([...videoStream.getVideoTracks(), ...audioTracks])
+          : videoStream;
+        try {
+          recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm;codecs=vp8,opus' });
+        } catch {
+          try {
+            recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm' });
+          } catch {
+            recorder = new MediaRecorder(videoStream); // final fallback: video only
+          }
         }
         mediaRecorderRef.current = recorder;
 
@@ -126,6 +144,9 @@ export function CanvasRenderer({ activityPoints, highlights, videoFile, onComple
         };
 
         recorder.onstop = () => {
+          stopAll().catch(() => {});
+          disconnectToneOutputStream();
+
           const blob = new Blob(chunksRef.current, { type: 'video/webm' });
           const url = URL.createObjectURL(blob);
           onComplete(url);
@@ -189,6 +210,8 @@ export function CanvasRenderer({ activityPoints, highlights, videoFile, onComple
       }
       cancelAnimationFrame(requestRef.current);
       map.remove();
+      stopAll().catch(() => {});
+      disconnectToneOutputStream();
     };
   }, [activityPoints.length]);
 

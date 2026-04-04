@@ -223,7 +223,6 @@ export class StorytellingProcessor {
           endIndex:       segEndIndex,
           durationSec:    narrativeAct.targetDurationSec,
           mapSpeedFactor,
-          title:          narrativeAct.scenes[0]?.label,
           value:          narrativeAct.scenes[0] ? valueFromScene(narrativeAct.scenes[0]) : undefined,
         });
       }

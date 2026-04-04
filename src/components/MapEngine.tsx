@@ -9,6 +9,7 @@ import { ActionSegment } from "@/lib/engine/TelemetryCrossRef";
 import { StoryPlan } from "@/lib/engine/StorytellingProcessor";
 import { AltimetryGraph } from "./AltimetryGraph";
 import { TelemetryHUD } from "./TelemetryHUD";
+import { playIntroWithDataImpacts, playBrandExit, initTone, getToneOutputStream } from "@/lib/audio/AudioEngine";
 
 interface MapEngineProps {
   activityPoints: any[];
@@ -42,7 +43,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
   const requestRef = useRef<number>(0);
   const recordingRef = useRef<{ recorder: MediaRecorder; compositeLoop: number } | null>(null);
   const autoRecordRef = useRef(autoRecord);
-  const startRecordingRef = useRef<(() => void) | null>(null);
+  const startRecordingRef = useRef<(() => Promise<void>) | null>(null);
 
   // Lightweight Canvas 2D mini-map (replaces Mapbox in ACTION mode)
   const miniMapCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -52,17 +53,18 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     canvas: HTMLCanvasElement;
     proj: { minLon: number; minLat: number; cosLat: number; scale: number; offX: number; offY: number; MH: number };
   } | null>(null);
+  // Garante que o áudio da brand só dispara uma vez (pre-trigger 2s antes)
+  const brandAudioFiredRef = useRef(false);
+  // Pre-brand fade: 0→1 nos 2s antes do BRAND (sincronizado com audio preroll)
+  const preBrandFadeRef   = useRef(0);
 
   const [viewMode, setViewMode] = useState<"INTRO" | "MAP" | "ACTION" | "BRAND">("BRAND");
+  const [preBrandFade, setPreBrandFade] = useState(0);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
    const [isRecording, setIsRecording] = useState(false);
    const [isTranscoding, setIsTranscoding] = useState(false);
    const [isLongActivity, setIsLongActivity] = useState(false);
-  const [sceneLabel, setSceneLabel] = useState<string | null>(null);
-  const sceneLabelRef = useRef<string | null>(null);
-  const [mapLabel, setMapLabel] = useState<string | null>(null);
-  const mapLabelRef = useRef<string | null>(null);
 
 
   const state = useRef({
@@ -256,6 +258,17 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     setViewMode("INTRO");
     state.current.viewMode = "INTRO";
 
+    // Resetar flags a cada nova experiência
+    brandAudioFiredRef.current = false;
+    preBrandFadeRef.current    = 0;
+    setPreBrandFade(0);
+
+    // Calcular tempo total dos segmentos (= quando o BRAND começa)
+    const brandStartSec = storyPlan.segments.reduce((sum: number, s: any) => sum + s.durationSec, 0);
+
+    // ── Audio: prewarm AudioContext on this user gesture, then play intro ──────
+    playIntroWithDataImpacts().catch(() => {}); // prewarm + play; swallow if browser blocks
+
     const animate = (now: number) => {
       if (!state.current.isStarted || !mapRef.current || !storyPlan) return;
       
@@ -272,6 +285,25 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           break;
         }
         runningTime += s.durationSec;
+      }
+
+      // Pre-trigger: disparar áudio da brand 2s antes para fade-in suave
+      if (!brandAudioFiredRef.current && elapsedTotal >= brandStartSec - 2) {
+        brandAudioFiredRef.current = true;
+        playBrandExit(2).catch(() => {});
+      }
+
+      // Pre-brand fade overlay — escurece o vídeo nos 2s antes do BRAND
+      // Sincronizado com o preroll de áudio: ambos começam em brandStartSec-2
+      if (elapsedTotal >= brandStartSec - 2 && elapsedTotal < brandStartSec) {
+        const t = (elapsedTotal - (brandStartSec - 2)) / 2; // 0→1 em 2s
+        // easeInCubic: começa lento, acelera — cinematográfico
+        const eased = t * t * t;
+        const fade  = eased * 0.88; // máximo 88% → logo emerge do escuro
+        if (fade !== preBrandFadeRef.current) {
+          preBrandFadeRef.current = fade;
+          setPreBrandFade(fade);
+        }
       }
 
       if (!currentSeg) {
@@ -335,34 +367,11 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       }
 
       if (currentSeg.type !== state.current.viewMode) {
-         state.current.viewMode = currentSeg.type as any;
-         setViewMode(currentSeg.type as any);
+        const incoming = currentSeg.type as string;
+        state.current.viewMode = incoming as any;
+        setViewMode(incoming as any);
       }
 
-      // Scene label detection for ACTION mode
-      if (currentSeg.type === "ACTION" && storyPlan.detectedScenes) {
-        const scene = storyPlan.detectedScenes.find(s => s.startIndex <= idx && idx <= s.endIndex);
-        const newLabel = scene?.label ?? null;
-        if (newLabel !== sceneLabelRef.current) {
-          sceneLabelRef.current = newLabel;
-          setSceneLabel(newLabel);
-        }
-      } else if (sceneLabelRef.current !== null) {
-        sceneLabelRef.current = null;
-        setSceneLabel(null);
-      }
-
-      // Map label detection for MAP mode (MUDANÇA 4)
-      if (currentSeg.type === "MAP") {
-        const newMapLabel = currentSeg.title ?? null;
-        if (newMapLabel !== mapLabelRef.current) {
-          mapLabelRef.current = newMapLabel;
-          setMapLabel(newMapLabel);
-        }
-      } else if (mapLabelRef.current !== null) {
-        mapLabelRef.current = null;
-        setMapLabel(null);
-      }
 
       if (videoRef.current) {
         const vid = videoRef.current;
@@ -493,7 +502,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
 
 
-  const startRecording = () => {
+  const startRecording = async () => {
     const mapCanvas = mapContainerRef.current?.querySelector("canvas") as HTMLCanvasElement | null;
     const videoEl = videoRef.current;
     if (!mapCanvas) return;
@@ -507,8 +516,12 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
     const ctx = offscreen.getContext("2d")!;
 
-    // Prefer H264-in-webm (Chrome supports this on Windows) → enables instant remux instead of slow transcode
+    // Prefer H264-in-webm + opus audio → enables instant remux instead of slow transcode
     const preferredTypes = [
+      "video/webm;codecs=avc1,opus",
+      "video/webm;codecs=h264,opus",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
       "video/webm;codecs=avc1",
       "video/webm;codecs=h264",
       "video/webm;codecs=vp9",
@@ -521,24 +534,49 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     const chunks: Blob[] = [];
     const stream = offscreen.captureStream(30);
 
-    // ── Audio: bridge GoPro audio into the recording stream ───────────────────
+    // ── Audio: pre-warm Tone.js so its AudioContext exists before we bridge it ─
+    // This must happen before createMediaElementSource (each can only be called once).
+    let toneStream: MediaStream | null = null;
+    try {
+      await initTone();
+      toneStream = await getToneOutputStream();
+    } catch (e) {
+      console.warn("[ProRefuel] Tone.js pre-warm failed — cinematic audio will not be recorded:", e);
+    }
+
+    // ── Audio: bridge GoPro audio + Tone.js into the recording stream ──────────
     // createMediaElementSource must only be called once per element — reuse ref.
     if (videoEl && !audioCtxRef.current) {
       try {
-        const ctx = new AudioContext();
-        const source = ctx.createMediaElementSource(videoEl);
-        const dest = ctx.createMediaStreamDestination();
+        const audioCtx = new AudioContext();
+        const source = audioCtx.createMediaElementSource(videoEl);
+        const dest = audioCtx.createMediaStreamDestination();
         source.connect(dest);
-        source.connect(ctx.destination); // preserve audio to speakers during export
-        audioCtxRef.current = { ctx, dest };
+        source.connect(audioCtx.destination); // GoPro audio → speakers too
+
+        // Bridge Tone.js stream (different AudioContext) into the recording dest
+        if (toneStream) {
+          const toneSource = audioCtx.createMediaStreamSource(toneStream);
+          toneSource.connect(dest);
+          console.log("[ProRefuel] Tone.js audio bridged into recording stream ✓");
+        }
+
+        audioCtxRef.current = { ctx: audioCtx, dest };
       } catch (e) {
         console.warn("[ProRefuel] AudioContext setup failed — recording video-only:", e);
       }
+    } else if (audioCtxRef.current && toneStream) {
+      // audioCtx already exists (e.g. second recording) — add Tone bridge if not yet present
+      try {
+        const toneSource = audioCtxRef.current.ctx.createMediaStreamSource(toneStream);
+        toneSource.connect(audioCtxRef.current.dest);
+      } catch { /* already bridged */ }
     }
+
     // Resume context if browser suspended it (happens when created before user gesture)
     audioCtxRef.current?.ctx.resume().catch(() => {});
 
-    // Combine canvas video track + GoPro audio track into one stream for MediaRecorder
+    // Combine canvas video track + audio track into one stream for MediaRecorder
     let recordStream = stream;
     if (audioCtxRef.current) {
       const audioTrack = audioCtxRef.current.dest.stream.getAudioTracks()[0];
@@ -1527,6 +1565,15 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         drawTelemetry(idx);
         drawLogo();
 
+        // Pre-brand fade overlay — drawn last so it covers everything
+        const fade = preBrandFadeRef.current;
+        if (fade > 0) {
+          ctx.globalAlpha = fade;
+          ctx.fillStyle = "#050505";
+          ctx.fillRect(0, 0, W, H);
+          ctx.globalAlpha = 1;
+        }
+
       } else {
 
         // Scenario A: Short Activity or INTRO — Map layout
@@ -1634,27 +1681,6 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         `}
       />
 
-      {/* 1a. MAP LABEL — segment title overlay during MAP mode */}
-      {viewMode === "MAP" && mapLabel && (
-        <div
-          key={mapLabel}
-          className="absolute bottom-[18%] left-0 right-0 flex justify-center pointer-events-none z-[35]"
-          style={{ animation: "sceneLabelIn 400ms ease-out forwards" }}
-        >
-          <span style={{
-            fontFamily: "sans-serif",
-            fontWeight: 700,
-            fontSize: "clamp(0.9rem, 4vw, 1.4rem)",
-            letterSpacing: "0.2em",
-            textTransform: "uppercase",
-            color: "rgba(255,255,255,0.7)",
-            textShadow: "0 2px 16px rgba(0,0,0,1)",
-          }}>
-            {mapLabel}
-          </span>
-        </div>
-      )}
-
       {/* 1b. MINI-MAP Canvas 2D (ACTION mode only) — polyline + dot, Mapbox-free, low CPU */}
       <canvas
         ref={miniMapCanvasRef}
@@ -1669,7 +1695,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
       {/* 2. VÍDEO FULLSCREEN */}
       <div
-        className={`absolute inset-0 z-20 bg-black overflow-hidden transition-opacity duration-1000 ease-out ${viewMode === "ACTION" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        className={`absolute inset-0 z-20 bg-black overflow-hidden transition-opacity ease-out pointer-events-none ${viewMode === "ACTION" ? "opacity-100 duration-300" : viewMode === "BRAND" ? "opacity-0 duration-[1800ms]" : "opacity-0 duration-1000"}`}
       >
 
         {videoUrl && (
@@ -1682,26 +1708,14 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           />
         )}
 
-        {viewMode === "ACTION" && sceneLabel !== null && (
-          <div
-            key={sceneLabel}
-            className="absolute top-[12%] left-0 right-0 flex justify-center pointer-events-none z-[45]"
-            style={{ animation: "sceneLabelIn 300ms ease-out forwards" }}
-          >
-            <span style={{
-              fontFamily: "sans-serif",
-              fontWeight: 900,
-              fontSize: "clamp(1.2rem, 6vw, 2rem)",
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-              color: "#f59e0b",
-              textShadow: "0 2px 24px rgba(0,0,0,1), 0 0 40px rgba(245,158,11,0.4)",
-            }}>
-              {sceneLabel}
-            </span>
-          </div>
-        )}
       </div>
+
+      {/* 2.1 PRE-BRAND FADE — escurece o vídeo nos 2s antes do logo */}
+      {/* Sincronizado com audio preroll: começa junto, cobre tudo acima do vídeo */}
+      <div
+        className="absolute inset-0 z-[45] pointer-events-none bg-[#050505]"
+        style={{ opacity: preBrandFade }}
+      />
 
       {/* 2.5 GRÁFICO DE ALTIMETRIA — full width, bottom, always */}
       <div
@@ -1736,12 +1750,11 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[22px] w-auto object-contain" />
       </div>
 
-      {/* 4. BRANDING FINAL */}
-      <div className={`absolute inset-0 z-50 flex items-center justify-center overflow-hidden pointer-events-none`}>
-         <div className={`bg-[#050505] rounded-full aspect-square transition-all duration-[1200ms] ease-in-out origin-center ${
-           viewMode === "BRAND" ? "w-[300%] opacity-100" : "w-[0%] opacity-0"
-         }`} />
-      </div>
+      {/* 4. BRANDING FINAL — fundo preto full-screen */}
+      {/* Fade-in rápido (300ms) para cobrir o mapa antes que o vídeo acabe de desaparecer */}
+      <div className={`absolute inset-0 z-50 bg-[#050505] pointer-events-none transition-opacity duration-[300ms] ease-in ${
+        viewMode === "BRAND" ? "opacity-100" : "opacity-0"
+      }`} />
       <div
         className={`absolute inset-0 z-50 flex flex-col items-center justify-center transition-opacity duration-1000 delay-[600ms] ${viewMode === "BRAND" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
       >
@@ -1751,12 +1764,14 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         <img src="/prorefuel_logo.png" alt="ProRefuel" className="w-1/2 max-w-[200px] drop-shadow-[0_0_30px_rgba(245,158,11,0.2)] animate-pulse" />
       </div>
 
-      {/* Cut flash — re-keyed on viewMode so it replays on every transition */}
-      <div
-        key={`flash-${viewMode}`}
-        className="absolute inset-0 pointer-events-none bg-[#050505]"
-        style={{ zIndex: 9999, animation: 'cutFlash 680ms forwards' }}
-      />
+      {/* Cut flash — apenas em transições que não são BRAND (BRAND usa fade-to-black próprio) */}
+      {viewMode !== "BRAND" && (
+        <div
+          key={`flash-${viewMode}`}
+          className="absolute inset-0 pointer-events-none bg-[#050505]"
+          style={{ zIndex: 9999, animation: 'cutFlash 680ms forwards' }}
+        />
+      )}
 
       {/* 0. INTRO SCREEN — cinematic animated */}
       <div
