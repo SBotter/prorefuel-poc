@@ -58,13 +58,13 @@ interface ActDurations {
 }
 
 function resolveActDurations(targetVideoSec: number): ActDurations {
-  const BOOKEND_SEC = 0; // bookends (INTRO + BRAND) are managed by StorytellingProcessor
-  const remaining = Math.max(0, targetVideoSec - BOOKEND_SEC);
+  const remaining = Math.max(0, targetVideoSec);
+  // CLIMAX gets the lion's share — video is the star, map acts are brief transitions
   return {
-    BUILD:   remaining * 0.20,
-    TENSION: remaining * 0.25,
-    CLIMAX:  remaining * 0.35,
-    RELIEF:  remaining * 0.20,
+    BUILD:   remaining * 0.10,
+    TENSION: remaining * 0.15,
+    CLIMAX:  remaining * 0.60,
+    RELIEF:  remaining * 0.15,
   };
 }
 
