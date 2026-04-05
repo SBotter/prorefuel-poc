@@ -60,6 +60,8 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
   // Lightweight Canvas 2D mini-map (replaces Mapbox in ACTION mode)
   const miniMapCanvasRef = useRef<HTMLCanvasElement>(null);
+  // Engine 1: snapshot of outgoing frame for crossfade transition
+  const clipTransCanvasRef = useRef<HTMLCanvasElement>(null);
   // Audio context — created once per video element to avoid duplicate createMediaElementSource calls
   const audioCtxRef = useRef<{ ctx: AudioContext; dest: MediaStreamAudioDestinationNode } | null>(null);
   const routeCacheRef = useRef<{
@@ -78,6 +80,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
   const [preBrandFade, setPreBrandFade] = useState(0);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [clipIdx, setClipIdx] = useState(0); // increments on each ACTION clip change → triggers cutFlash
    const [isRecording, setIsRecording] = useState(false);
    const [isTranscoding, setIsTranscoding] = useState(false);
    const [isLongActivity, setIsLongActivity] = useState(false);
@@ -101,6 +104,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     lastPreSeekTarget: -1,   // videoStartTime we last pre-seeked to (avoids repeat seeks)
     lastHudUpdateTime: 0,    // throttle setCurrentIndex React re-renders to ~10fps
     lastMiniMapUpdate: 0,    // throttle Canvas 2D mini-map redraws to ~5fps
+    currentSegIdx: -1,       // current segment index — shared with compositeLoop for transitions
   });
 
   const { totalDistKm, totalTimeStr, avgSpeedKmh } = React.useMemo(() => {
@@ -296,6 +300,8 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     // ── Audio: prewarm AudioContext on this user gesture, then play intro ──────
     playIntroWithDataImpacts().catch(() => {}); // prewarm + play; swallow if browser blocks
 
+    let prevActionSegIdx = -1; // closure: tracks last ACTION segIdx for crossfade detection
+
     const animate = (now: number) => {
       if (!state.current.isStarted || !mapRef.current || !storyPlan) return;
       
@@ -400,12 +406,43 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       }
 
 
+      // Always expose current segment index so compositeLoop can detect clip changes
+      state.current.currentSegIdx = segIdx;
+
       if (videoRef.current) {
         const vid = videoRef.current;
         if (currentSeg.type === "ACTION" && typeof currentSeg.videoStartTime === 'number') {
-          // Enter ACTION: seek only once per segment, only if off by > 0.5s (pre-seek may have already done it)
+          // Enter ACTION: seek only once per segment, only if off by > 0.5s
           if (state.current.lastHighlightSyncIndex !== segIdx) {
             state.current.lastHighlightSyncIndex = segIdx;
+
+            // Capture outgoing frame before seeking (object-cover math)
+            const snapCanvas = clipTransCanvasRef.current;
+            const isIntraAction = prevActionSegIdx >= 0; // true when switching between ACTION clips
+            if (isIntraAction && snapCanvas && vid.readyState >= 2 && vid.videoWidth > 0) {
+              const sc = snapCanvas.getContext('2d')!;
+              const vW = vid.videoWidth, vH = vid.videoHeight;
+              const cW = snapCanvas.clientWidth || 375;
+              const cH = snapCanvas.clientHeight || 667;
+              snapCanvas.width = cW; snapCanvas.height = cH;
+              const scl = Math.max(cW / vW, cH / vH);
+              const dW = vW * scl, dH = vH * scl;
+              sc.clearRect(0, 0, cW, cH);
+              sc.drawImage(vid, (cW - dW) / 2, (cH - dH) / 2, dW, dH);
+              // Restart clipTransOut on the snapshot canvas without re-keying (prevents black flash)
+              snapCanvas.style.animation = 'none';
+              void snapCanvas.offsetWidth;
+              snapCanvas.style.animation = 'clipTransOut 900ms cubic-bezier(0.645,0.045,0.355,1) forwards';
+              setTimeout(() => { snapCanvas.style.animation = 'none'; sc.clearRect(0, 0, cW, cH); }, 950);
+              // Apply incoming animation directly on video element
+              vid.style.animation = 'none';
+              void vid.offsetWidth; // force reflow to restart animation
+              vid.style.animation = 'clipTransIn 900ms 120ms cubic-bezier(0.645,0.045,0.355,1) both';
+              setTimeout(() => { vid.style.animation = ''; }, 1100);
+            }
+
+            prevActionSegIdx = segIdx; // track for next clip change detection
+            setClipIdx(prev => prev + 1);
             if (Math.abs(vid.currentTime - currentSeg.videoStartTime) > 0.5) {
               vid.currentTime = currentSeg.videoStartTime;
             }
@@ -1694,6 +1731,15 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     const rhythm = storyPlan?.narrativePlan?.editingRhythm ?? "MEDIUM";
     const TRANS_DUR = rhythm === "FAST" ? 280 : rhythm === "SLOW" ? 750 : 480;
 
+    // ── Clip-to-clip cinematic crossfade ─────────────────────────────────────
+    let prevCompositeSegIdx = -1;
+    let clipTransStart2 = -1;
+    const CLIP_TRANS_DUR = 900;
+    const CLIP_TRANS_DELAY_B = 120;
+    const easeInOutCubic = (t: number) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const clipSnapCanvas = new OffscreenCanvas(W, H);
+    const clipSnapCtx = clipSnapCanvas.getContext('2d')!;
+
     const compositeLoop = (now: DOMHighResTimeStamp) => {
       if (!recordingRef.current) return;
 
@@ -1713,6 +1759,25 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         transCtx.drawImage(offscreen, 0, 0);
         transStart = now;
         prevVm = vm;
+      }
+
+      // ── Clip-to-clip cinematic crossfade detection (BEFORE clear) ───────────
+      // ctx.canvas still contains the previous frame — snapshot it before clearing
+      {
+        const csi = (state.current as any).currentSegIdx ?? -1;
+        if (vm === "ACTION") {
+          if (csi !== prevCompositeSegIdx) {
+            if (prevCompositeSegIdx !== -1 && clipTransStart2 < 0) {
+              // Snapshot the outgoing frame (previous frame still in canvas)
+              clipSnapCtx.drawImage(ctx.canvas, 0, 0);
+              clipTransStart2 = now;
+            }
+            prevCompositeSegIdx = csi;
+          }
+        } else {
+          prevCompositeSegIdx = -1;
+          clipTransStart2 = -1;
+        }
       }
 
       // Background
@@ -1739,25 +1804,51 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       } else if (vm === "ACTION") {
         // GO PRO VIDEO CENTRIC (Highlight clips only)
         // compositeLoop NEVER touches play/pause — animate loop is the sole video controller
+
+        // Draw outgoing clip A as BASE LAYER (full opacity → transparent, scale 1→1.03)
+        // Must be drawn BEFORE clip B so B appears on top as it fades in
+        if (clipTransStart2 > 0) {
+          const elapsed = now - clipTransStart2;
+          if (elapsed >= CLIP_TRANS_DUR) {
+            clipTransStart2 = -1;
+          } else {
+            const t = easeInOutCubic(Math.min(elapsed / CLIP_TRANS_DUR, 1));
+            const alphaA = 1 - t;
+            const scaleA = 1.0 + 0.03 * t;
+            const sw = W * scaleA, sh = H * scaleA;
+            ctx.save();
+            ctx.globalAlpha = alphaA;
+            ctx.drawImage(clipSnapCanvas, (W - sw) / 2, (H - sh) / 2, sw, sh);
+            ctx.restore();
+          }
+        }
+
+        // Draw incoming clip B (with crossfade-in animation if transition active)
         if (videoEl) {
           try {
-            // object-fit: cover — fill canvas height, crop sides (matches Engine 1 DOM behavior)
             const vW = videoEl.videoWidth || 1920;
             const vH = videoEl.videoHeight || 1080;
-            const canvasAR = W / H;   // 1080/1920 = 0.5625 (portrait)
-            const vidAR = vW / vH;    // e.g. 1920/1080 = 1.778 (landscape)
+            const canvasAR = W / H;
+            const vidAR = vW / vH;
             let sx = 0, sy = 0, sw = vW, sh = vH;
-            if (vidAR > canvasAR) {
-              // Video wider than canvas: crop left/right
-              sw = Math.round(vH * canvasAR);
-              sx = Math.round((vW - sw) / 2);
-            } else {
-              // Video taller than canvas: crop top/bottom
-              sh = Math.round(vW / canvasAR);
-              sy = Math.round((vH - sh) / 2);
-            }
+            if (vidAR > canvasAR) { sw = Math.round(vH * canvasAR); sx = Math.round((vW - sw) / 2); }
+            else { sh = Math.round(vW / canvasAR); sy = Math.round((vH - sh) / 2); }
+
             if (videoEl.readyState >= 2) {
-              ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H);
+              // Incoming clip B animation
+              let bAlpha = 1, bScl = 1;
+              if (clipTransStart2 > 0) {
+                const elapsed = now - clipTransStart2;
+                const tRaw = Math.max(0, (elapsed - CLIP_TRANS_DELAY_B) / CLIP_TRANS_DUR);
+                const t = easeInOutCubic(Math.min(tRaw, 1));
+                bAlpha = t;
+                bScl = 1.05 - 0.05 * t;
+              }
+              ctx.save();
+              ctx.globalAlpha = bAlpha;
+              const dw = W * bScl, dh = H * bScl;
+              ctx.drawImage(videoEl, sx, sy, sw, sh, (W - dw) / 2, (H - dh) / 2, dw, dh);
+              ctx.restore();
             }
           } catch { /* cross-origin or not-ready — skip frame */ }
         }
@@ -1865,6 +1956,14 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           from { opacity: 0; transform: translateY(-8px) scale(0.96); }
           to   { opacity: 1; transform: translateY(0)    scale(1);    }
         }
+        @keyframes clipTransOut {
+          0%   { opacity: 1; transform: scale(1.00); }
+          100% { opacity: 0; transform: scale(1.03); }
+        }
+        @keyframes clipTransIn {
+          0%   { opacity: 0; transform: scale(1.05); }
+          100% { opacity: 1; transform: scale(1.00); }
+        }
 
         .intro-bar-top  { animation: introBarTop  700ms cubic-bezier(0.16,1,0.3,1) 0ms    both; }
         .intro-bar-bot  { animation: introBarBot  700ms cubic-bezier(0.16,1,0.3,1) 0ms    both; }
@@ -1906,12 +2005,24 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         className={`absolute inset-0 z-20 bg-black overflow-hidden transition-opacity ease-out pointer-events-none ${viewMode === "ACTION" ? "opacity-100 duration-300" : viewMode === "BRAND" ? "opacity-0 duration-[1800ms]" : "opacity-0 duration-1000"}`}
       >
 
+        {/* Outgoing clip snapshot — z-index 0 (below video) — animates out while new clip fades in */}
+        <canvas
+          ref={clipTransCanvasRef}
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            width: '100%', height: '100%',
+            transformOrigin: 'center center',
+            zIndex: 0,
+          }}
+        />
+
         {videoUrl && (
           <video
             ref={videoRef}
             src={videoUrl}
             preload="auto"
-            className="w-full h-full object-cover"
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ zIndex: 1 }}
             playsInline
           />
         )}
@@ -1968,12 +2079,12 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         <img src="/prorefuel_logo.png" alt="ProRefuel" className="w-1/2 max-w-[200px] drop-shadow-[0_0_30px_rgba(245,158,11,0.2)] animate-pulse" />
       </div>
 
-      {/* Cut flash — only on non-BRAND transitions (BRAND has its own fade-to-black) */}
+      {/* Cut flash — mode transitions + within-ACTION clip changes (BRAND has its own fade) */}
       {viewMode !== "BRAND" && (
         <div
           key={`flash-${viewMode}`}
           className="absolute inset-0 pointer-events-none bg-[#050505]"
-          style={{ zIndex: 9999, animation: 'cutFlash 680ms forwards' }}
+          style={{ zIndex: 9999, animation: 'cutFlash 520ms forwards' }}
         />
       )}
 

@@ -129,15 +129,16 @@ export class StorytellingProcessor {
 
         // ACTION clips from detectAllPeaks — within video window, budget-aware
         if (rawSegments.length > 0) {
-          const MIN_CLIP_SEC = 4;
-          const MAX_CLIP_SEC = 20;
-          const climaxBudget = narrativeAct.targetDurationSec;
+          const MIN_CLIP_SEC = 3;
+          // isLongActivity: no per-clip cap — clips extend as needed to fill full ACTION budget
+          const MAX_CLIP_SEC = isLongActivity ? Number.MAX_SAFE_INTEGER : 12;
+          // isLongActivity: MAP acts are all skipped, so CLIMAX owns the full ACTION budget
+          const climaxBudget = isLongActivity ? ACTION_BUDGET : narrativeAct.targetDurationSec;
 
-          // Cap clip count so every clip gets at least MIN_CLIP_SEC on screen
-          const maxClips = Math.max(1, Math.floor(climaxBudget / MIN_CLIP_SEC));
+          // Budget is the only hard cap — use all detected peaks, best scores first
           const selectedSegs = [...rawSegments]
             .sort((a, b) => b.normalizedScore - a.normalizedScore)
-            .slice(0, maxClips)
+            .filter((_, i) => i * MIN_CLIP_SEC < climaxBudget)
             .sort((a, b) => a.startIndex - b.startIndex); // restore chronological order
 
           // Proportional budget — higher score = more screen time
@@ -157,6 +158,14 @@ export class StorytellingProcessor {
               seg: d.seg,
               durationSec: Math.min(MAX_CLIP_SEC, d.durationSec + reclaimedBudget * d.seg.normalizedScore / remainScore),
             }));
+          }
+
+          // Budget fill guarantee: if total clips < climaxBudget, extend last clip to close the gap
+          // This handles: few peaks detected + MAX_CLIP_SEC cap eating into budget
+          const allocatedTotal = distributed.reduce((s, d) => s + d.durationSec, 0);
+          const fillGap = climaxBudget - allocatedTotal;
+          if (fillGap > 0.1 && distributed.length > 0) {
+            distributed[distributed.length - 1].durationSec += fillGap;
           }
 
           for (const { seg, durationSec } of distributed) {
@@ -229,27 +238,31 @@ export class StorytellingProcessor {
     }
 
     // Redistribute MAP budget reclaimed from long-activity skips → ACTION clips get more screen time
-    if (reclaimedMapBudget > 0) {
+    // isLongActivity: CLIMAX already claimed ACTION_BUDGET directly, nothing to redistribute
+    if (reclaimedMapBudget > 0 && !isLongActivity) {
       const actionSegs = segments.filter(s => s.type === "ACTION");
       const totalActionDur = actionSegs.reduce((s, seg) => s + seg.durationSec, 0) || 1;
       for (const seg of actionSegs) {
         seg.durationSec += reclaimedMapBudget * (seg.durationSec / totalActionDur);
       }
-      console.log(`[ProRefuel] Long activity: redistributed ${reclaimedMapBudget.toFixed(1)}s from MAP → ${actionSegs.length} ACTION clips`);
+      console.log(`[ProRefuel] Redistributed ${reclaimedMapBudget.toFixed(1)}s from MAP → ${actionSegs.length} ACTION clips`);
     }
 
     // Fallback: no ACTION segments (rawSegments empty = no video GPS or no peaks found)
     if (segments.filter(s => s.type === "ACTION").length === 0 && videoPoints.length > 0) {
-      // Anchor the activity index to the start of the video so map/telemetry stay in sync
       const vidIdx = videoStart > 0
         ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStart))
         : Math.floor(activityPoints.length / 2);
+      // isLongActivity: use full ACTION_BUDGET (no MAP to share it with)
+      const fallbackDur = isLongActivity
+        ? ACTION_BUDGET
+        : (narrativePlan.acts.find(a => a.act === "CLIMAX")?.targetDurationSec ?? Math.round(ACTION_BUDGET * 0.60));
       segments.push({
         type: "ACTION",
         startIndex: vidIdx,
         endIndex: Math.min(vidIdx + 60, activityPoints.length - 1),
         videoStartTime: 0,
-        durationSec: narrativePlan.acts.find(a => a.act === "CLIMAX")?.targetDurationSec ?? Math.round(ACTION_BUDGET * 0.30),
+        durationSec: fallbackDur,
         title: "RIDE",
         value: "ACTION"
       });
@@ -326,13 +339,23 @@ export class StorytellingProcessor {
         const gyroMotion = p.gyro ? Math.abs(p.gyro) : 0;
         const motionBonus = (accelMotion * 0.2) + (gyroMotion * 0.05);
 
-        // FORMULA 2.0: Intensity = SpeedRatio * (1 + absGrade/15) + HrRatio + MotionBonus
-        const speedRatio = (p.speed || 0) / avgSpeed;
-        const hrRatio = p.hr ? (p.hr / avgHr) : 1;
-        const powerRatio = p.power ? (p.power / avgPower) : 1;
-        
-        // Motion and Speed are the primary "Action" drivers
-        let intensity = (speedRatio * (1 + Math.abs(grade)/12)) + (hrRatio * 0.3) + (powerRatio * 0.3) + motionBonus;
+        const speedRatio  = (p.speed || 0) / avgSpeed;
+        const hrRatio     = p.hr    ? (p.hr    / avgHr)    : 1;
+        const powerRatio  = p.power ? (p.power / avgPower) : 1;
+
+        // Base formula: speed × grade bonus + HR + power + motion
+        let intensity = (speedRatio * (1 + Math.abs(grade) / 12)) + (hrRatio * 0.3) + (powerRatio * 0.3) + motionBonus;
+
+        // Technical descent bonus: slow speed on negative grade = braking / difficult terrain.
+        // Without this, low speedRatio suppresses the score even on steep descents.
+        // Target weight: equal to or higher than a fast descent (DOWNHILL FLYER).
+        //   DOWNHILL FLYER example (speed=1.5×, grade=-5%) base ≈ 2.7
+        //   Tech descent  example (speed=0.6×, grade=-8%) base ≈ 1.6 → with bonus ≈ 3.3
+        if (grade < -3 && speedRatio < 0.9) {
+            const gradeBonus  = (Math.abs(grade) / 8) * 1.4;   // steeper = much higher bonus
+            const brakeBonus  = (1 - speedRatio) * 0.7;        // slower relative to avg = harder braking
+            intensity += gradeBonus + brakeBonus;
+        }
 
         return { ...p, intensity, grade, hrDelta, accelMotion };
     });
@@ -365,10 +388,15 @@ export class StorytellingProcessor {
             if (p.grade < -4 && (p.speed || 0) > avgSpeed * 1.5) {
                 title = "DOWNHILL FLYER";
                 value = `${(p.speed || 0).toFixed(1)} KM/H (${p.grade.toFixed(1)}%)`;
+            } else if (p.grade < -3 && (p.speed || 0) < avgSpeed * 0.9) {
+                // Slow speed + negative grade = braking on descent = technical/cinematic
+                title = "TECHNICAL DESCENT";
+                value = `${Math.abs(p.grade).toFixed(1)}% — ${(p.speed || 0).toFixed(1)} KM/H`;
             } else if (p.grade > 4 && (p.speed || 0) > avgSpeed * 1.1) {
                 title = "POWER ATTACK";
                 value = `${(p.speed || 0).toFixed(1)} KM/H (${p.grade.toFixed(1)}%)`;
             } else if (p.grade < -5 && p.hrDelta > 2) {
+                // HR rising on descent = emergency braking or very technical corner
                 title = "TECHNICAL DESCENT";
                 value = `${p.hr} BPM (${p.grade.toFixed(1)}%)`;
             } else if (p.grade > 8) {
@@ -381,15 +409,15 @@ export class StorytellingProcessor {
     }
 
     // 6. Winner Selection (Editorial Selection)
-    // Sort by intensity score and pick top N while keeping a distance of 30s between them
+    // Sort by intensity score and pick top N while keeping a minimum distance between them
     candidates.sort((a, b) => b.score - a.score);
-    
+
     const winners: { pt: ScoredPoint; title: string; value: string; score: number }[] = [];
-    const MIN_GAP_MS = 25000; // 25s gap between clip centers
+    const MIN_GAP_MS = 10000; // 10s minimum gap between clip centers — allow dense coverage
 
     candidates.forEach(c => {
         const tooClose = winners.some(w => Math.abs(w.pt.time - c.pt.time) < MIN_GAP_MS);
-        if (!tooClose && winners.length < 8) {
+        if (!tooClose && winners.length < 15) {
             winners.push(c);
         }
     });
@@ -402,8 +430,8 @@ export class StorytellingProcessor {
     const segments: ScoredActionSegment[] = [];
     const createSeg = (w: { pt: ScoredPoint; title: string; value: string; score: number }) => {
         const normalizedScore = (w.score - minWinScore) / scoreRange;
-        // MUDANÇA 1: variable clip window — 8s (low intensity) to 18s (max), scaled by rhythm
-        const clipSec = Math.round((8 + normalizedScore * 10) * rhythmFactor);
+        // Clip window: 4s (low intensity) to 12s (max), scaled by rhythm — shorter = more clips
+        const clipSec = Math.round((4 + normalizedScore * 8) * rhythmFactor);
         const radiusMs = (clipSec / 2) * 1000;
 
         const tStart = w.pt.time - radiusMs;

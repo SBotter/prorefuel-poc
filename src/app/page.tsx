@@ -168,13 +168,18 @@ export default function ProRefuelPage() {
     const parser = new DOMParser();
     const xml = parser.parseFromString(text, "text/xml");
     
-    // Helper to read Garmin/Strava extension fields
-    const getExt = (pt: Element, tag: string) => {
-       const el = pt.getElementsByTagName(tag)[0] || 
-                  pt.getElementsByTagName(`gpxtpx:${tag}`)[0] || 
+    // Helper to read Garmin/Strava extension fields.
+    // Falls back to localName matching so <ns3:hr>, <gpxtpx:hr>, etc. are found
+    // regardless of how the browser resolves namespace-prefixed tag names.
+    const getExt = (pt: Element, tag: string): number | undefined => {
+       const el = pt.getElementsByTagName(tag)[0] ||
+                  pt.getElementsByTagName(`gpxtpx:${tag}`)[0] ||
                   pt.getElementsByTagName(`ns3:${tag}`)[0] ||
-                  pt.getElementsByTagName(`tpx:${tag}`)[0];
-       return el ? parseFloat(el.textContent || "0") : undefined;
+                  pt.getElementsByTagName(`tpx:${tag}`)[0] ||
+                  Array.from(pt.getElementsByTagName('*')).find(e => e.localName === tag);
+       if (!el) return undefined;
+       const val = parseFloat(el.textContent?.trim() || "");
+       return isNaN(val) ? undefined : val;
     };
 
     const pts = Array.from(xml.querySelectorAll("trkpt")).map((pt: Element) => ({
@@ -332,7 +337,7 @@ export default function ProRefuelPage() {
                         <CheckCircle2 className="text-green-500 mb-2" />
                         <span className="text-xs font-bold uppercase tracking-widest text-center">
                           Video Mapped<br/>
-                          <span className="text-[10px] text-amber-500 mt-1">[{highlights.length} Action {highlights.length === 1 ? "Scene" : "Scenes"}]</span>
+                          <span className="text-[10px] text-amber-500 mt-1">[{(storyPlan?.segments.filter(s => s.type === "ACTION").length ?? highlights.length)} Action {(storyPlan?.segments.filter(s => s.type === "ACTION").length ?? highlights.length) === 1 ? "Scene" : "Scenes"}]</span>
                         </span>
                       </>
                     ) : (
