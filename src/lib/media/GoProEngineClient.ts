@@ -5,12 +5,17 @@ export interface GPSPoint {
   time: number;
 }
 
+export interface TelemetryResult {
+  points: GPSPoint[];
+  cameraModel: string; // e.g. "GoPro Hero9 Black" — empty string if unavailable
+}
+
 export class GoProEngineClient {
   /**
-   * Extrai Metadados de GPS alocando o processamento em um Web Worker 
-   * para não travar a "Main Thread" (evita UI Freezes em vídeos de 4GB+)
+   * Extracts GPS metadata by delegating processing to a Web Worker
+   * to avoid blocking the Main Thread (prevents UI freezes on 4GB+ videos).
    */
-  static async extractTelemetry(file: File): Promise<GPSPoint[]> {
+  static async extractTelemetry(file: File): Promise<TelemetryResult> {
     console.log(`[GoProEngineClient] Delegando ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB) para Web Worker...`);
     
     return new Promise((resolve, reject) => {
@@ -19,7 +24,8 @@ export class GoProEngineClient {
 
       worker.onmessage = (e) => {
         if (e.data.success) {
-          const downsampled = e.data.points;
+          const downsampled   = e.data.points;
+          const cameraModel   = e.data.cameraModel || "";
 
           // --- DEBUGGING: Salvar secretamente na pasta temp_gpx do servidor de testes ---
           try {
@@ -38,8 +44,8 @@ export class GoProEngineClient {
           }
           // --------------------------------------------------------------------------------
 
-          console.log(`[GoProEngineClient] Web Worker finalizou! ${downsampled.length} pontos retornados.`);
-          resolve(downsampled);
+          console.log(`[GoProEngineClient] Web Worker finalizou! ${downsampled.length} pontos | câmera: "${cameraModel}"`);
+          resolve({ points: downsampled, cameraModel });
         } else {
           console.error("[GoProEngineClient] Erro no Worker:", e.data.error);
           reject(new Error(e.data.error));

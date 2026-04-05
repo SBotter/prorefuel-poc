@@ -83,7 +83,7 @@ export function CanvasRenderer({ activityPoints, highlights, videoFile, onComple
         }
       });
 
-      setTimeout(() => {
+      setTimeout(async () => {
         setStatus("Starting Frame Compositor...");
         setProgress(10);
 

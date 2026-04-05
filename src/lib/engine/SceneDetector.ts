@@ -135,7 +135,7 @@ export function detectClimb(
     id: "C1", type: "CLIMB",
     startIndex: bestStart, endIndex: end,
     score: 0,   // filled by detectScenes
-    label: "SUBIDA BRUTAL",
+    label: "BRUTAL CLIMB",
     metadata: { maxHR, avgGradient, windowSec: 20 },
   };
 }
@@ -183,7 +183,7 @@ export function detectDescent(
     id: "C2", type: "DESCENT",
     startIndex: bestStart, endIndex: end,
     score: 0,
-    label: "DESCIDA SELVAGEM",
+    label: "WILD DESCENT",
     metadata: { maxSpeed, avgGradient, windowSec: 15 },
   };
 }
@@ -279,7 +279,7 @@ export function detectTechnical(
     id: "C4", type: "TECHNICAL",
     startIndex: bestStart, endIndex: end,
     score: 0,
-    label: "TÉCNICO",
+    label: "TECHNICAL",
     metadata: { avgAccel: sumAccel / len, avgSpeed: sumSpeed / len, windowSec: 10 },
   };
 }
@@ -338,7 +338,7 @@ export function detectSuffer(
     id: "C5", type: "SUFFER",
     startIndex: bestStart, endIndex: end,
     score: 0,
-    label: "ZONA VERMELHA",
+    label: "RED ZONE",
     metadata: { avgHR: sumHR / len, avgSpeed: sumSpd / len, windowSec: 15 },
   };
 }
@@ -428,7 +428,7 @@ export function detectContrast(
     id: "C6", type: "CONTRAST",
     startIndex: bestPair.sceneStart, endIndex: bestPair.sceneEnd,
     score: 0,
-    label: "ALÍVIO",
+    label: "FLOW",
     metadata: {
       climbGradient: bestPair.cg,
       descentSpeed:  bestPair.ds,
