@@ -61,13 +61,13 @@ export async function stopAll(): Promise<void> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// CENA 1 — INTRO (6500ms): VENTO + CORAÇÃO
+// SCENE 1 — INTRO (6500ms): WIND + HEARTBEAT
 // ══════════════════════════════════════════════════════════════════════════════
 //
-//   t=0ms       Vento começa (white noise, fade-in 2s)
-//   t=1500ms    Coração começa a bater (~73bpm)
-//   t=5000ms    Vento começa fade-out lento (invade início do MP4)
-//   t=7500ms    Reverb desaparece completamente
+//   t=0ms       Wind starts (white noise, 2s fade-in)
+//   t=1500ms    Heartbeat starts (~73bpm)
+//   t=5000ms    Wind begins slow fade-out (bleeds into MP4 start)
+//   t=7500ms    Reverb fully gone
 
 export async function playIntroWithDataImpacts(): Promise<void> {
   const Tone = await getTone();
@@ -78,7 +78,7 @@ export async function playIntroWithDataImpacts(): Promise<void> {
 
   const now = Tone.now() + 0.08;
 
-  // ── Layer 1: VENTO AMBIENTAL (white noise + LFO breathing) ────────────────
+  // ── Layer 1: AMBIENT WIND (white noise + LFO breathing) ─────────────────────
   const windRev  = new Tone.Reverb({ decay: 2.0, wet: 0.52 }).toDestination();
   const windComp = new Tone.Compressor({ ratio: 3, attack: 0.15, release: 0.3 }).connect(windRev);
   const windFade = new Tone.Gain(0).connect(windComp);
@@ -105,10 +105,10 @@ export async function playIntroWithDataImpacts(): Promise<void> {
   track(wind, windHPF, windLPF, windMod, windFade, windComp, windRev, windAmplLFO, windFilterLFO);
   releaseAfter([wind, windHPF, windLPF, windMod, windFade, windComp, windRev, windAmplLFO, windFilterLFO], 11000);
 
-  // ── Layer 2: CORAÇÃO BATENDO (t=1500ms → t=5800ms) ────────────────────────
+  // ── Layer 2: HEARTBEAT (t=1500ms → t=5800ms) ────────────────────────────────
   //
-  // Entra quando o logo já apareceu (t=500ms) e os dados estão sendo revelados.
-  // ~73bpm, 6 batidas, volume decresce suavemente com o fade-out do vento.
+  // Enters after the logo appears (t=500ms) while stats are being revealed.
+  // ~73bpm, 6 beats, volume gently decreases with the wind fade-out.
 
   const hbInterval = 0.82;
   const hbStart    = 1.5;
@@ -123,10 +123,10 @@ export async function playIntroWithDataImpacts(): Promise<void> {
   }
 }
 
-// ─── Heartbeat — lub-dub cinematográfico ─────────────────────────────────────
+// ─── Heartbeat — cinematic lub-dub ───────────────────────────────────────────
 //
-// Duas batidas em sequência (lub + dub) com sweep descendente.
-// volume: 1.0 = intensidade máxima, vai decrescendo a cada batida.
+// Two sequential beats (lub + dub) with descending frequency sweep.
+// volume: 1.0 = max intensity, decreases with each beat.
 
 function scheduleHeartbeat(Tone: T, time: number, volume: number): void {
   const hbRev  = new Tone.Reverb({ decay: 1.8, wet: 0.52 }).toDestination();
@@ -157,28 +157,28 @@ function scheduleHeartbeat(Tone: T, time: number, volume: number): void {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// CENA 3 — BRAND EXIT (3500ms — BRAND_SEC = 3.5s)
+// SCENE 3 — BRAND EXIT (3500ms — BRAND_SEC = 3.5s)
 // ══════════════════════════════════════════════════════════════════════════════
 //
-// Timing derivado do StorytellingProcessor + MapEngine:
+// Timing derived from StorytellingProcessor + MapEngine:
 //   BRAND_SEC = 3.5s  (StorytellingProcessor.ts:35)
 //   Logo fade-in delay = 600ms  (MapEngine.tsx: delay-[600ms])
-//   Logo totalmente visível = 1600ms (600ms delay + 1000ms transition)
+//   Logo fully visible = 1600ms (600ms delay + 1000ms transition)
 //
 // Timeline:
-//   t=0ms       Vento de fundo começa (mesmo vento da intro, continua a jornada)
-//   t=600ms     💣 BOOM DE CANHÃO — sincronizado com aparecimento do logo!
-//   t=1500ms    Fade-out do vento começa (lento, suave)
-//   t=2000ms    Fade-out total — tudo some gracefully
-//   t=3500ms    Silêncio — reverb 1.8s continua no ar (memória auditiva)
+//   t=0ms       Background wind starts (same wind from intro — journey continues)
+//   t=600ms     💣 CANNON BOOM — synced with logo appearance!
+//   t=1500ms    Wind fade-out begins (slow, smooth)
+//   t=2000ms    Full fade-out — everything dissolves gracefully
+//   t=3500ms    Silence — 1.8s reverb tail lingers (auditory memory)
 
-// prerollSec: segundos antes da transição BRAND em que a função é chamada.
-// Com prerollSec=2 (default de uso):
-//   now+0.0  → vento + swell iniciam (durante o vídeo ainda)
-//   now+2.0  → BRAND começa (transição suave, não seca)
-//   now+2.6  → LOGO aparece → impacto profundo + acorde que "abre"
-//   now+5.5  → BRAND termina
-//   now+6.5  → tudo dissolve com reverb
+// prerollSec: seconds before the BRAND transition when this function is called.
+// With prerollSec=2 (default):
+//   now+0.0  → wind + swell start (while video is still playing)
+//   now+2.0  → BRAND begins (smooth transition, no hard cut)
+//   now+2.6  → LOGO appears → deep impact + opening chord
+//   now+5.5  → BRAND ends
+//   now+6.5  → everything dissolves with reverb
 export async function playBrandExit(prerollSec = 0): Promise<void> {
   const Tone = await getTone();
 
@@ -189,10 +189,10 @@ export async function playBrandExit(prerollSec = 0): Promise<void> {
   const p    = prerollSec;
   const logo = now + p + 0.6; // momento exato do logo (delay-[600ms] do BRAND)
 
-  // ── Layer 1: VENTO — fade-in suave durante o preroll ──────────────────────
+  // ── Layer 1: WIND — gentle fade-in during preroll ────────────────────────────
   //
-  // Já está presente quando o BRAND começa — transição orgânica, sem corte seco.
-  // Fade-out termina 1s após o BRAND para não cortar abruptamente.
+  // Already present when BRAND starts — organic transition, no hard cut.
+  // Fade-out ends 1s after BRAND to avoid an abrupt stop.
 
   const windRev  = new Tone.Reverb({ decay: 2.2, wet: 0.50 }).toDestination();
   const windFade = new Tone.Gain(0).connect(windRev);
@@ -219,11 +219,11 @@ export async function playBrandExit(prerollSec = 0): Promise<void> {
   track(wind, windHPF, windLPF, windMod, windFade, windRev, windAmplLFO, windFilterLFO);
   releaseAfter([wind, windHPF, windLPF, windMod, windFade, windRev, windAmplLFO, windFilterLFO], (p + 7) * 1000);
 
-  // ── Layer 2: SWELL DE TENSÃO — cresce durante o preroll, pico no logo ──────
+  // ── Layer 2: TENSION SWELL — builds during preroll, peaks at logo ────────────
   //
-  // White noise filtrado que vai abrindo o LPF progressivamente —
-  // sensação de algo chegando, anticipação crescente antes do logo.
-  // Dissolve logo após o impacto (o logo "resolve" a tensão).
+  // Filtered white noise with progressive LPF opening —
+  // feeling of something arriving, rising anticipation before the logo.
+  // Dissolves right after impact (the logo "resolves" the tension).
 
   const swellRev    = new Tone.Reverb({ decay: 3.0, wet: 0.68 }).toDestination();
   const swellGain   = new Tone.Gain(0).connect(swellRev);
@@ -241,13 +241,13 @@ export async function playBrandExit(prerollSec = 0): Promise<void> {
   track(swell, swellFilter, swellGain, swellRev);
   releaseAfter([swell, swellFilter, swellGain, swellRev], (p + 5) * 1000);
 
-  // ── Layer 3: IMPACTO DO LOGO — 3 camadas simultâneas, 100% sine ─────────────
+  // ── Layer 3: LOGO IMPACT — 3 simultaneous layers, 100% sine ─────────────────
   //
-  //   A) Sub-cannon  60→40Hz  — sente no peito (físico, não é nota)
-  //   B) Mid-punch  200→80Hz  — corpo da explosão, compressor para punch
-  //   C) Snap-click 600→300Hz — detonador, ataque < 8ms, duração 60ms
+  //   A) Sub-cannon  60→40Hz  — felt in the chest (physical, not a note)
+  //   B) Mid-punch  200→80Hz  — body of the explosion, compressor for punch
+  //   C) Snap-click 600→300Hz — detonator, attack < 8ms, duration 60ms
   //
-  // As 3 disparam EXATAMENTE em `logo` (sincronizado com delay-[600ms] do CSS).
+  // All 3 fire EXACTLY at `logo` (synced with CSS delay-[600ms]).
 
   // A) Sub-cannon
   const subRev  = new Tone.Reverb({ decay: 2.5, wet: 0.65 }).toDestination();
@@ -300,12 +300,12 @@ export async function playBrandExit(prerollSec = 0): Promise<void> {
 
   // ── Layer 4: HERO BLOOM (logo + 60ms) ────────────────────────────────────────
   //
-  // Acorde PolySynth sawtooth — C major add9 (C3·G3·C4·D4).
-  // Entra 60ms após o impacto para não competir com o punch.
-  // Filtro lowpass 6kHz: warm, sem brilho metálico.
-  // Reverb 2.0s: espaço cinematográfico que "abre" junto com o logo.
+  // PolySynth sawtooth chord — C major add9 (C3·G3·C4·D4).
+  // Enters 60ms after impact to avoid competing with the punch.
+  // Lowpass filter 6kHz: warm, no metallic brightness.
+  // Reverb 2.0s: cinematic space that "opens" with the logo.
   //
-  // Sensação: "Uau, que bonito!" — premium + aspiracional.
+  // Feeling: "Wow, beautiful!" — premium + aspirational.
 
   const bloomRev    = new Tone.Reverb({ decay: 2.0, wet: 0.60 }).toDestination();
   const bloomFilter = new Tone.Filter({ type: "lowpass", frequency: 6000, rolloff: -24 }).connect(bloomRev);

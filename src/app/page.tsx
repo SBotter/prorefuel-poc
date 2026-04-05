@@ -8,11 +8,59 @@ import { GoProEngineClient } from "@/lib/media/GoProEngineClient";
 import { StorytellingProcessor, StoryPlan } from "@/lib/engine/StorytellingProcessor";
 
 
+interface DeviceInfo {
+  label: string;    // display name, e.g. "Garmin Edge 530" or "GoPro Hero9 Black"
+  logoFile: string; // e.g. "/garmin_logo.png" — empty string = no logo, show text only
+}
+
+interface ActivityMeta {
+  name: string;
+  location?: string;
+  gpsDevice?: DeviceInfo;
+  camera?: DeviceInfo;
+}
+
+// ── Brand → logo file mapping ────────────────────────────────────────────────
+// Add the matching PNG to /public to enable logo display.
+// File must be transparent-background, white/light variant for dark canvas.
+
+const LOGO_BASE = "/devices/logos";
+
+function detectGPSDevice(creatorRaw: string): DeviceInfo {
+  const c     = creatorRaw.toLowerCase();
+  const clean = creatorRaw.replace(/\s*[-–]\s*(www\.\S+|\d[\d.]+.*)$/i, "").trim();
+
+  if (c.includes("garmin"))  return { label: clean || "Garmin",  logoFile: `${LOGO_BASE}/garmin_logo.svg` };
+  if (c.includes("suunto"))  return { label: clean || "Suunto",  logoFile: `${LOGO_BASE}/suunto_logo.svg` };
+  if (c.includes("strava"))  return { label: "Strava",           logoFile: `${LOGO_BASE}/strava_logo.svg` };
+  if (c.includes("wahoo"))   return { label: clean || "Wahoo",   logoFile: "" }; // add wahoo_logo.svg to enable
+  if (c.includes("polar"))   return { label: clean || "Polar",   logoFile: "" };
+  if (c.includes("coros"))   return { label: clean || "Coros",   logoFile: "" };
+  if (c.includes("komoot"))  return { label: "Komoot",           logoFile: "" };
+  if (c.includes("bryton"))  return { label: clean || "Bryton",  logoFile: "" };
+  if (c.includes("lezyne"))  return { label: clean || "Lezyne",  logoFile: "" };
+  if (clean) return { label: clean, logoFile: "" };
+  return { label: "", logoFile: "" };
+}
+
+function detectCamera(cameraModel: string): DeviceInfo {
+  const c = cameraModel.toLowerCase();
+
+  if (c.includes("gopro"))    return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
+  if (c.includes("dji"))      return { label: cameraModel, logoFile: "" }; // add dji_logo.svg to enable
+  if (c.includes("insta360")) return { label: cameraModel, logoFile: "" };
+  if (c.includes("sony"))     return { label: cameraModel, logoFile: "" };
+  if (c.includes("apple") || c.includes("iphone")) return { label: cameraModel, logoFile: "" };
+  if (cameraModel) return { label: cameraModel, logoFile: "" };
+  return { label: "", logoFile: "" };
+}
+
 export default function ProRefuelPage() {
   const [activityPoints, setActivityPoints] = useState<any[]>([]);
   const [highlights, setHighlights] = useState<ActionSegment[]>([]);
   const [storyPlan, setStoryPlan] = useState<StoryPlan | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [activityMeta, setActivityMeta] = useState<ActivityMeta>({ name: "EPIC RIDE" });
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [step, setStep] = useState<"UPLOAD" | "READY" | "EXPERIENCE">("UPLOAD");
@@ -30,9 +78,9 @@ export default function ProRefuelPage() {
     setUploadError(null);
     setVideoFile(file);
     setProgress(0);
-    setStatusMsg("Iniciando processamento...");
+    setStatusMsg("Loading your ride...");
 
-    // Simulação progressiva visual (fake load para encobrir o ArrayBuffer)
+    // Progressive visual simulation (fake load to cover the ArrayBuffer read)
     const estimatedSecs = Math.max(8, file.size / (1024 * 1024 * 15) + 5);
     const interval = setInterval(() => {
       setProgress((prev) => {
@@ -42,24 +90,44 @@ export default function ProRefuelPage() {
     }, 100);
 
     try {
-      setStatusMsg("Lendo arquivo no navegador...");
-      await new Promise(resolve => setTimeout(resolve, 150)); // Libera a UI para renderizar o spinner
+      setStatusMsg("Scanning every frame of your ride...");
+      await new Promise(resolve => setTimeout(resolve, 150)); // Yield to let the spinner render
       
-      const videoPoints = await GoProEngineClient.extractTelemetry(file);
+      const { points: videoPoints, cameraModel } = await GoProEngineClient.extractTelemetry(file);
+      console.log("[Video] GPMF cameraModel:", JSON.stringify(cameraModel));
 
-      setStatusMsg("Mapeando Clímax...");
-      await new Promise(resolve => setTimeout(resolve, 50)); // Yield
-
-      const segments = TelemetryCrossRef.findHighlights(activityPoints, videoPoints);
-      if (!segments || segments.length === 0) {
-        throw new Error("Nenhum dado de GPS pôde ser cruzado do vídeo.");
+      // If GPMF didn't return a device name, detect from filename patterns
+      let resolvedCameraModel = cameraModel;
+      if (!resolvedCameraModel) {
+        const fn = file.name.toUpperCase();
+        if (/^G[HXL]\d{6}\.MP4$/.test(fn) || fn.startsWith("GOPR") || fn.startsWith("GP")) {
+          resolvedCameraModel = "GoPro";
+        } else if (fn.startsWith("DJI_") || fn.includes("DJI")) {
+          resolvedCameraModel = "DJI";
+        } else if (fn.includes("INSTA360") || fn.startsWith("_INSP")) {
+          resolvedCameraModel = "Insta360";
+        } else if (fn.startsWith("SONY") || fn.startsWith("C0") || fn.endsWith(".MTS")) {
+          resolvedCameraModel = "Sony";
+        }
+        if (resolvedCameraModel) console.log("[Video] Camera detected from filename:", resolvedCameraModel);
       }
 
-      setStatusMsg("Gerando 'The Brain' (JSON)...");
-      const plan = StorytellingProcessor.generatePlan(activityPoints, videoPoints);
+      const camera = resolvedCameraModel ? detectCamera(resolvedCameraModel) : undefined;
+      if (camera?.label) setActivityMeta(prev => ({ ...prev, camera }));
+
+      setStatusMsg("Finding your best moments...");
+      await new Promise(resolve => setTimeout(resolve, 50)); // Yield
+
+      const segments = TelemetryCrossRef.findHighlights(activityPoints, videoPoints as any);
+      if (!segments || segments.length === 0) {
+        throw new Error("No GPS data could be matched from the video.");
+      }
+
+      setStatusMsg("Crafting your cinematic story...");
+      const plan = StorytellingProcessor.generatePlan(activityPoints, videoPoints as any);
       setStoryPlan(plan);
 
-      // Salva o JSON para avaliação do usuário no backend
+      // Save JSON for backend evaluation
       try {
         await fetch("/api/save-story-plan", {
            method: "POST",
@@ -80,12 +148,12 @@ export default function ProRefuelPage() {
 
     } catch (error: any) {
       clearInterval(interval);
-      const msg: string = error.message || "Erro ao processar o vídeo.";
-      // Translate common technical errors into user-friendly Portuguese
+      const msg: string = error.message || "Failed to process video.";
+      // Map technical errors to user-friendly English messages
       const friendly = msg.includes("GPS") || msg.includes("telemetria") || msg.includes("GPMF") || msg.includes("GPS5")
-        ? "Este vídeo não possui telemetria GPS embutida. Use um vídeo gravado com GoPro Hero 5 ou superior com GPS ativado."
+        ? "This video has no embedded GPS telemetry. Use a video recorded with GoPro Hero 5 or later with GPS enabled."
         : msg.includes("null") || msg.includes("undefined") || msg.includes("Cannot read")
-        ? "O arquivo de vídeo parece corrompido ou em formato não suportado."
+        ? "The video file appears corrupted or in an unsupported format."
         : msg;
       setUploadError(friendly);
       setVideoFile(null);
@@ -100,7 +168,7 @@ export default function ProRefuelPage() {
     const parser = new DOMParser();
     const xml = parser.parseFromString(text, "text/xml");
     
-    // Função helper para puxar extensões do Garmin/Strava
+    // Helper to read Garmin/Strava extension fields
     const getExt = (pt: Element, tag: string) => {
        const el = pt.getElementsByTagName(tag)[0] || 
                   pt.getElementsByTagName(`gpxtpx:${tag}`)[0] || 
@@ -117,9 +185,54 @@ export default function ProRefuelPage() {
       hr: getExt(pt, "hr"),
       cad: getExt(pt, "cad"),
       power: getExt(pt, "power") || getExt(pt, "watts"),
-      speed: getExt(pt, "speed"), // Pode estar gravado pelas extensoes GPX
+      speed: getExt(pt, "speed"),
     }));
     setActivityPoints(pts);
+
+    // ── Extract activity metadata from GPX ─────────────────────────────────────
+    // querySelector("trk > name") fails on namespaced GPX (Garmin, Strava, etc.)
+    // getElementsByTagName ignores namespaces and works universally.
+    const allNameEls = Array.from(xml.getElementsByTagName("name"));
+    const trackName  =
+      // Prefer <trk><name> — skip root <gpx> or <metadata> names if they appear first
+      allNameEls.find(el => el.parentElement?.localName === "trk")?.textContent?.trim() ||
+      allNameEls.find(el => el.textContent?.trim())?.textContent?.trim() ||
+      "EPIC RIDE";
+
+    console.log("[GPX] trackName detected:", trackName);
+
+    const creatorRaw = xml.documentElement.getAttribute("creator") || "";
+    const gpsDevice  = creatorRaw ? detectGPSDevice(creatorRaw) : undefined;
+
+    // Reverse geocode first GPS point → city, state
+    let location = "";
+    if (pts.length > 0) {
+      try {
+        const { lat, lon } = pts[0];
+        const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+        const resp = await fetch(
+          `https://api.mapbox.com/geocoding/v5/mapbox.places/${lon},${lat}.json?types=place,region&access_token=${token}`
+        );
+        if (resp.ok) {
+          const geo = await resp.json();
+          const feature = geo.features?.[0];
+          if (feature) {
+            const city = feature.text || "";
+            const regionCtx = (feature.context as any[])?.find((c: any) => c.id?.startsWith("region"));
+            const stateRaw  = regionCtx?.short_code ?? regionCtx?.text ?? "";
+            const state     = stateRaw.includes("-") ? stateRaw.split("-").pop()! : stateRaw;
+            location = state ? `${city}, ${state}` : city;
+          }
+        }
+      } catch { /* geocoding is optional — skip silently */ }
+    }
+
+    setActivityMeta(prev => ({
+      ...prev,
+      name: trackName,
+      location: location || undefined,
+      gpsDevice: gpsDevice?.label ? gpsDevice : undefined,
+    }));
   };
 
   const startShow = () => {
@@ -135,7 +248,7 @@ export default function ProRefuelPage() {
             <header className="mb-10 text-center flex flex-col items-center">
               <img src="/prorefuel_logo.png" alt="ProRefuel Logo" className="w-56 mb-1 drop-shadow-2xl" />
               <p className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 font-bold mt-2">
-                POC Cinematic Engine
+                Upload your ride. Get a cinematic story!
               </p>
             </header>
             <div className="flex-1 space-y-6">
@@ -147,16 +260,16 @@ export default function ProRefuelPage() {
                     <>
                       <CheckCircle2 className="text-green-500 mb-2" />
                       <span className="text-xs font-bold uppercase tracking-widest">
-                        GPX Sincronizado
+                        GPX Synced
                       </span>
                     </>
                   ) : (
                     <>
                       <Gauge className="text-amber-500 mb-2" />
                       <span className="text-xs font-bold uppercase tracking-widest text-center">
-                        Upload GPX Atividade
+                        Upload Activity GPX
                       </span>
-                      <span className="text-[10px] text-zinc-500 mt-1">Garmin / Strava Elevado</span>
+                      <span className="text-[10px] text-zinc-500 mt-1">Garmin / Strava export</span>
                     </>
                   )}
                   <input
@@ -181,14 +294,14 @@ export default function ProRefuelPage() {
                       <span className="text-red-400 text-lg font-black">!</span>
                     </div>
                     <p className="text-red-400 text-[11px] font-bold uppercase tracking-widest">
-                      Vídeo incompatível
+                      Incompatible video
                     </p>
                     <p className="text-zinc-400 text-[10px] leading-relaxed px-1">
                       {uploadError}
                     </p>
                     <label className="mt-1 cursor-pointer px-4 py-1.5 rounded-full bg-zinc-800 hover:bg-zinc-700 transition-colors">
                       <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-300">
-                        Tentar outro vídeo
+                        Try another video
                       </span>
                       <input
                         type="file"
@@ -218,17 +331,17 @@ export default function ProRefuelPage() {
                       <>
                         <CheckCircle2 className="text-green-500 mb-2" />
                         <span className="text-xs font-bold uppercase tracking-widest text-center">
-                          Vídeo Mapeado<br/>
-                          <span className="text-[10px] text-amber-500 mt-1">[{highlights.length} Cenas de Ação]</span>
+                          Video Mapped<br/>
+                          <span className="text-[10px] text-amber-500 mt-1">[{highlights.length} Action {highlights.length === 1 ? "Scene" : "Scenes"}]</span>
                         </span>
                       </>
                     ) : (
                       <>
                         <Upload className="text-zinc-400 mb-2" />
                         <span className="text-xs font-bold uppercase tracking-widest text-zinc-400">
-                          Upload Vídeo Câmera
+                          Upload Camera Video
                         </span>
-                        <span className="text-[10px] text-zinc-500 mt-1">.MP4 Direto Local</span>
+                        <span className="text-[10px] text-zinc-500 mt-1">Local .MP4 file</span>
                       </>
                     )}
                     <input
@@ -264,6 +377,7 @@ export default function ProRefuelPage() {
               highlights={highlights}
               storyPlan={storyPlan}
               videoFile={videoFile}
+              activityMeta={activityMeta}
               autoRecord={true}
             />
 

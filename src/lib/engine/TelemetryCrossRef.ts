@@ -64,22 +64,24 @@ export class TelemetryCrossRef {
     }
 
     // ── IntensityEngine + SceneDetector ───────────────────────────────────────
+    // Pass video window so scenes inside/near it get proximity boost and win deduplication.
     const intensity = computeIntensity(activityPoints);
-    const scenes    = detectScenes(activityPoints, intensity);
+    const scenes    = detectScenes(activityPoints, intensity, videoStart, videoEnd);
 
-    console.log(`[TelemetryCrossRef] Profile: ${intensity.profile} | Scenes detected: ${scenes.length}`);
-    scenes.forEach(s => console.log(`  ${s.id} ${s.label} [${s.startIndex}→${s.endIndex}] score=${s.score.toFixed(3)}`));
+    console.log(`[TelemetryCrossRef] Profile: ${intensity.profile} | videoWindow: ${new Date(videoStart).toISOString()} → ${new Date(videoEnd).toISOString()}`);
+    console.log(`[TelemetryCrossRef] Scenes detected: ${scenes.length}`);
+    scenes.forEach(s => console.log(`  ${s.id} ${s.label} [${s.startIndex}→${s.endIndex}] t=${new Date(activityPoints[s.startIndex].time).toISOString()} score=${s.score.toFixed(3)}`));
 
     // ── Map SceneCandidate → ActionSegment (filter to video window) ───────────
     const labelFor = (s: SceneCandidate): { title: string; value: string } => {
       const m = s.metadata;
       switch (s.id) {
-        case "C1": return { title: "SUBIDA BRUTAL",    value: `${m.avgGradient?.toFixed(1)}%` };
-        case "C2": return { title: "DESCIDA SELVAGEM", value: `${m.maxSpeed?.toFixed(1)} KM/H` };
-        case "C3": return { title: "SPRINT",           value: `+${m.speedDelta?.toFixed(1)} KM/H` };
-        case "C4": return { title: "TÉCNICO",          value: `${m.avgSpeed?.toFixed(1)} KM/H` };
-        case "C5": return { title: "ZONA VERMELHA",    value: `${Math.round(m.avgHR ?? 0)} BPM` };
-        case "C6": return { title: "ALÍVIO",           value: `${m.climbGradient?.toFixed(1)}% → ${m.descentSpeed?.toFixed(1)} KM/H` };
+        case "C1": return { title: "BRUTAL CLIMB",   value: `${m.avgGradient?.toFixed(1)}%` };
+        case "C2": return { title: "WILD DESCENT",   value: `${m.maxSpeed?.toFixed(1)} KM/H` };
+        case "C3": return { title: "SPRINT",         value: `+${m.speedDelta?.toFixed(1)} KM/H` };
+        case "C4": return { title: "TECHNICAL",      value: `${m.avgSpeed?.toFixed(1)} KM/H` };
+        case "C5": return { title: "RED ZONE",       value: `${Math.round(m.avgHR ?? 0)} BPM` };
+        case "C6": return { title: "FLOW",           value: `${m.climbGradient?.toFixed(1)}% → ${m.descentSpeed?.toFixed(1)} KM/H` };
         default:   return { title: s.label,            value: "" };
       }
     };
@@ -113,9 +115,50 @@ export class TelemetryCrossRef {
       });
     }
 
-    // ── Fallback: no scenes crossed the video window → play full video ─────────
+    // ── Fallback 1: no activity scenes crossed the video window ─────────────────
+    // Run scene detection directly on the video GPS points (they're guaranteed to
+    // be inside the video time window — no timestamp alignment needed).
+    if (segments.length === 0 && videoPoints.length > 15) {
+      console.log("[TelemetryCrossRef] No activity scenes overlap the video window. Trying direct detection on video GPS points...");
+
+      // Compute speed from video GPS (not available from GPMF directly)
+      const vpts = videoPoints as EnhancedGPSPoint[];
+      for (let i = 1; i < vpts.length; i++) {
+        if (!vpts[i].speed) {
+          const d = this.getDistance(vpts[i - 1], vpts[i]);
+          const t = (vpts[i].time - vpts[i - 1].time) / 1000;
+          if (t > 0 && t < 10) vpts[i].speed = (d / t) * 3.6;
+        }
+      }
+
+      const vIntensity = computeIntensity(vpts);
+      const vScenes    = detectScenes(vpts, vIntensity);
+
+      console.log(`[TelemetryCrossRef] Video GPS scenes: ${vScenes.length}`);
+      vScenes.forEach(s => console.log(`  ${s.id} ${s.label} [${s.startIndex}→${s.endIndex}] score=${s.score.toFixed(3)}`));
+
+      for (const scene of vScenes) {
+        const ptStart = vpts[scene.startIndex];
+        const ptEnd   = vpts[scene.endIndex];
+        const videoStartTimeSecs = Math.max(0, (ptStart.time - videoStart) / 1000);
+        const duration           = Math.max(1, (ptEnd.time - ptStart.time) / 1000);
+        const { title, value }   = labelFor(scene);
+        segments.push({
+          startPoint:     ptStart,
+          endPoint:       ptEnd,
+          startIndex:     scene.startIndex,
+          endIndex:       scene.endIndex,
+          videoStartTime: videoStartTimeSecs,
+          duration,
+          title,
+          value,
+        });
+      }
+    }
+
+    // ── Fallback 2: nothing detected at all → play full video ────────────────────
     if (segments.length === 0) {
-      console.log("[TelemetryCrossRef] Nenhuma cena cruzou com o vídeo. Gerando Full Action Segment.");
+      console.log("[TelemetryCrossRef] No scenes detected. Falling back to full video segment.");
       let s = activityPoints.findIndex(p => p.time >= videoStart);
       let e = activityPoints.findIndex(p => p.time >= videoEnd);
       if (s === -1) s = 0;

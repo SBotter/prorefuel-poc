@@ -156,10 +156,13 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores }: P
     if (speedNow > maxSpdSeenRef.current) maxSpdSeenRef.current = speedNow;
 
     const distKm = (cumDist[currentIndex] / 1000).toFixed(2);
-    const secs   = (pt.time - points[0].time) / 1000;
-    const mm     = Math.floor(secs / 60).toString().padStart(2, '0');
-    const ss     = Math.floor(secs % 60).toString().padStart(2, '0');
-    const timeStr = `${mm}:${ss}`;
+    const secs    = (pt.time - points[0].time) / 1000;
+    const hhNum   = Math.floor(secs / 3600);
+    const mm      = Math.floor((secs % 3600) / 60).toString().padStart(2, '0');
+    const ss      = Math.floor(secs % 60).toString().padStart(2, '0');
+    const timeStr = hhNum > 0
+      ? `${hhNum.toString().padStart(2, '0')}:${mm}:${ss}`
+      : `${mm}:${ss}`;
 
     // ── Speed fill arc ─────────────────────────────────────────────────────────
     if (speedNow > 0.5) {
@@ -227,9 +230,9 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores }: P
     let groupX   = W * 0.04;
     ctx.save();
     ctx.beginPath();
-    ctx.rect(0, 0, Math.round(W * 0.50), H);
+    ctx.rect(0, 0, Math.round(W * 0.54), H);
     ctx.clip();
-    ctx.font = `900 ${Math.round(W * 0.050)}px sans-serif`;
+    ctx.font = `900 ${Math.round(W * 0.044)}px sans-serif`;
 
     if (pt.hr) {
       const ratio    = hrMax && hrMax > 1 ? pt.hr / hrMax : 0;

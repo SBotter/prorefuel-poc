@@ -9,18 +9,20 @@ self.onmessage = async (e: MessageEvent) => {
     const extracted = await gpmfExtract(file, { browserMode: true });
     
     if (!extracted || !extracted.rawData) {
-      throw new Error("Trilha GPMF vazia ou corrompida.");
+      throw new Error("GPMF track is empty or corrupted.");
     }
 
     const telemetry = await goproTelemetry(extracted, { stream: ['GPS5', 'ACCL', 'GYRO'] });
 
     
     const deviceIds = Object.keys(telemetry);
-    if (deviceIds.length === 0) throw new Error("Nenhum sensor de telemetria retornado.");
-    
-    const streams = (telemetry as any)[deviceIds[0]]?.streams;
+    if (deviceIds.length === 0) throw new Error("No telemetry sensors returned.");
+
+    const deviceEntry = (telemetry as any)[deviceIds[0]];
+    const cameraModel: string = deviceEntry?.deviceName || "";
+    const streams = deviceEntry?.streams;
     if (!streams || !streams.GPS5 || !streams.GPS5.samples) {
-       throw new Error("Nenhuma trilha de coordenadas GPS localizada (GPS5 Missing).");
+       throw new Error("No GPS coordinate track found (GPS5 missing).");
     }
 
     const rawSamples: any[] = streams.GPS5.samples;
@@ -34,7 +36,7 @@ self.onmessage = async (e: MessageEvent) => {
     });
 
     if (validSamples.length === 0) {
-      throw new Error("Nenhum ponto GPS válido encontrado. O vídeo não possui telemetria GPS embutida.");
+      throw new Error("No valid GPS points found. This video has no embedded GPS telemetry.");
     }
 
     const points = validSamples.map((sample: any, i: number) => ({
@@ -56,8 +58,8 @@ self.onmessage = async (e: MessageEvent) => {
        }
     }
 
-    self.postMessage({ success: true, points: downsampled });
+    self.postMessage({ success: true, points: downsampled, cameraModel });
   } catch (error: any) {
-    self.postMessage({ success: false, error: error.message || "Erro desconhecido no Worker." });
+    self.postMessage({ success: false, error: error.message || "Unknown worker error." });
   }
 };

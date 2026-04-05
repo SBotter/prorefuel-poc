@@ -11,11 +11,24 @@ import { AltimetryGraph } from "./AltimetryGraph";
 import { TelemetryHUD } from "./TelemetryHUD";
 import { playIntroWithDataImpacts, playBrandExit, initTone, getToneOutputStream } from "@/lib/audio/AudioEngine";
 
+interface DeviceInfo {
+  label: string;
+  logoFile: string;
+}
+
+interface ActivityMeta {
+  name: string;
+  location?: string;
+  gpsDevice?: DeviceInfo;
+  camera?: DeviceInfo;
+}
+
 interface MapEngineProps {
   activityPoints: any[];
   highlights: ActionSegment[];
   storyPlan: StoryPlan | null;
   videoFile: File | null;
+  activityMeta?: ActivityMeta;
   autoRecord?: boolean;
 }
 
@@ -35,7 +48,7 @@ function getDistance(p1: GPSPoint, p2: GPSPoint) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, autoRecord = false }: MapEngineProps, ref) => {
+const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, activityMeta, autoRecord = false }: MapEngineProps, ref) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -57,6 +70,9 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
   const brandAudioFiredRef = useRef(false);
   // Pre-brand fade: 0→1 nos 2s antes do BRAND (sincronizado com audio preroll)
   const preBrandFadeRef   = useRef(0);
+  // Live ref — always reflects latest activityMeta so closures in the main effect
+  // (captured at GPX-upload time) can still read camera/location added later.
+  const activityMetaRef   = useRef(activityMeta);
 
   const [viewMode, setViewMode] = useState<"INTRO" | "MAP" | "ACTION" | "BRAND">("BRAND");
   const [preBrandFade, setPreBrandFade] = useState(0);
@@ -77,7 +93,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     viewMode: "BRAND" as "INTRO" | "MAP" | "ACTION" | "BRAND",
     pitch: 60,
     zoom: 18,
-    activeHighlightIndex: -1, // Rastreia qual highlight block está tocando (se existir)
+    activeHighlightIndex: -1, // Tracks which highlight block is currently playing (if any)
     mapPointsPerSec: 10,
     isLongActivity: false,
     marathonSegments: [] as any[],
@@ -87,19 +103,24 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     lastMiniMapUpdate: 0,    // throttle Canvas 2D mini-map redraws to ~5fps
   });
 
-  const { totalDistKm, totalTimeMin, avgSpeedKmh } = React.useMemo(() => {
+  const { totalDistKm, totalTimeStr, avgSpeedKmh } = React.useMemo(() => {
     let d = 0;
     if (activityPoints.length > 1) {
       for (let i = 0; i < activityPoints.length - 1; i++) {
         d += getDistance(activityPoints[i], activityPoints[i + 1]);
       }
     }
-    const tMs = activityPoints.length > 1 ? (activityPoints[activityPoints.length - 1].time - activityPoints[0].time) : 0;
+    const tMs   = activityPoints.length > 1 ? (activityPoints[activityPoints.length - 1].time - activityPoints[0].time) : 0;
     const tSecs = tMs / 1000;
-    const t = tSecs / 60;
     const distKm = d / 1000;
     const avg = tSecs > 0 ? (distKm / (tSecs / 3600)).toFixed(1) : "--";
-    return { totalDistKm: distKm.toFixed(1), totalTimeMin: (!isNaN(t) && t > 0) ? t.toFixed(0) : "--", avgSpeedKmh: avg };
+    const hhN = Math.floor(tSecs / 3600);
+    const mmS = Math.floor((tSecs % 3600) / 60).toString().padStart(2, "0");
+    const ssS = Math.floor(tSecs % 60).toString().padStart(2, "0");
+    const timeStr = (!isNaN(tSecs) && tSecs > 0)
+      ? (hhN > 0 ? `${hhN.toString().padStart(2, "0")}:${mmS}:${ssS}` : `${mmS}:${ssS}`)
+      : "--";
+    return { totalDistKm: distKm.toFixed(1), totalTimeStr: timeStr, avgSpeedKmh: avg };
   }, [activityPoints]);
 
   const hrMax = React.useMemo(
@@ -114,6 +135,12 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       return () => URL.revokeObjectURL(url);
     }
   }, [videoFile]);
+
+  // Keep activityMetaRef current so closures inside the main useEffect
+  // (which only re-runs when activityPoints changes) always see the latest metadata.
+  useEffect(() => {
+    activityMetaRef.current = activityMeta;
+  }, [activityMeta]);
 
   // Pre-compute mini-map route cache once — draws the full polyline to an offscreen canvas
   // so ACTION mode only needs drawImage + a dot each frame (no per-frame GPS iteration)
@@ -683,9 +710,9 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
-          alert("MP4 falhou — baixando como WebM. Veja o console para detalhes.");
+          alert("MP4 failed — downloading as WebM. See console for details.");
         } else {
-          alert("Erro na gravação: nenhum dado foi capturado.");
+          alert("Recording error: no data was captured.");
         }
       } finally {
         setIsTranscoding(false);
@@ -696,6 +723,19 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     // ── Pre-load logo image once ──────────────────────────────────────────────
     const logoImg = new Image();
     logoImg.src = "/prorefuel_logo.png";
+
+    // Lazy logo cache — loads an SVG/image the first time it's requested.
+    // Using a live cache (not captured at effect startup) ensures logos added
+    // after GPX upload (e.g. camera detected from video) are still shown.
+    const logoCache = new Map<string, HTMLImageElement>();
+    const getLogoImg = (url: string): HTMLImageElement => {
+      if (!logoCache.has(url)) {
+        const img = new Image();
+        img.src = url;
+        logoCache.set(url, img);
+      }
+      return logoCache.get(url)!;
+    };
 
     // ── Pre-compute cumulative distances (meters) per GPS index ───────────────
     const cumDist: number[] = [0];
@@ -974,10 +1014,14 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       const d2 = cumDist[Math.min(idx + 1, cumDist.length - 1)];
       const distKm = ((d1 + (d2 - d1) * frac) / 1000).toFixed(2);
 
-      const tNow = pt1.time + (pt2.time - pt1.time) * frac;
-      const secs = (tNow - activityPoints[0].time) / 1000;
-      const mm = Math.floor(secs / 60).toString().padStart(2, "0");
-      const ss = Math.floor(secs % 60).toString().padStart(2, "0");
+      const tNow  = pt1.time + (pt2.time - pt1.time) * frac;
+      const secs  = (tNow - activityPoints[0].time) / 1000;
+      const hhNum = Math.floor(secs / 3600);
+      const mm    = Math.floor((secs % 3600) / 60).toString().padStart(2, "0");
+      const ss    = Math.floor(secs % 60).toString().padStart(2, "0");
+      const timeStr = hhNum > 0
+        ? `${hhNum.toString().padStart(2, "0")}:${mm}:${ss}`
+        : `${mm}:${ss}`;
       const pt = (frac < 0.5 ? pt1 : pt2) as any;
 
       // Layer 2: speed fill arc (dynamic)
@@ -1025,7 +1069,11 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
       const subY = metY + Math.round(H * 0.055);
       let groupX = W * 0.04;
-      ctx.font = `900 ${Math.round(W * 0.07)}px sans-serif`;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, Math.round(W * 0.54), H);
+      ctx.clip();
+      ctx.font = `900 ${Math.round(W * 0.044)}px sans-serif`;
       if (pt.hr) {
         shadow("rgba(0,0,0,1)", 20);
         ctx.fillStyle = "#ff4d4d";
@@ -1040,7 +1088,8 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       }
       shadow("rgba(0,0,0,1)", 20);
       ctx.fillStyle = "rgba(255,255,255,0.9)";
-      ctx.fillText(`\u23F1 ${mm}:${ss}`, groupX, subY);
+      ctx.fillText(`\u23F1 ${timeStr}`, groupX, subY);
+      ctx.restore();
 
       // Intensity bar — top of canvas, full width
       const iScore = storyPlan?.intensityScores?.[idx] ?? 0;
@@ -1223,11 +1272,64 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     introSepGrad.addColorStop(0.5, "#f59e0b");
     introSepGrad.addColorStop(1, "transparent");
 
+    // Title layout cache — computes font size (per longest word) and wrapped lines.
+    // Recomputed only when title string changes, never per-frame.
+    let _cachedTitleText = "";
+    let _cachedTitleFontSize = Math.round(W * 0.19);
+    let _cachedTitleLines: string[] = ["EPIC RIDE"];
+    const getTitleLayout = (title: string): { fontSize: number; lines: string[] } => {
+      if (title === _cachedTitleText) return { fontSize: _cachedTitleFontSize, lines: _cachedTitleLines };
+      _cachedTitleText = title;
+
+      // 1. Base font on longest single word so each word always fits on its line
+      const longestWord = title.split(/[\s\-]+/).reduce((a, b) => a.length > b.length ? a : b, title);
+      let sz = Math.round(W * 0.19);
+      const minSz = Math.round(W * 0.055);
+      ctx.font = `900 italic ${sz}px sans-serif`;
+      while (ctx.measureText(longestWord).width > W * 0.88 && sz > minSz) {
+        sz -= 1;
+        ctx.font = `900 italic ${sz}px sans-serif`;
+      }
+
+      // 2. Word-wrap the full title at that font size
+      const maxLineW = W * 0.88;
+      const words = title.split(" ");
+      const lines: string[] = [];
+      let line = "";
+      for (const word of words) {
+        const test = line ? `${line} ${word}` : word;
+        if (ctx.measureText(test).width > maxLineW && line) {
+          lines.push(line);
+          line = word;
+        } else {
+          line = test;
+        }
+      }
+      if (line) lines.push(line);
+
+      _cachedTitleFontSize = sz;
+      _cachedTitleLines = lines;
+      return { fontSize: sz, lines };
+    };
+
+    // ── Intentional empty block — title/location/devices now read live from ref ─
+    {
+      // (block kept to avoid diff conflicts with downstream code)
+    }
+
     // ── Draw INTRO cinematic screen — animated reveal ─────────────────────────
     const drawIntro = (elapsed: number) => {
       const easeOut = (x: number) => 1 - Math.pow(1 - Math.min(Math.max(x, 0), 1), 3);
       const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
       const clamp01 = (x: number) => Math.min(Math.max(x, 0), 1);
+
+      // Read live metadata (ref is kept in sync by a dedicated useEffect)
+      const liveMeta      = activityMetaRef.current;
+      const actTitle      = liveMeta?.name     || "EPIC RIDE";
+      const actLocation   = liveMeta?.location || "";
+      const gpsDeviceInfo = liveMeta?.gpsDevice;
+      const cameraInfo    = liveMeta?.camera;
+      const { fontSize: titleFontSize, lines: titleLines } = getTitleLayout(actTitle);
 
       ctx.save();
 
@@ -1249,9 +1351,9 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       // ── 3. Logo — fades in at 500ms ────────────────────────────────────────
       const logoAlpha = easeOut(clamp01((elapsed - 500) / 400));
       if (logoAlpha > 0.01 && logoImg.complete && logoImg.naturalWidth > 0) {
-        const lH = Math.round(H * 0.03);
+        const lH = Math.round(H * 0.06);
         const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
-        const logoY = H * 0.17 + (1 - logoAlpha) * 20;
+        const logoY = H * 0.14 + (1 - logoAlpha) * 20;
         ctx.globalAlpha = logoAlpha * 0.85;
         shadow("rgba(0,0,0,0.8)", 20);
         ctx.drawImage(logoImg, (W - lW) / 2, logoY, lW, lH);
@@ -1259,45 +1361,61 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         noShadow();
       }
 
-      // ── 4. "EPIC" — scales in + fades from 750ms ──────────────────────────
-      const epicAlpha = easeOut(clamp01((elapsed - 750) / 450));
-      if (epicAlpha > 0.01) {
-        const epicScale = lerp(1.14, 1.0, easeOut(clamp01((elapsed - 750) / 550)));
+      // ── 4. Activity title — multi-line, scales in + fades from 750ms ────────
+      const titleAlpha = easeOut(clamp01((elapsed - 750) / 500));
+      if (titleAlpha > 0.01) {
+        const titleScale = lerp(1.10, 1.0, easeOut(clamp01((elapsed - 750) / 600)));
+        const lineH      = titleFontSize * 1.08;
+        const blockH     = titleLines.length * lineH;
+        // Block center: slightly above midpoint, shifts up a little if location follows
+        const blockCenterY = H * (actLocation ? 0.395 : 0.430);
+        const blockTopY    = blockCenterY - blockH / 2;
+
         ctx.save();
-        ctx.globalAlpha = epicAlpha;
+        ctx.globalAlpha = titleAlpha;
         shadow("rgba(0,0,0,1)", 60);
-        ctx.font = `900 italic ${Math.round(W * 0.20)}px sans-serif`;
+        ctx.font = `900 italic ${titleFontSize}px sans-serif`;
         ctx.fillStyle = "#ffffff";
         ctx.textAlign = "center";
-        ctx.translate(W / 2, H * 0.36);
-        ctx.scale(epicScale, epicScale);
-        ctx.fillText("EPIC", 0, 0);
+        titleLines.forEach((line, i) => {
+          const lineBaseY = blockTopY + lineH * (i + 0.82) + (1 - titleAlpha) * 18;
+          ctx.save();
+          ctx.translate(W / 2, lineBaseY);
+          ctx.scale(titleScale, titleScale);
+          ctx.fillText(line, 0, 0);
+          ctx.restore();
+        });
         ctx.restore();
         noShadow();
       }
 
-      // ── 5. "RIDE" amber — fades in 200ms after EPIC ───────────────────────
-      const rideAlpha = easeOut(clamp01((elapsed - 1050) / 450));
-      if (rideAlpha > 0.01) {
-        const rideScale = lerp(1.1, 1.0, easeOut(clamp01((elapsed - 1050) / 450)));
-        ctx.save();
-        ctx.globalAlpha = rideAlpha;
-        shadow("rgba(245,158,11,0.5)", 60);
-        ctx.font = `900 italic ${Math.round(W * 0.20)}px sans-serif`;
-        ctx.fillStyle = "#f59e0b";
-        ctx.textAlign = "center";
-        ctx.translate(W / 2, H * 0.49);
-        ctx.scale(rideScale, rideScale);
-        ctx.fillText("RIDE", 0, 0);
-        ctx.restore();
-        noShadow();
+      // ── 5. Location subtitle — tight below title block ────────────────────
+      if (actLocation) {
+        const locAlpha = easeOut(clamp01((elapsed - 1100) / 400));
+        if (locAlpha > 0.01) {
+          // Position below title block: blockCenterY + blockH/2 + small gap
+          const { fontSize: tfsz, lines: tlines } = getTitleLayout(actTitle);
+          const blockBottom = H * 0.395 + (tlines.length * tfsz * 1.08) / 2;
+          const locY = blockBottom + Math.round(W * 0.055) + (1 - locAlpha) * 10;
+          ctx.save();
+          ctx.globalAlpha = locAlpha * 0.62;
+          shadow("rgba(0,0,0,0.9)", 10);
+          ctx.font = `400 ${Math.round(W * 0.032)}px sans-serif`;
+          ctx.fillStyle = "#d0d0d0";
+          ctx.textAlign = "center";
+          ctx.letterSpacing = "0.18em";
+          ctx.fillText(actLocation.toUpperCase(), W / 2, locY);
+          ctx.letterSpacing = "0em";
+          ctx.restore();
+          noShadow();
+        }
       }
 
       // ── 6. Separator line draws left → right ──────────────────────────────
-      const sepProg = easeOut(clamp01((elapsed - 1450) / 350));
+      const sepProg = easeOut(clamp01((elapsed - 1480) / 350));
       if (sepProg > 0.01) {
         const sepAlpha = Math.min(sepProg * 2, 1);
-        const sepY = H * 0.555;
+        const sepY = H * 0.535;
         const sepHalfMax = W * 0.3;
         ctx.globalAlpha = sepAlpha * 0.7;
         // Reuse pre-created intro separator gradient (no allocation per frame)
@@ -1311,80 +1429,172 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         noShadow();
       }
 
-      // ── 7. Stats — 3 cards with count-up animation, staggered ───────────────
-      const totalSecs = activityPoints.length > 1
+      // ── 7. Stats — horizontal info rows with count-up ───────────────────────
+      const totalSecs  = activityPoints.length > 1
         ? (activityPoints[activityPoints.length - 1].time - activityPoints[0].time) / 1000 : 0;
-      const finalDistKm  = cumDist[cumDist.length - 1] / 1000;
-      const finalMin     = Math.floor(totalSecs / 60);
-      const finalAvgSpd  = totalSecs > 0 ? finalDistKm / (totalSecs / 3600) : 0;
+      const finalDistKm = cumDist[cumDist.length - 1] / 1000;
+      const finalAvgSpd = totalSecs > 0 ? finalDistKm / (totalSecs / 3600) : 0;
 
       const STAT_START = 1800;
       const COUNT_DUR  = 700;
 
-      const stats = [
-        { finalNum: finalDistKm,  format: (v: number) => v.toFixed(1), unit: "KM",   label: "Distância",      delay: STAT_START },
-        { finalNum: finalMin,     format: (v: number) => Math.round(v).toString(), unit: "MIN",  label: "Duração",   delay: STAT_START + 150 },
-        { finalNum: finalAvgSpd,  format: (v: number) => v.toFixed(1), unit: "KM/H", label: "Vel. Média",      delay: STAT_START + 300 },
+      const statRows: { label: string; delay: number; countFn: (p: number) => string }[] = [
+        {
+          label: "DISTANCE",
+          delay: STAT_START,
+          countFn: (p) => `${(finalDistKm * p).toFixed(1)} KM`,
+        },
+        {
+          label: "DURATION",
+          delay: STAT_START + 140,
+          countFn: (p) => {
+            const cs  = totalSecs * p;
+            const ch  = Math.floor(cs / 3600);
+            const cm  = Math.floor((cs % 3600) / 60).toString().padStart(2, "0");
+            const cse = Math.floor(cs % 60).toString().padStart(2, "0");
+            return totalSecs >= 3600
+              ? `${ch.toString().padStart(2, "0")}:${cm}:${cse}`
+              : `${cm}:${cse}`;
+          },
+        },
+        {
+          label: "AVG SPEED",
+          delay: STAT_START + 280,
+          countFn: (p) => `${(finalAvgSpd * p).toFixed(1)} KM/H`,
+        },
       ];
 
-      const colW = W / stats.length;
-      const baseY = H * 0.68;
+      const listTop  = H * 0.60;
+      const rowH     = Math.round(H * 0.068);
+      const padL     = Math.round(W * 0.08);
+      const padR     = Math.round(W * 0.08);
+      const lblFont  = `500 ${Math.round(W * 0.024)}px sans-serif`;
+      const valFont  = `900 ${Math.round(W * 0.068)}px sans-serif`;
 
-      stats.forEach((s, i) => {
-        const alpha = easeOut(clamp01((elapsed - s.delay) / 400));
+      statRows.forEach((s, i) => {
+        const alpha     = easeOut(clamp01((elapsed - s.delay) / 400));
         if (alpha < 0.01) return;
-
         const countProg = easeOut(clamp01((elapsed - s.delay) / COUNT_DUR));
-        const displayVal = s.format(s.finalNum * countProg);
-        const cx2 = colW * i + colW / 2;
-        const slideY = (1 - alpha) * 20;
-        const y = baseY + slideY;
+        const rowY      = listTop + i * rowH;
 
         ctx.save();
         ctx.globalAlpha = alpha;
 
-        // Subtle amber glow pill behind the number
-        const pillW = colW * 0.72, pillH = Math.round(H * 0.095);
-        const pillX = cx2 - pillW / 2, pillY = y - pillH * 0.78;
-        ctx.fillStyle = "rgba(245,158,11,0.06)";
-        (ctx as any).roundRect?.(pillX, pillY, pillW, pillH, 16);
-        ctx.fill();
-        ctx.strokeStyle = "rgba(245,158,11,0.18)";
-        ctx.lineWidth = 1.5;
-        (ctx as any).roundRect?.(pillX, pillY, pillW, pillH, 16);
+        // Top separator line
+        ctx.strokeStyle = "rgba(255,255,255,0.10)";
+        ctx.lineWidth   = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, rowY);
+        ctx.lineTo(W - padR, rowY);
         ctx.stroke();
 
-        // Value — large, bold, counting up
-        shadow("rgba(0,0,0,1)", 24);
-        ctx.font = `900 ${Math.round(W * 0.10)}px sans-serif`;
-        ctx.fillStyle = countProg >= 0.98 ? "#ffffff" : "#fbbf24"; // amber while counting, white when done
-        ctx.textAlign = "center";
-        ctx.fillText(displayVal, cx2, y);
+        // Label — left, dim small caps
+        shadow("rgba(0,0,0,0.8)", 6);
+        ctx.font      = lblFont;
+        ctx.fillStyle = "rgba(255,255,255,0.38)";
+        ctx.textAlign = "left";
+        ctx.fillText(s.label, padL, rowY + rowH * 0.70);
 
-        // Unit — amber caps
-        ctx.font = `700 ${Math.round(W * 0.028)}px sans-serif`;
-        ctx.fillStyle = "#f59e0b";
-        ctx.fillText(s.unit, cx2, y + Math.round(H * 0.034));
+        // Value + unit — right, bold, count-up
+        const displayVal = s.countFn(countProg);
+        shadow("rgba(0,0,0,1)", 20);
+        ctx.font      = valFont;
+        ctx.fillStyle = countProg >= 0.98 ? "#ffffff" : "#fbbf24";
+        ctx.textAlign = "right";
+        ctx.fillText(displayVal, W - padR, rowY + rowH * 0.74);
 
-        // Label — dim small caps
-        noShadow();
-        ctx.font = `500 ${Math.round(W * 0.024)}px sans-serif`;
-        ctx.fillStyle = "rgba(255,255,255,0.35)";
-        ctx.fillText(s.label, cx2, y + Math.round(H * 0.062));
-
-        // Divider between cols
-        if (i < stats.length - 1) {
-          ctx.strokeStyle = "rgba(255,255,255,0.1)";
-          ctx.lineWidth = 1.5;
+        // Bottom separator on last row
+        if (i === statRows.length - 1) {
+          noShadow();
+          ctx.strokeStyle = "rgba(255,255,255,0.10)";
+          ctx.lineWidth   = 1;
           ctx.beginPath();
-          ctx.moveTo(colW * (i + 1), baseY + slideY - Math.round(H * 0.06));
-          ctx.lineTo(colW * (i + 1), baseY + slideY + Math.round(H * 0.075));
+          ctx.moveTo(padL, rowY + rowH);
+          ctx.lineTo(W - padR, rowY + rowH);
           ctx.stroke();
         }
 
         ctx.restore();
         noShadow();
       });
+
+      // ── 8. Equipment logos footer — logos only, frosted pill background ──────
+      // Rule: show logo if available, nothing if not. No text labels.
+      const equipAlpha = easeOut(clamp01((elapsed - 2400) / 500));
+      const equipDevices = ([
+        gpsDeviceInfo?.logoFile ? gpsDeviceInfo : null,
+        cameraInfo?.logoFile    ? cameraInfo    : null,
+      ] as const).filter(Boolean) as NonNullable<typeof gpsDeviceInfo>[];
+
+      if (equipAlpha > 0.01 && equipDevices.length > 0) {
+        ctx.save();
+
+        const iconH  = Math.round(H * 0.030);
+        const padH   = Math.round(W * 0.04);  // horizontal padding inside pill
+        const padV   = Math.round(H * 0.009); // vertical padding
+        const dotGap = Math.round(W * 0.055); // space around separator dot
+
+        // Measure each logo width
+        const imgs = equipDevices.map(d => getLogoImg(d.logoFile));
+        const widths = imgs.map(img =>
+          img.complete && img.naturalWidth > 0
+            ? (img.naturalWidth / img.naturalHeight) * iconH
+            : iconH // fallback square until loaded
+        );
+        const totalLogoW = widths.reduce((a, b) => a + b, 0)
+          + (equipDevices.length === 2 ? dotGap : 0);
+        const pillW = totalLogoW + padH * 2;
+        const pillH = iconH + padV * 2;
+        const pillX = (W - pillW) / 2;
+        const pillY = Math.round(H * 0.862) - pillH;
+
+        // Frosted glass pill
+        ctx.globalAlpha = equipAlpha * 0.9;
+        ctx.fillStyle = "rgba(255,255,255,0.18)";
+        const r = pillH / 2;
+        ctx.beginPath();
+        if ((ctx as any).roundRect) {
+          (ctx as any).roundRect(pillX, pillY, pillW, pillH, r);
+        } else {
+          ctx.moveTo(pillX + r, pillY);
+          ctx.lineTo(pillX + pillW - r, pillY);
+          ctx.arcTo(pillX + pillW, pillY, pillX + pillW, pillY + r, r);
+          ctx.lineTo(pillX + pillW, pillY + pillH - r);
+          ctx.arcTo(pillX + pillW, pillY + pillH, pillX + pillW - r, pillY + pillH, r);
+          ctx.lineTo(pillX + r, pillY + pillH);
+          ctx.arcTo(pillX, pillY + pillH, pillX, pillY + pillH - r, r);
+          ctx.lineTo(pillX, pillY + r);
+          ctx.arcTo(pillX, pillY, pillX + r, pillY, r);
+          ctx.closePath();
+        }
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.30)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Draw logos
+        ctx.globalAlpha = equipAlpha;
+        const logoY = pillY + padV;
+
+        if (equipDevices.length === 2) {
+          const cx = W / 2;
+          // Left logo (right-aligned to center gap)
+          if (widths[0] > 0) ctx.drawImage(imgs[0], cx - dotGap / 2 - widths[0], logoY, widths[0], iconH);
+          // Amber separator dot
+          ctx.globalAlpha = equipAlpha * 0.55;
+          ctx.fillStyle = "#f59e0b";
+          ctx.beginPath();
+          ctx.arc(cx, pillY + pillH / 2, 2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = equipAlpha;
+          // Right logo
+          if (widths[1] > 0) ctx.drawImage(imgs[1], cx + dotGap / 2, logoY, widths[1], iconH);
+        } else {
+          if (widths[0] > 0) ctx.drawImage(imgs[0], (W - widths[0]) / 2, logoY, widths[0], iconH);
+        }
+
+        ctx.restore();
+      }
 
       ctx.restore();
     };
@@ -1563,7 +1773,6 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
         // 3. Telemetry HUD (Top-Left)
         drawTelemetry(idx);
-        drawLogo();
 
         // Pre-brand fade overlay — drawn last so it covers everything
         const fade = preBrandFadeRef.current;
@@ -1584,7 +1793,6 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           drawIntro(performance.now() - introStartTime);
         } else if (vm === "MAP") {
           drawTelemetry(idx);
-          drawLogo();
           drawMarker(idx);
           drawAltimetry(idx);
         }
@@ -1634,8 +1842,8 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
           </svg>
-          <p className="text-white text-xs font-black uppercase tracking-[0.3em]">Gerando MP4...</p>
-          <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Aguarde a transcodificação</p>
+          <p className="text-white text-xs font-black uppercase tracking-[0.3em]">Generating MP4...</p>
+          <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Please wait</p>
         </div>
       )}
       <style dangerouslySetInnerHTML={{ __html: `
@@ -1711,7 +1919,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       </div>
 
       {/* 2.1 PRE-BRAND FADE — escurece o vídeo nos 2s antes do logo */}
-      {/* Sincronizado com audio preroll: começa junto, cobre tudo acima do vídeo */}
+      {/* Synced with audio preroll: starts together, covers everything above the video */}
       <div
         className="absolute inset-0 z-[45] pointer-events-none bg-[#050505]"
         style={{ opacity: preBrandFade }}
@@ -1732,7 +1940,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
          <AltimetryGraph points={activityPoints} currentIndex={currentIndex} />
       </div>
 
-      {/* 3. TELEMETRIA CONSTANTE DA ATIVIDADE (Atraso Cinemático de Entrada) */}
+      {/* 3. ACTIVITY TELEMETRY (Cinematic entry delay) */}
       <div 
          style={{
             opacity: (viewMode === "INTRO" || viewMode === "BRAND" || isEnding) ? 0 : 1,
@@ -1745,10 +1953,6 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
          <TelemetryHUD points={activityPoints as any} currentIndex={currentIndex} hrMax={hrMax} intensityScores={storyPlan?.intensityScores} />
       </div>
 
-      {/* 3.1 LOGO PERMANENTE */}
-      <div className={`absolute top-10 right-6 z-50 pointer-events-none drop-shadow-xl transition-opacity duration-500 ${viewMode === "BRAND" || viewMode === "INTRO" ? "opacity-0" : "opacity-90"}`}>
-        <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[22px] w-auto object-contain" />
-      </div>
 
       {/* 4. BRANDING FINAL — fundo preto full-screen */}
       {/* Fade-in rápido (300ms) para cobrir o mapa antes que o vídeo acabe de desaparecer */}
@@ -1764,7 +1968,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         <img src="/prorefuel_logo.png" alt="ProRefuel" className="w-1/2 max-w-[200px] drop-shadow-[0_0_30px_rgba(245,158,11,0.2)] animate-pulse" />
       </div>
 
-      {/* Cut flash — apenas em transições que não são BRAND (BRAND usa fade-to-black próprio) */}
+      {/* Cut flash — only on non-BRAND transitions (BRAND has its own fade-to-black) */}
       {viewMode !== "BRAND" && (
         <div
           key={`flash-${viewMode}`}
@@ -1787,69 +1991,131 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
         {/* Logo */}
         <img src="/prorefuel_logo.png" alt="ProRefuel"
-          className="intro-logo absolute w-auto opacity-80 drop-shadow-2xl"
-          style={{ height: '3vh', top: '17%' }} />
+          className="intro-logo absolute w-auto opacity-85 drop-shadow-2xl"
+          style={{ height: '6vh', top: '15%' }} />
 
-        {/* EPIC */}
-        <span className="intro-epic font-black uppercase italic select-none"
-          style={{
-            fontSize: 'clamp(3rem, 17vw, 5.8rem)',
-            letterSpacing: '-0.02em',
-            color: '#ffffff',
-            textShadow: '0 4px 40px rgba(0,0,0,1), 0 0 80px rgba(0,0,0,0.9)',
-            marginTop: '-2vh', lineHeight: 1,
-          }}>
-          EPIC
-        </span>
+        {/* Activity title + location — single animated block */}
+        {(() => {
+          const title = activityMeta?.name || 'EPIC RIDE';
 
-        {/* RIDE */}
-        <span className="intro-ride font-black uppercase italic select-none"
-          style={{
-            fontSize: 'clamp(3rem, 17vw, 5.8rem)',
-            letterSpacing: '-0.02em',
-            color: '#f59e0b',
-            textShadow: '0 4px 40px rgba(0,0,0,1), 0 0 60px rgba(245,158,11,0.4)',
-            marginTop: '-0.1em', lineHeight: 1,
-          }}>
-          RIDE
-        </span>
+          // Container is max-w-[400px]; on any screen wider than 400px it stays 400px.
+          // We must NOT use vw (that's viewport width, not container width).
+          // Compute font size in px from the actual container width.
+          const containerW = Math.min(
+            typeof window !== 'undefined' ? window.innerWidth : 400,
+            400
+          );
+          const availW = containerW * 0.86; // 86% usable width
+
+          // Size based on the longest single word so it never overflows a line.
+          // Bold italic sans-serif avg char width ≈ 0.62× font-size.
+          const longestWord = title.split(/[\s\-]+/).reduce(
+            (a: string, b: string) => (a.length > b.length ? a : b), title
+          );
+          const byWord  = Math.floor(availW / (Math.max(longestWord.length, 3) * 0.62));
+          const byWidth = Math.floor(containerW * 0.185); // hard cap ~18.5% of container
+          const fontPx  = Math.max(Math.min(byWord, byWidth), 14);
+
+          return (
+            <div className="intro-epic flex flex-col items-center"
+              style={{ marginTop: '-3vh', width: '86%' }}>
+              <span
+                className="font-black uppercase italic select-none text-center block w-full"
+                style={{
+                  fontSize: `${fontPx}px`,
+                  letterSpacing: '-0.02em',
+                  lineHeight: 1.05,
+                  wordBreak: 'break-word',
+                  overflowWrap: 'break-word',
+                  color: '#ffffff',
+                  textShadow: '0 4px 40px rgba(0,0,0,1), 0 0 80px rgba(0,0,0,0.9)',
+                }}>
+                {title}
+              </span>
+              {activityMeta?.location && (
+                <span
+                  className="select-none text-center block"
+                  style={{
+                    marginTop: '0.30em',
+                    fontSize: `${Math.round(fontPx * 0.30)}px`,
+                    fontWeight: 300,
+                    fontStyle: 'normal',
+                    letterSpacing: '0.22em',
+                    color: 'rgba(210,210,210,0.72)',
+                    textShadow: '0 2px 12px rgba(0,0,0,0.95)',
+                    textTransform: 'uppercase',
+                  }}>
+                  {activityMeta.location}
+                </span>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Separator — draws left→right */}
-        <div className="intro-sep rounded-full mt-5 mb-5"
+        <div className="intro-sep rounded-full mt-4 mb-4"
           style={{ height: '1.5px', background: 'linear-gradient(to right, transparent, rgba(245,158,11,0.8), transparent)' }} />
 
-        {/* Stats grid */}
-        <div className="flex w-[88%] text-center items-start justify-between">
+        {/* Stats — horizontal info rows */}
+        <div className="w-[88%] flex flex-col">
           {[
-            { val: totalDistKm, unit: 'KM', label: 'Distância', cls: 'intro-stat-0' },
-            { val: totalTimeMin, unit: 'MIN', label: 'Duração', cls: 'intro-stat-1' },
-            { val: avgSpeedKmh, unit: 'KM/H', label: 'Vel. Média', cls: 'intro-stat-2' },
-          ].map((s, i, arr) => (
-            <React.Fragment key={i}>
-              <div className={`${s.cls} flex flex-col items-center flex-1`}>
-                {/* Large value */}
-                <span className="text-white font-black tabular-nums leading-none"
-                  style={{ fontSize: 'clamp(1.8rem, 10vw, 3rem)', textShadow: '0 2px 20px rgba(0,0,0,1)' }}>
+            { label: 'DISTANCE',  val: totalDistKm,  unit: 'KM',    cls: 'intro-stat-0' },
+            { label: 'DURATION',  val: totalTimeStr,  unit: '',      cls: 'intro-stat-1' },
+            { label: 'AVG SPEED', val: avgSpeedKmh,  unit: 'KM/H',  cls: 'intro-stat-2' },
+          ].map((s, i) => (
+            <div key={i} className={`${s.cls} flex items-center justify-between`}
+              style={{ padding: '9px 0', borderBottom: '1px solid rgba(255,255,255,0.09)' }}>
+              <span className="font-medium uppercase"
+                style={{ fontSize: '9px', letterSpacing: '0.10em', color: 'rgba(255,255,255,0.38)' }}>
+                {s.label}
+              </span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="font-black tabular-nums leading-none text-white"
+                  style={{ fontSize: '1.35rem', textShadow: '0 2px 20px rgba(0,0,0,1)' }}>
                   {s.val}
                 </span>
-                {/* Unit pill */}
-                <span className="mt-1 px-2 py-0.5 rounded-full font-bold uppercase tracking-widest"
-                  style={{ fontSize: '9px', background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.35)', color: '#f59e0b' }}>
-                  {s.unit}
-                </span>
-                {/* Label */}
-                <span className="mt-1.5 font-semibold uppercase tracking-wider"
-                  style={{ fontSize: '8px', color: 'rgba(255,255,255,0.35)' }}>
-                  {s.label}
-                </span>
+                {s.unit && (
+                  <span className="font-bold uppercase"
+                    style={{ fontSize: '9px', color: '#f59e0b', letterSpacing: '0.06em' }}>
+                    {s.unit}
+                  </span>
+                )}
               </div>
-              {i < arr.length - 1 && (
-                <div className="w-px self-stretch rounded-full mx-1"
-                  style={{ background: 'rgba(255,255,255,0.08)' }} />
-              )}
-            </React.Fragment>
+            </div>
           ))}
         </div>
+
+        {/* Equipment logos — frosted glass pill, logos only, no text labels */}
+        {(() => {
+          const gpsDev = activityMeta?.gpsDevice;
+          const cam    = activityMeta?.camera;
+          const showGPS = gpsDev?.logoFile;
+          const showCam = cam?.logoFile;
+          if (!showGPS && !showCam) return null;
+          return (
+            <div className="absolute flex justify-center"
+              style={{ bottom: '11%', left: 0, right: 0, animation: 'introStatUp 450ms ease-out 2400ms both' }}>
+              <div className="flex items-center gap-4 px-5 py-[9px] rounded-full"
+                style={{
+                  background: 'rgba(255,255,255,0.16)',
+                  backdropFilter: 'blur(16px) saturate(1.6)',
+                  WebkitBackdropFilter: 'blur(16px) saturate(1.6)',
+                  border: '1px solid rgba(255,255,255,0.28)',
+                  boxShadow: '0 2px 20px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.15)',
+                }}>
+                {showGPS && (
+                  <img src={gpsDev!.logoFile} alt="" className="object-contain" style={{ height: '18px', width: 'auto' }} />
+                )}
+                {showGPS && showCam && (
+                  <div className="rounded-full" style={{ width: '1px', height: '16px', background: 'rgba(255,255,255,0.22)' }} />
+                )}
+                {showCam && (
+                  <img src={cam!.logoFile} alt="" className="object-contain" style={{ height: '18px', width: 'auto' }} />
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
