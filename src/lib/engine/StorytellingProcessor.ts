@@ -3,6 +3,15 @@ import { ActionSegment, EnhancedGPSPoint } from "./TelemetryCrossRef";
 import { computeIntensity, IntensityResult } from "./IntensityEngine";
 import { detectScenes, SceneCandidate } from "./SceneDetector";
 import { buildNarrativePlan, NarrativePlan } from "./NarrativePlanner";
+import type { StorytellingV2Debug } from "./v2/StorytellingDebug";
+
+// ─── Feature flag ─────────────────────────────────────────────────────────────
+// Set to "V2" to use the new Storytelling V2 engine.
+// Set to "V1" to revert to the original engine.
+export const STORYTELLING_VERSION: "V1" | "V2" =
+  (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_STORYTELLING_V === "V1")
+    ? "V1"
+    : "V2"; // V2 is now the default
 
 export interface StorySegment {
   type: "INTRO" | "ACTION" | "MAP" | "BRAND";
@@ -23,6 +32,7 @@ export interface StoryPlan {
   narrativePlan: NarrativePlan;
   intensityScores: Float32Array;
   detectedScenes: SceneCandidate[];
+  v2Debug?: StorytellingV2Debug;  // populated only when STORYTELLING_VERSION === "V2"
 }
 
 // Local extension — carries normalized intensity score from detectAllPeaks to generatePlan
@@ -30,6 +40,14 @@ type ScoredActionSegment = ActionSegment & { normalizedScore: number };
 
 export class StorytellingProcessor {
   static generatePlan(activityPoints: EnhancedGPSPoint[], videoPoints: GPSPoint[]): StoryPlan {
+
+    // ── V2 routing ───────────────────────────────────────────────────────────
+    if (STORYTELLING_VERSION === "V2") {
+      // Lazy import to keep V1 bundle unchanged when V2 is disabled
+      const { StorytellingProcessorV2 } = require("./v2/StorytellingProcessorV2");
+      return StorytellingProcessorV2.generatePlan(activityPoints, videoPoints);
+    }
+
     const TOTAL_BUDGET = 59;
     const INTRO_SEC = 6.5;
     const BRAND_SEC = 3.5;
