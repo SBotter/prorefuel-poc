@@ -12,6 +12,7 @@ import {
   ActivityPercentiles,
   PercentileCalculator,
 } from './PercentileCalculator';
+import { UnitSystem, SPEED_THRESH_DESCENT, SPEED_THRESH_TECHNICAL, SPEED_THRESH_SUFFER } from '../../utils/units';
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
@@ -195,6 +196,7 @@ function detectDescentV2(
   intensity:   IntensityV2Result,
   percentiles: ActivityPercentiles,
   maxCands:    number,
+  unit:        UnitSystem = 'metric',
 ): SceneCandidateV2[] {
   const n = points.length;
   const grads  = computeGradients(points);
@@ -204,7 +206,7 @@ function detectDescentV2(
 
   const spdThresh  = percentiles.speed
     ? PercentileCalculator.getThreshold(percentiles.speed, 'P75', percentiles.lowVariance)
-    : 15.0;
+    : SPEED_THRESH_DESCENT[unit];
   const gradThresh = percentiles.descentGrad
     ? PercentileCalculator.getThreshold(percentiles.descentGrad, 'P60', percentiles.lowVariance)
     : 3.0;
@@ -311,6 +313,7 @@ function detectTechnicalV2(
   intensity:   IntensityV2Result,
   percentiles: ActivityPercentiles,
   maxCands:    number,
+  unit:        UnitSystem = 'metric',
 ): SceneCandidateV2[] {
   const n        = points.length;
   const accelCount = points.filter(p => p.accel != null).length;
@@ -338,7 +341,7 @@ function detectTechnicalV2(
   const spdLow  = percentiles.speed ? percentiles.speed.P60 * 0.35 : 5;
   const spdHigh = percentiles.speed
     ? PercentileCalculator.getThreshold(percentiles.speed, 'P75', percentiles.lowVariance)
-    : 30;
+    : SPEED_THRESH_TECHNICAL[unit];
 
   const cond = new Float32Array(n);
   for (let i = 0; i < n; i++) {
@@ -381,6 +384,7 @@ function detectSufferV2(
   intensity:   IntensityV2Result,
   percentiles: ActivityPercentiles,
   maxCands:    number,
+  unit:        UnitSystem = 'metric',
 ): SceneCandidateV2[] {
   const n       = points.length;
   const hrCount = points.filter(p => p.hr != null).length;
@@ -392,7 +396,7 @@ function detectSufferV2(
   const hrThresh  = PercentileCalculator.getThreshold(percentiles.hr,  'P85', percentiles.lowVariance);
   const spdCeil   = percentiles.speed
     ? percentiles.speed.P60 * 0.35   // below 35th percentile of speed
-    : 8.0;
+    : SPEED_THRESH_SUFFER[unit];
 
   const sps    = estimateSps(points);
   const winPts = Math.max(2, Math.round(15 * sps));
@@ -573,16 +577,17 @@ export function detectScenesV2(
   percentiles: ActivityPercentiles,
   videoStart?: number,
   videoEnd?:   number,
+  unit:        UnitSystem = 'metric',
 ): SceneCandidateV2[] {
   if (points.length < 2) return [];
 
   // 1. Run all detectors with top-N candidates
   const raw: SceneCandidateV2[] = [
     ...detectClimbV2    (points, intensity, percentiles, MAX_CANDIDATES_PER_TYPE),
-    ...detectDescentV2  (points, intensity, percentiles, MAX_CANDIDATES_PER_TYPE),
+    ...detectDescentV2  (points, intensity, percentiles, MAX_CANDIDATES_PER_TYPE, unit),
     ...detectSprintV2   (points, intensity, percentiles, MAX_CANDIDATES_PER_TYPE),
-    ...detectTechnicalV2(points, intensity, percentiles, MAX_CANDIDATES_PER_TYPE),
-    ...detectSufferV2   (points, intensity, percentiles, MAX_CANDIDATES_PER_TYPE),
+    ...detectTechnicalV2(points, intensity, percentiles, MAX_CANDIDATES_PER_TYPE, unit),
+    ...detectSufferV2   (points, intensity, percentiles, MAX_CANDIDATES_PER_TYPE, unit),
     ...detectContrastV2 (points, intensity, percentiles, MAX_CANDIDATES_PER_TYPE),
   ];
 

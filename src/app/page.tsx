@@ -6,6 +6,7 @@ import MapEngine from "@/components/MapEngine";
 import { ActionSegment, TelemetryCrossRef } from "@/lib/engine/TelemetryCrossRef";
 import { GoProEngineClient } from "@/lib/media/GoProEngineClient";
 import { StorytellingProcessor, StoryPlan } from "@/lib/engine/StorytellingProcessor";
+import { UnitSystem } from "@/lib/utils/units";
 
 
 interface DeviceInfo {
@@ -67,6 +68,7 @@ export default function ProRefuelPage() {
   const [statusMsg, setStatusMsg] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [unit, setUnit] = useState<UnitSystem>('metric');
   const mapEngineRef = useRef<{ start: () => void; startRecording: () => Promise<void>; isRecording: boolean }>(null);
 
 
@@ -118,13 +120,13 @@ export default function ProRefuelPage() {
       setStatusMsg("Finding your best moments...");
       await new Promise(resolve => setTimeout(resolve, 50)); // Yield
 
-      const segments = TelemetryCrossRef.findHighlights(activityPoints, videoPoints as any);
+      const segments = TelemetryCrossRef.findHighlights(activityPoints, videoPoints as any, unit);
       if (!segments || segments.length === 0) {
         throw new Error("No GPS data could be matched from the video.");
       }
 
       setStatusMsg("Crafting your cinematic story...");
-      const plan = StorytellingProcessor.generatePlan(activityPoints, videoPoints as any);
+      const plan = StorytellingProcessor.generatePlan(activityPoints, videoPoints as any, unit);
       setStoryPlan(plan);
 
       // Save JSON for backend evaluation
@@ -257,6 +259,27 @@ export default function ProRefuelPage() {
               </p>
             </header>
             <div className="flex-1 space-y-6">
+              {/* Unit System Toggle */}
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Units</span>
+                <div className="flex items-center gap-1 p-1 rounded-full bg-zinc-800 border border-zinc-700">
+                  <button
+                    onClick={() => setUnit('metric')}
+                    disabled={highlights.length > 0}
+                    className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${unit === 'metric' ? 'bg-amber-500 text-black' : 'text-zinc-400 hover:text-white'} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    KM/H
+                  </button>
+                  <button
+                    onClick={() => setUnit('imperial')}
+                    disabled={highlights.length > 0}
+                    className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${unit === 'imperial' ? 'bg-amber-500 text-black' : 'text-zinc-400 hover:text-white'} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    MPH
+                  </button>
+                </div>
+              </div>
+
               <div
                 className={`p-6 rounded-3xl border-2 border-dashed transition-all ${activityPoints.length > 0 ? "border-green-500/50 bg-green-500/5" : "border-zinc-700 bg-white/5"}`}
               >
@@ -384,6 +407,7 @@ export default function ProRefuelPage() {
               videoFile={videoFile}
               activityMeta={activityMeta}
               autoRecord={true}
+              unit={unit}
             />
 
           </div>

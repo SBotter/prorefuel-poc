@@ -1,23 +1,26 @@
 "use client";
 import React, { useEffect, useRef, useMemo } from 'react';
 import { EnhancedGPSPoint, TelemetryCrossRef } from '@/lib/engine/TelemetryCrossRef';
+import { UnitSystem, SPEED_LABEL, DIST_LABEL, DIST_DIVISOR } from '@/lib/utils/units';
 
 interface Props {
   points: EnhancedGPSPoint[];
   currentIndex: number;
   hrMax?: number;
   intensityScores?: Float32Array;
+  unit?: UnitSystem;
 }
 
-// Static gauge cache keyed by (W, H, maxSpd)
+// Static gauge cache keyed by (W, H, maxSpd, unit)
 interface GaugeCache {
   canvas: HTMLCanvasElement;
   W: number;
   H: number;
   maxSpd: number;
+  unit: UnitSystem;
 }
 
-export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores }: Props) {
+export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores, unit = 'metric' }: Props) {
   const canvasRef     = useRef<HTMLCanvasElement>(null);
   const gaugeCacheRef = useRef<GaugeCache | null>(null);
   const maxSpdSeenRef = useRef(0);
@@ -80,7 +83,8 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores }: P
     if (!gaugeCacheRef.current ||
         gaugeCacheRef.current.W !== W ||
         gaugeCacheRef.current.H !== H ||
-        gaugeCacheRef.current.maxSpd !== maxSpd) {
+        gaugeCacheRef.current.maxSpd !== maxSpd ||
+        gaugeCacheRef.current.unit !== unit) {
       const cW = Math.round(W * 0.52);
       const cH = Math.round(H * 0.44);
       const gc_canvas = document.createElement('canvas');
@@ -137,7 +141,7 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores }: P
       gc.lineWidth   = 1.5;
       gc.stroke();
 
-      gaugeCacheRef.current = { canvas: gc_canvas, W, H, maxSpd };
+      gaugeCacheRef.current = { canvas: gc_canvas, W, H, maxSpd, unit };
     }
 
     // ── Draw frame ─────────────────────────────────────────────────────────────
@@ -155,7 +159,7 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores }: P
     const speedNow = pt.speed || 0;
     if (speedNow > maxSpdSeenRef.current) maxSpdSeenRef.current = speedNow;
 
-    const distKm = (cumDist[currentIndex] / 1000).toFixed(2);
+    const distKm = (cumDist[currentIndex] / DIST_DIVISOR[unit]).toFixed(2);
     const secs    = (pt.time - points[0].time) / 1000;
     const hhNum   = Math.floor(secs / 3600);
     const mm      = Math.floor((secs % 3600) / 60).toString().padStart(2, '0');
@@ -210,7 +214,7 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores }: P
     ctx.fillText(Math.round(speedNow).toString(), gCX, gCY + Math.round(W * 0.015));
     ctx.font      = `700 ${Math.round(W * 0.028)}px sans-serif`;
     ctx.fillStyle = '#f59e0b';
-    ctx.fillText('KM/H', gCX, gCY + Math.round(W * 0.016) + Math.round(W * 0.04));
+    ctx.fillText(SPEED_LABEL[unit], gCX, gCY + Math.round(W * 0.016) + Math.round(W * 0.04));
 
     // ── Distance ───────────────────────────────────────────────────────────────
     const metY = gCY + gR + Math.round(H * 0.04);
@@ -222,7 +226,7 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores }: P
     const dW = ctx.measureText(distKm).width;
     ctx.font      = `700 ${Math.round(W * 0.035)}px sans-serif`;
     ctx.fillStyle = '#f59e0b';
-    ctx.fillText(' KM', W * 0.04 + dW, metY - 4);
+    ctx.fillText(` ${DIST_LABEL[unit]}`, W * 0.04 + dW, metY - 4);
 
     // ── HR / Power / Time ──────────────────────────────────────────────────────
     // Clipped to left 46% of canvas — padding before mini-map right widget
@@ -258,7 +262,7 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores }: P
     ctx.restore();
 
     noShad();
-  }, [points, currentIndex, cumDist, maxSpd, hrMax]);
+  }, [points, currentIndex, cumDist, maxSpd, hrMax, unit]);
 
   if (!points || points.length < 2) return null;
 

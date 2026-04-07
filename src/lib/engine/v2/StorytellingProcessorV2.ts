@@ -17,6 +17,7 @@
 
 import { GPSPoint } from '../../media/GoProEngineClient';
 import { ActionSegment, EnhancedGPSPoint } from '../TelemetryCrossRef';
+import { UnitSystem, SPEED_LABEL } from '../../utils/units';
 import { computeIntensity } from '../IntensityEngine';
 import { detectScenes } from '../SceneDetector';
 import { buildNarrativePlan } from '../NarrativePlanner';
@@ -35,16 +36,17 @@ type ScoredActionSegmentV2 = ActionSegment & { normalizedScore: number };
 
 // ─── Internal: format display values from V2 candidates ───────────────────────
 
-function labelFromCandidate(c: SceneCandidateV2): { title: string; value: string } {
+function labelFromCandidate(c: SceneCandidateV2, unit: UnitSystem): { title: string; value: string } {
   const m = c.metadata;
+  const spdLbl = SPEED_LABEL[unit];
   switch (c.type) {
-    case 'CLIMB':    return { title: 'BRUTAL CLIMB',      value: `${(m.avgGradient  ?? 0).toFixed(1)}%`                                               };
-    case 'DESCENT':  return { title: 'WILD DESCENT',      value: `${(m.maxSpeed     ?? 0).toFixed(1)} KM/H`                                          };
-    case 'SPRINT':   return { title: 'SPRINT',            value: `+${(m.speedDelta  ?? 0).toFixed(1)} KM/H`                                          };
-    case 'TECHNICAL':return { title: 'TECHNICAL',         value: `${(m.avgSpeed     ?? 0).toFixed(1)} KM/H`                                          };
-    case 'SUFFER':   return { title: 'RED ZONE',          value: `${Math.round(m.avgHR ?? 0)} BPM`                                                   };
-    case 'CONTRAST': return { title: 'FLOW',              value: `${(m.climbGradient ?? 0).toFixed(1)}% → ${(m.descentSpeed ?? 0).toFixed(1)} KM/H` };
-    default:         return { title: c.label,             value: ''                                                                                   };
+    case 'CLIMB':    return { title: 'BRUTAL CLIMB',      value: `${(m.avgGradient  ?? 0).toFixed(1)}%`                                                    };
+    case 'DESCENT':  return { title: 'WILD DESCENT',      value: `${(m.maxSpeed     ?? 0).toFixed(1)} ${spdLbl}`                                           };
+    case 'SPRINT':   return { title: 'SPRINT',            value: `+${(m.speedDelta  ?? 0).toFixed(1)} ${spdLbl}`                                           };
+    case 'TECHNICAL':return { title: 'TECHNICAL',         value: `${(m.avgSpeed     ?? 0).toFixed(1)} ${spdLbl}`                                           };
+    case 'SUFFER':   return { title: 'RED ZONE',          value: `${Math.round(m.avgHR ?? 0)} BPM`                                                         };
+    case 'CONTRAST': return { title: 'FLOW',              value: `${(m.climbGradient ?? 0).toFixed(1)}% → ${(m.descentSpeed ?? 0).toFixed(1)} ${spdLbl}`  };
+    default:         return { title: c.label,             value: ''                                                                                         };
   }
 }
 
@@ -83,6 +85,7 @@ function selectClipsFromVideoWindow(
   videoStart:     number,
   videoEnd:       number,
   actionBudget:   number,
+  unit:           UnitSystem,
 ): { clips: ScoredActionSegmentV2[]; reason: string } {
 
   // ── 1. Extract activity points inside the video time window ──────────────
@@ -207,14 +210,15 @@ function selectClipsFromVideoWindow(
   }
 
   // ── 7. Label each clip by its dominant characteristic ─────────────────────
+  const spdLbl = SPEED_LABEL[unit];
   function clipLabel(w: typeof chosen[number]): { title: string; value: string } {
     if (w.peakSpd >= p85Speed && w.meanGrad < -2)
-      return { title: 'DESCENT', value: `${w.peakSpd.toFixed(1)} KM/H` };
+      return { title: 'DESCENT', value: `${w.peakSpd.toFixed(1)} ${spdLbl}` };
     if (w.peakSpd >= p85Speed && w.meanGrad >= 0)
-      return { title: 'SPRINT',  value: `${w.peakSpd.toFixed(1)} KM/H` };
+      return { title: 'SPRINT',  value: `${w.peakSpd.toFixed(1)} ${spdLbl}` };
     if (Math.abs(w.meanGrad) > 5)
       return { title: w.meanGrad > 0 ? 'CLIMB' : 'DESCENT', value: `${w.meanGrad.toFixed(1)}%` };
-    return { title: 'RIDE', value: `${w.peakSpd.toFixed(1)} KM/H` };
+    return { title: 'RIDE', value: `${w.peakSpd.toFixed(1)} ${spdLbl}` };
   }
 
   // ── 8. Build clips — proportional budget by score ─────────────────────────
@@ -275,6 +279,7 @@ function selectActionClipsV2(
   videoEnd:        number,
   actionBudget:    number,
   rhythmFactor:    number,
+  unit:            UnitSystem,
 ): { clips: ScoredActionSegmentV2[]; rejected: Array<{ candidate: SceneCandidateV2; reason: string }> } {
 
   const rejected: Array<{ candidate: SceneCandidateV2; reason: string }> = [];
@@ -382,7 +387,7 @@ function selectActionClipsV2(
     .map(({ cand, durationSec }) => {
       const startPt = activityPoints[cand.startIndex];
       const endPt   = activityPoints[cand.endIndex];
-      const { title, value } = labelFromCandidate(cand);
+      const { title, value } = labelFromCandidate(cand, unit);
 
       return {
         startIndex:     cand.startIndex,
@@ -406,6 +411,7 @@ export class StorytellingProcessorV2 {
   static generatePlan(
     activityPoints: EnhancedGPSPoint[],
     videoPoints:    GPSPoint[],
+    unit:           UnitSystem = 'metric',
   ): StoryPlan & { v2Debug?: StorytellingV2Debug } {
 
     const t0 = performance.now();
@@ -440,7 +446,7 @@ export class StorytellingProcessorV2 {
     const percentiles = computeActivityPercentiles(hrValues, speedValues, gradValues, accelValues, masterValues);
 
     // ── 4. V2 Scene Detection ─────────────────────────────────────────────────
-    const candidates = detectScenesV2(activityPoints, intensityV2, percentiles, videoStart, videoEnd);
+    const candidates = detectScenesV2(activityPoints, intensityV2, percentiles, videoStart, videoEnd, unit);
 
     // ── 5. Video Overlap Scores ───────────────────────────────────────────────
     if (videoStart > 0) {
@@ -476,14 +482,14 @@ export class StorytellingProcessorV2 {
     let windowScanFallbackReason = '';
 
     if (videoStart > 0) {
-      const v2Result = selectActionClipsV2(candidates, activityPoints, videoStart, videoEnd, ACTION_BUDGET, rhythmFactor);
+      const v2Result = selectActionClipsV2(candidates, activityPoints, videoStart, videoEnd, ACTION_BUDGET, rhythmFactor, unit);
       rawSegments = v2Result.clips;
       rejected    = v2Result.rejected;
 
       // If V2 typed candidates yielded nothing (all FAR), scan the video window by intensity
       if (rawSegments.length === 0) {
         console.warn(`[ProRefuel V2] No INSIDE typed candidates — running cinematic scan on video window`);
-        const scanResult = selectClipsFromVideoWindow(activityPoints, intensityV2, videoStart, videoEnd, ACTION_BUDGET);
+        const scanResult = selectClipsFromVideoWindow(activityPoints, intensityV2, videoStart, videoEnd, ACTION_BUDGET, unit);
         rawSegments = scanResult.clips;
         windowScanFallbackReason = scanResult.reason;
       }
