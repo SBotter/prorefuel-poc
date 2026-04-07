@@ -1,13 +1,15 @@
 "use client";
 import React, { useEffect, useRef, useMemo } from 'react';
 import { EnhancedGPSPoint, TelemetryCrossRef } from '@/lib/engine/TelemetryCrossRef';
+import { UnitSystem, ELE_LABEL, ELE_FACTOR, DIST_LABEL, DIST_DIVISOR } from '@/lib/utils/units';
 
 interface Props {
   points: EnhancedGPSPoint[];
   currentIndex: number;
+  unit?: UnitSystem;
 }
 
-export function AltimetryGraph({ points, currentIndex }: Props) {
+export function AltimetryGraph({ points, currentIndex, unit = 'metric' }: Props) {
   const canvasRef      = useRef<HTMLCanvasElement>(null);
   const staticCache    = useRef<HTMLCanvasElement | null>(null);
   const dimsRef        = useRef({ W: 0, H: 0 });
@@ -31,7 +33,7 @@ export function AltimetryGraph({ points, currentIndex }: Props) {
     const eRange = maxE - minE || 1;
 
     return { cumDist, totalDist, minE, maxE, eRange, peakIdx };
-  }, [points]);
+  }, [points, unit]);
 
   // Watch canvas size via ResizeObserver — invalidates static cache on resize
   useEffect(() => {
@@ -141,7 +143,7 @@ export function AltimetryGraph({ points, currentIndex }: Props) {
       ac.fillStyle   = '#fbbf24';
       ac.textAlign   = 'center';
       ac.textBaseline = 'alphabetic';
-      ac.fillText(`▲ ${Math.round(points[peakIdx].ele)}m`, Math.min(Math.max(pkX, 40), W - 40), pkY - 10);
+      ac.fillText(`▲ ${Math.round(points[peakIdx].ele * ELE_FACTOR[unit])}${ELE_LABEL[unit]}`, Math.min(Math.max(pkX, 40), W - 40), pkY - 10);
       ac.shadowBlur  = 0;
       ac.restore();
 
@@ -154,7 +156,7 @@ export function AltimetryGraph({ points, currentIndex }: Props) {
       ac.textAlign    = 'left';
       ac.fillText('0', 8, H - 6);
       ac.textAlign = 'right';
-      ac.fillText(`${(totalDist / 1000).toFixed(1)}km`, W - 8, H - 6);
+      ac.fillText(`${(totalDist / DIST_DIVISOR[unit]).toFixed(1)}${DIST_LABEL[unit].toLowerCase()}`, W - 8, H - 6);
       ac.shadowBlur = 0;
 
       staticCache.current = c;
@@ -207,14 +209,14 @@ export function AltimetryGraph({ points, currentIndex }: Props) {
     ctx.textAlign   = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.fillText(
-      `${Math.round(points[currentIndex].ele)}m`,
+      `${Math.round(points[currentIndex].ele * ELE_FACTOR[unit])}${ELE_LABEL[unit]}`,
       Math.min(Math.max(curX, 40), W - 40),
       curY - 10,
     );
     ctx.shadowBlur = 0;
 
     ctx.restore();
-  }, [data, currentIndex, points]);
+  }, [data, currentIndex, points, unit]);
 
   if (!points || points.length < 2) return null;
 

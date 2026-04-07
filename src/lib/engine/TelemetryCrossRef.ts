@@ -1,6 +1,7 @@
 import { GPSPoint } from "../media/GoProEngineClient";
 import { computeIntensity } from "./IntensityEngine";
 import { detectScenes, SceneCandidate } from "./SceneDetector";
+import { UnitSystem, SPEED_FACTOR, SPEED_LABEL } from "../utils/units";
 
 export interface HighlightSegment {
   startPoint: GPSPoint;
@@ -15,7 +16,7 @@ export interface EnhancedGPSPoint extends GPSPoint {
   hr?: number;
   cad?: number;
   power?: number;
-  speed?: number; // km/h
+  speed?: number; // km/h in metric, mph in imperial
   accel?: number; // m/s^2 (Z-axis)
   gyro?: number;  // rad/s (Yaw)
 }
@@ -37,7 +38,7 @@ export class TelemetryCrossRef {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
-  static findHighlights(activityPoints: EnhancedGPSPoint[], videoPoints: GPSPoint[]): ActionSegment[] {
+  static findHighlights(activityPoints: EnhancedGPSPoint[], videoPoints: GPSPoint[], unit: UnitSystem = 'metric'): ActionSegment[] {
     if (videoPoints.length === 0 || activityPoints.length === 0) return [];
 
     const videoStart = videoPoints[0].time;
@@ -48,7 +49,7 @@ export class TelemetryCrossRef {
       if (!activityPoints[i].speed) {
         const d = this.getDistance(activityPoints[i - 1], activityPoints[i]);
         const t = (activityPoints[i].time - activityPoints[i - 1].time) / 1000;
-        if (t > 0 && t < 10) activityPoints[i].speed = (d / t) * 3.6;
+        if (t > 0 && t < 10) activityPoints[i].speed = (d / t) * SPEED_FACTOR[unit];
       }
     }
     const WINDOW = 5;
@@ -73,15 +74,16 @@ export class TelemetryCrossRef {
     scenes.forEach(s => console.log(`  ${s.id} ${s.label} [${s.startIndex}→${s.endIndex}] t=${new Date(activityPoints[s.startIndex].time).toISOString()} score=${s.score.toFixed(3)}`));
 
     // ── Map SceneCandidate → ActionSegment (filter to video window) ───────────
+    const spdLbl = SPEED_LABEL[unit];
     const labelFor = (s: SceneCandidate): { title: string; value: string } => {
       const m = s.metadata;
       switch (s.id) {
         case "C1": return { title: "BRUTAL CLIMB",   value: `${m.avgGradient?.toFixed(1)}%` };
-        case "C2": return { title: "WILD DESCENT",   value: `${m.maxSpeed?.toFixed(1)} KM/H` };
-        case "C3": return { title: "SPRINT",         value: `+${m.speedDelta?.toFixed(1)} KM/H` };
-        case "C4": return { title: "TECHNICAL",      value: `${m.avgSpeed?.toFixed(1)} KM/H` };
+        case "C2": return { title: "WILD DESCENT",   value: `${m.maxSpeed?.toFixed(1)} ${spdLbl}` };
+        case "C3": return { title: "SPRINT",         value: `+${m.speedDelta?.toFixed(1)} ${spdLbl}` };
+        case "C4": return { title: "TECHNICAL",      value: `${m.avgSpeed?.toFixed(1)} ${spdLbl}` };
         case "C5": return { title: "RED ZONE",       value: `${Math.round(m.avgHR ?? 0)} BPM` };
-        case "C6": return { title: "FLOW",           value: `${m.climbGradient?.toFixed(1)}% → ${m.descentSpeed?.toFixed(1)} KM/H` };
+        case "C6": return { title: "FLOW",           value: `${m.climbGradient?.toFixed(1)}% → ${m.descentSpeed?.toFixed(1)} ${spdLbl}` };
         default:   return { title: s.label,            value: "" };
       }
     };
@@ -127,7 +129,7 @@ export class TelemetryCrossRef {
         if (!vpts[i].speed) {
           const d = this.getDistance(vpts[i - 1], vpts[i]);
           const t = (vpts[i].time - vpts[i - 1].time) / 1000;
-          if (t > 0 && t < 10) vpts[i].speed = (d / t) * 3.6;
+          if (t > 0 && t < 10) vpts[i].speed = (d / t) * SPEED_FACTOR[unit];
         }
       }
 

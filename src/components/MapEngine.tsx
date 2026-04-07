@@ -9,6 +9,7 @@ import { ActionSegment } from "@/lib/engine/TelemetryCrossRef";
 import { StoryPlan } from "@/lib/engine/StorytellingProcessor";
 import { AltimetryGraph } from "./AltimetryGraph";
 import { TelemetryHUD } from "./TelemetryHUD";
+import { UnitSystem, SPEED_LABEL, DIST_LABEL, DIST_DIVISOR, ELE_LABEL, ELE_FACTOR } from "@/lib/utils/units";
 import { playIntroWithDataImpacts, playBrandExit, initTone, getToneOutputStream } from "@/lib/audio/AudioEngine";
 
 interface DeviceInfo {
@@ -30,6 +31,7 @@ interface MapEngineProps {
   videoFile: File | null;
   activityMeta?: ActivityMeta;
   autoRecord?: boolean;
+  unit?: UnitSystem;
 }
 
 function calculateBearing(start: GPSPoint, end: GPSPoint) {
@@ -48,7 +50,7 @@ function getDistance(p1: GPSPoint, p2: GPSPoint) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, activityMeta, autoRecord = false }: MapEngineProps, ref) => {
+const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, activityMeta, autoRecord = false, unit = 'metric' }: MapEngineProps, ref) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -114,18 +116,18 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         d += getDistance(activityPoints[i], activityPoints[i + 1]);
       }
     }
-    const tMs   = activityPoints.length > 1 ? (activityPoints[activityPoints.length - 1].time - activityPoints[0].time) : 0;
-    const tSecs = tMs / 1000;
-    const distKm = d / 1000;
-    const avg = tSecs > 0 ? (distKm / (tSecs / 3600)).toFixed(1) : "--";
+    const tMs    = activityPoints.length > 1 ? (activityPoints[activityPoints.length - 1].time - activityPoints[0].time) : 0;
+    const tSecs  = tMs / 1000;
+    const distUnit = d / DIST_DIVISOR[unit];
+    const avg = tSecs > 0 ? (distUnit / (tSecs / 3600)).toFixed(1) : "--";
     const hhN = Math.floor(tSecs / 3600);
     const mmS = Math.floor((tSecs % 3600) / 60).toString().padStart(2, "0");
     const ssS = Math.floor(tSecs % 60).toString().padStart(2, "0");
     const timeStr = (!isNaN(tSecs) && tSecs > 0)
       ? (hhN > 0 ? `${hhN.toString().padStart(2, "0")}:${mmS}:${ssS}` : `${mmS}:${ssS}`)
       : "--";
-    return { totalDistKm: distKm.toFixed(1), totalTimeStr: timeStr, avgSpeedKmh: avg };
-  }, [activityPoints]);
+    return { totalDistKm: distUnit.toFixed(1), totalTimeStr: timeStr, avgSpeedKmh: avg };
+  }, [activityPoints, unit]);
 
   const hrMax = React.useMemo(
     () => Math.max(...activityPoints.map(p => (p as any).hr ?? 0), 1),
@@ -1049,7 +1051,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
       const d1 = cumDist[idx];
       const d2 = cumDist[Math.min(idx + 1, cumDist.length - 1)];
-      const distKm = ((d1 + (d2 - d1) * frac) / 1000).toFixed(2);
+      const distKm = ((d1 + (d2 - d1) * frac) / DIST_DIVISOR[unit]).toFixed(2);
 
       const tNow  = pt1.time + (pt2.time - pt1.time) * frac;
       const secs  = (tNow - activityPoints[0].time) / 1000;
@@ -1091,7 +1093,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       ctx.fillText(Math.round(speedNow).toString(), gCX, gCY + Math.round(W * 0.015));
       ctx.font = `700 ${Math.round(W * 0.028)}px sans-serif`;
       ctx.fillStyle = "#f59e0b";
-      ctx.fillText("KM/H", gCX, gCY + Math.round(W * 0.016) + Math.round(W * 0.04));
+      ctx.fillText(SPEED_LABEL[unit], gCX, gCY + Math.round(W * 0.016) + Math.round(W * 0.04));
 
       // Layer 5: secondary metrics (distance, HR, power, time)
       const metY = gCY + gR + Math.round(H * 0.04);
@@ -1102,7 +1104,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       const dW = ctx.measureText(distKm).width;
       ctx.font = `700 ${Math.round(W * 0.035)}px sans-serif`;
       ctx.fillStyle = "#f59e0b";
-      ctx.fillText(" KM", W * 0.04 + dW, metY - 4);
+      ctx.fillText(` ${DIST_LABEL[unit]}`, W * 0.04 + dW, metY - 4);
 
       const subY = metY + Math.round(H * 0.055);
       let groupX = W * 0.04;
@@ -1469,7 +1471,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       // ── 7. Stats — horizontal info rows with count-up ───────────────────────
       const totalSecs  = activityPoints.length > 1
         ? (activityPoints[activityPoints.length - 1].time - activityPoints[0].time) / 1000 : 0;
-      const finalDistKm = cumDist[cumDist.length - 1] / 1000;
+      const finalDistKm = cumDist[cumDist.length - 1] / DIST_DIVISOR[unit];
       const finalAvgSpd = totalSecs > 0 ? finalDistKm / (totalSecs / 3600) : 0;
 
       const STAT_START = 1800;
@@ -1479,7 +1481,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         {
           label: "DISTANCE",
           delay: STAT_START,
-          countFn: (p) => `${(finalDistKm * p).toFixed(1)} KM`,
+          countFn: (p) => `${(finalDistKm * p).toFixed(1)} ${DIST_LABEL[unit]}`,
         },
         {
           label: "DURATION",
@@ -1497,7 +1499,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         {
           label: "AVG SPEED",
           delay: STAT_START + 280,
-          countFn: (p) => `${(finalAvgSpd * p).toFixed(1)} KM/H`,
+          countFn: (p) => `${(finalAvgSpd * p).toFixed(1)} ${SPEED_LABEL[unit]}`,
         },
       ];
 
@@ -2048,7 +2050,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         }}
         className="absolute z-40 pointer-events-none"
       >
-         <AltimetryGraph points={activityPoints} currentIndex={currentIndex} />
+         <AltimetryGraph points={activityPoints} currentIndex={currentIndex} unit={unit} />
       </div>
 
       {/* 3. ACTIVITY TELEMETRY (Cinematic entry delay) */}
@@ -2061,7 +2063,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
          }}
          className="absolute inset-0 z-50 pointer-events-none"
       >
-         <TelemetryHUD points={activityPoints as any} currentIndex={currentIndex} hrMax={hrMax} intensityScores={storyPlan?.intensityScores} />
+         <TelemetryHUD points={activityPoints as any} currentIndex={currentIndex} hrMax={hrMax} intensityScores={storyPlan?.intensityScores} unit={unit} />
       </div>
 
 
@@ -2170,9 +2172,9 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         {/* Stats — horizontal info rows */}
         <div className="w-[88%] flex flex-col">
           {[
-            { label: 'DISTANCE',  val: totalDistKm,  unit: 'KM',    cls: 'intro-stat-0' },
-            { label: 'DURATION',  val: totalTimeStr,  unit: '',      cls: 'intro-stat-1' },
-            { label: 'AVG SPEED', val: avgSpeedKmh,  unit: 'KM/H',  cls: 'intro-stat-2' },
+            { label: 'DISTANCE',  val: totalDistKm,  unit: DIST_LABEL[unit],  cls: 'intro-stat-0' },
+            { label: 'DURATION',  val: totalTimeStr, unit: '',                cls: 'intro-stat-1' },
+            { label: 'AVG SPEED', val: avgSpeedKmh,  unit: SPEED_LABEL[unit], cls: 'intro-stat-2' },
           ].map((s, i) => (
             <div key={i} className={`${s.cls} flex items-center justify-between`}
               style={{ padding: '9px 0', borderBottom: '1px solid rgba(255,255,255,0.09)' }}>

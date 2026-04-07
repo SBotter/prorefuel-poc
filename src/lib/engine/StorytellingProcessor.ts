@@ -4,6 +4,7 @@ import { computeIntensity, IntensityResult } from "./IntensityEngine";
 import { detectScenes, SceneCandidate } from "./SceneDetector";
 import { buildNarrativePlan, NarrativePlan } from "./NarrativePlanner";
 import type { StorytellingV2Debug } from "./v2/StorytellingDebug";
+import { UnitSystem, SPEED_LABEL } from "../utils/units";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 // Set to "V2" to use the new Storytelling V2 engine.
@@ -39,13 +40,13 @@ export interface StoryPlan {
 type ScoredActionSegment = ActionSegment & { normalizedScore: number };
 
 export class StorytellingProcessor {
-  static generatePlan(activityPoints: EnhancedGPSPoint[], videoPoints: GPSPoint[]): StoryPlan {
+  static generatePlan(activityPoints: EnhancedGPSPoint[], videoPoints: GPSPoint[], unit: UnitSystem = 'metric'): StoryPlan {
 
     // ── V2 routing ───────────────────────────────────────────────────────────
     if (STORYTELLING_VERSION === "V2") {
       // Lazy import to keep V1 bundle unchanged when V2 is disabled
       const { StorytellingProcessorV2 } = require("./v2/StorytellingProcessorV2");
-      return StorytellingProcessorV2.generatePlan(activityPoints, videoPoints);
+      return StorytellingProcessorV2.generatePlan(activityPoints, videoPoints, unit);
     }
 
     const TOTAL_BUDGET = 59;
@@ -75,7 +76,7 @@ export class StorytellingProcessor {
     // 2b. PEAK DETECTION — rhythm drives variable clip window size
     const rhythmFactor = narrativePlan.editingRhythm === "FAST" ? 0.8
                        : narrativePlan.editingRhythm === "SLOW" ? 1.3 : 1.0;
-    const rawSegments: ScoredActionSegment[] = this.detectAllPeaks(activityPoints, videoStart, videoEnd, rhythmFactor);
+    const rawSegments: ScoredActionSegment[] = this.detectAllPeaks(activityPoints, videoStart, videoEnd, rhythmFactor, unit);
 
     // 3. BUDGET ALLOCATION & STRATEGY SELECTION
     // Calculate required travel speed for a continuous journey
@@ -89,15 +90,16 @@ export class StorytellingProcessor {
     const segments: StorySegment[] = [];
 
     // Helper: derive display value from scene metadata
+    const spdLbl = SPEED_LABEL[unit];
     const valueFromScene = (s: SceneCandidate): string => {
       const m = s.metadata;
       switch (s.id) {
         case "C1": return `${(m.avgGradient  ?? 0).toFixed(1)}%`;
-        case "C2": return `${(m.maxSpeed     ?? 0).toFixed(1)} KM/H`;
-        case "C3": return `+${(m.speedDelta  ?? 0).toFixed(1)} KM/H`;
-        case "C4": return `${(m.avgSpeed     ?? 0).toFixed(1)} KM/H`;
+        case "C2": return `${(m.maxSpeed     ?? 0).toFixed(1)} ${spdLbl}`;
+        case "C3": return `+${(m.speedDelta  ?? 0).toFixed(1)} ${spdLbl}`;
+        case "C4": return `${(m.avgSpeed     ?? 0).toFixed(1)} ${spdLbl}`;
         case "C5": return `${Math.round(m.avgHR ?? 0)} BPM`;
-        case "C6": return `${(m.climbGradient ?? 0).toFixed(1)}% → ${(m.descentSpeed ?? 0).toFixed(1)} KM/H`;
+        case "C6": return `${(m.climbGradient ?? 0).toFixed(1)}% → ${(m.descentSpeed ?? 0).toFixed(1)} ${spdLbl}`;
         default:   return "";
       }
     };
@@ -310,9 +312,11 @@ export class StorytellingProcessor {
     videoStart: number,
     videoEnd: number,
     rhythmFactor: number,
+    unit: UnitSystem = 'metric',
   ): ScoredActionSegment[] {
     if (activityPoints.length === 0 || videoStart === 0) return [];
-    
+    const spdLbl = SPEED_LABEL[unit];
+
     // 1. Calculate Global Averages for Normalization
     let sumSpeed = 0, sumHr = 0, sumPower = 0, countHr = 0, countPower = 0;
     activityPoints.forEach(p => {
@@ -405,14 +409,14 @@ export class StorytellingProcessor {
 
             if (p.grade < -4 && (p.speed || 0) > avgSpeed * 1.5) {
                 title = "DOWNHILL FLYER";
-                value = `${(p.speed || 0).toFixed(1)} KM/H (${p.grade.toFixed(1)}%)`;
+                value = `${(p.speed || 0).toFixed(1)} ${spdLbl} (${p.grade.toFixed(1)}%)`;
             } else if (p.grade < -3 && (p.speed || 0) < avgSpeed * 0.9) {
                 // Slow speed + negative grade = braking on descent = technical/cinematic
                 title = "TECHNICAL DESCENT";
-                value = `${Math.abs(p.grade).toFixed(1)}% — ${(p.speed || 0).toFixed(1)} KM/H`;
+                value = `${Math.abs(p.grade).toFixed(1)}% — ${(p.speed || 0).toFixed(1)} ${spdLbl}`;
             } else if (p.grade > 4 && (p.speed || 0) > avgSpeed * 1.1) {
                 title = "POWER ATTACK";
-                value = `${(p.speed || 0).toFixed(1)} KM/H (${p.grade.toFixed(1)}%)`;
+                value = `${(p.speed || 0).toFixed(1)} ${spdLbl} (${p.grade.toFixed(1)}%)`;
             } else if (p.grade < -5 && p.hrDelta > 2) {
                 // HR rising on descent = emergency braking or very technical corner
                 title = "TECHNICAL DESCENT";
