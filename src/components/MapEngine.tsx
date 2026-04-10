@@ -1668,22 +1668,36 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         ctx.globalAlpha = fadeIn;
         shadow("rgba(0,0,0,0.9)", 30);
 
-        // "DEVELOPED BY"
-        ctx.font = `300 ${Math.round(W * 0.048)}px sans-serif`;
-        ctx.fillStyle = "rgba(180,180,180,0.8)";
+        // "LENS" — large, bold, matching landing page font-black tracking-tight
+        ctx.font = `900 ${Math.round(W * 0.26)}px sans-serif`;
+        ctx.fillStyle = "rgba(255,255,255,0.97)";
         ctx.textAlign = "center";
+        ctx.letterSpacing = "-0.02em";
+        ctx.fillText("LENS", W / 2, H * 0.35);
+        ctx.letterSpacing = "0em";
+
+        // Amber accent line below LENS
+        ctx.globalAlpha = fadeIn * 0.7;
+        ctx.fillStyle = "#f59e0b";
+        const accentW = Math.round(W * 0.18);
+        ctx.fillRect((W - accentW) / 2, H * 0.375, accentW, Math.round(H * 0.003));
+
+        ctx.globalAlpha = fadeIn;
+
+        // "DEVELOPED BY"
+        ctx.font = `300 ${Math.round(W * 0.038)}px sans-serif`;
+        ctx.fillStyle = "rgba(160,160,160,0.7)";
         ctx.letterSpacing = "0.3em";
-        ctx.fillText("DEVELOPED BY", W / 2, H * 0.37);
+        ctx.fillText("DEVELOPED BY", W / 2, H * 0.44);
         ctx.letterSpacing = "0em";
 
         // ProRefuel logo large + glow
         if (logoImg.complete && logoImg.naturalWidth > 0) {
-          const lH = Math.round(H * 0.09);
+          const lH = Math.round(H * 0.075);
           const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
-          // Amber glow under logo
           ctx.shadowColor = "rgba(245,158,11,0.6)";
           ctx.shadowBlur = 60;
-          ctx.drawImage(logoImg, (W - lW) / 2, H * 0.41, lW, lH);
+          ctx.drawImage(logoImg, (W - lW) / 2, H * 0.465, lW, lH);
           noShadow();
         }
 
@@ -1691,9 +1705,9 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         if (progress > 0.65) {
           const tagAlpha = Math.min((progress - 0.65) / 0.2, 1);
           ctx.globalAlpha = fadeIn * tagAlpha;
-          ctx.font = `400 ${Math.round(W * 0.032)}px sans-serif`;
-          ctx.fillStyle = "rgba(245,158,11,0.7)";
-          ctx.fillText("prorefuel.app", W / 2, H * 0.555);
+          ctx.font = `400 ${Math.round(W * 0.030)}px sans-serif`;
+          ctx.fillStyle = "rgba(245,158,11,0.75)";
+          ctx.fillText("lens.prorefuel.app", W / 2, H * 0.575);
         }
 
         // Amber bottom accent line
@@ -2073,12 +2087,23 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         viewMode === "BRAND" ? "opacity-100" : "opacity-0"
       }`} />
       <div
-        className={`absolute inset-0 z-50 flex flex-col items-center justify-center transition-opacity duration-1000 delay-[600ms] ${viewMode === "BRAND" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        className={`absolute inset-0 z-50 flex flex-col items-center justify-center gap-0 transition-opacity duration-1000 delay-[600ms] ${viewMode === "BRAND" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
       >
-        <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-[0.4em] mb-4">
+        {/* LENS — font-black tracking-tight matching landing page */}
+        <p className="text-white font-black tracking-tight leading-none mb-2"
+          style={{ fontSize: "clamp(3.5rem, 22vw, 7rem)", letterSpacing: "-0.02em" }}>
+          LENS
+        </p>
+        {/* Amber accent line */}
+        <div className="w-16 h-[2px] bg-amber-500 mb-5 rounded-full opacity-80" />
+        <p className="text-zinc-500 text-[9px] uppercase font-bold tracking-[0.4em] mb-3">
           Developed by
         </p>
-        <img src="/prorefuel_logo.png" alt="ProRefuel" className="w-1/2 max-w-[200px] drop-shadow-[0_0_30px_rgba(245,158,11,0.2)] animate-pulse" />
+        <img src="/prorefuel_logo.png" alt="ProRefuel"
+          className="w-1/2 max-w-[180px] drop-shadow-[0_0_30px_rgba(245,158,11,0.25)] animate-pulse" />
+        <p className="text-amber-500/70 text-[9px] font-bold tracking-widest uppercase mt-4">
+          lens.prorefuel.app
+        </p>
       </div>
 
       {/* Cut flash — mode transitions + within-ACTION clip changes (BRAND has its own fade) */}
