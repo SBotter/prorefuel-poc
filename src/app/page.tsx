@@ -1,145 +1,136 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { Upload, Play, CheckCircle2, Loader2, Gauge } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import {
+  Upload,
+  CheckCircle2,
+  Loader2,
+  Gauge,
+  Shield,
+  Zap,
+  Smartphone,
+  ChevronRight,
+  Lock,
+  PlayCircle,
+} from "lucide-react";
 import MapEngine from "@/components/MapEngine";
-import { ActionSegment, TelemetryCrossRef } from "@/lib/engine/TelemetryCrossRef";
+import {
+  ActionSegment,
+  TelemetryCrossRef,
+} from "@/lib/engine/TelemetryCrossRef";
+import { SyncEngine } from "@/lib/engine/SyncEngine";
 import { GoProEngineClient } from "@/lib/media/GoProEngineClient";
-import { StorytellingProcessor, StoryPlan } from "@/lib/engine/StorytellingProcessor";
+import {
+  StorytellingProcessor,
+  StoryPlan,
+} from "@/lib/engine/StorytellingProcessor";
 import { UnitSystem } from "@/lib/utils/units";
-
-
-interface DeviceInfo {
-  label: string;    // display name, e.g. "Garmin Edge 530" or "GoPro Hero9 Black"
-  logoFile: string; // e.g. "/garmin_logo.png" — empty string = no logo, show text only
-}
-
-interface ActivityMeta {
-  name: string;
-  location?: string;
-  gpsDevice?: DeviceInfo;
-  camera?: DeviceInfo;
-}
-
-// ── Brand → logo file mapping ────────────────────────────────────────────────
-// Add the matching PNG to /public to enable logo display.
-// File must be transparent-background, white/light variant for dark canvas.
-
-const LOGO_BASE = "/devices/logos";
-
-function detectGPSDevice(creatorRaw: string): DeviceInfo {
-  const c     = creatorRaw.toLowerCase();
-  const clean = creatorRaw.replace(/\s*[-–]\s*(www\.\S+|\d[\d.]+.*)$/i, "").trim();
-
-  if (c.includes("garmin"))  return { label: clean || "Garmin",  logoFile: `${LOGO_BASE}/garmin_logo.svg` };
-  if (c.includes("suunto"))  return { label: clean || "Suunto",  logoFile: `${LOGO_BASE}/suunto_logo.svg` };
-  if (c.includes("strava"))  return { label: "Strava",           logoFile: `${LOGO_BASE}/strava_logo.svg` };
-  if (c.includes("wahoo"))   return { label: clean || "Wahoo",   logoFile: "" }; // add wahoo_logo.svg to enable
-  if (c.includes("polar"))   return { label: clean || "Polar",   logoFile: "" };
-  if (c.includes("coros"))   return { label: clean || "Coros",   logoFile: "" };
-  if (c.includes("komoot"))  return { label: "Komoot",           logoFile: "" };
-  if (c.includes("bryton"))  return { label: clean || "Bryton",  logoFile: "" };
-  if (c.includes("lezyne"))  return { label: clean || "Lezyne",  logoFile: "" };
-  if (clean) return { label: clean, logoFile: "" };
-  return { label: "", logoFile: "" };
-}
-
-function detectCamera(cameraModel: string): DeviceInfo {
-  const c = cameraModel.toLowerCase();
-
-  if (c.includes("gopro"))    return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
-  if (c.includes("dji"))      return { label: cameraModel, logoFile: "" }; // add dji_logo.svg to enable
-  if (c.includes("insta360")) return { label: cameraModel, logoFile: "" };
-  if (c.includes("sony"))     return { label: cameraModel, logoFile: "" };
-  if (c.includes("apple") || c.includes("iphone")) return { label: cameraModel, logoFile: "" };
-  if (cameraModel) return { label: cameraModel, logoFile: "" };
-  return { label: "", logoFile: "" };
-}
+import { GPXAnalyzer, GPXProfile } from "@/lib/engine/GPXAnalyzer";
+import {
+  VideoGPSAnalyzer,
+  VideoGPSProfile,
+} from "@/lib/engine/VideoGPSAnalyzer";
+import { SyncStrategySelector } from "@/lib/engine/SyncStrategySelector";
 
 export default function ProRefuelPage() {
+  const [mounted, setMounted] = useState(false);
   const [activityPoints, setActivityPoints] = useState<any[]>([]);
+  const [gpxProfile, setGpxProfile] = useState<GPXProfile | null>(null);
   const [highlights, setHighlights] = useState<ActionSegment[]>([]);
   const [storyPlan, setStoryPlan] = useState<StoryPlan | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [activityMeta, setActivityMeta] = useState<ActivityMeta>({ name: "EPIC RIDE" });
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [step, setStep] = useState<"UPLOAD" | "READY" | "EXPERIENCE">("UPLOAD");
   const [statusMsg, setStatusMsg] = useState("");
-  const [isRecording, setIsRecording] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [unit, setUnit] = useState<UnitSystem>('metric');
-  const mapEngineRef = useRef<{ start: () => void; startRecording: () => Promise<void>; isRecording: boolean }>(null);
+  const [unit, setUnit] = useState<UnitSystem>("metric");
+  const mapEngineRef = useRef<{
+    start: () => void;
+    startRecording: () => Promise<void>;
+    isRecording: boolean;
+  }>(null);
 
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+  if (!mounted) return <div className="min-h-screen bg-[#050505]" />;
 
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setLoading(true);
     setUploadError(null);
     setVideoFile(file);
     setProgress(0);
-    setStatusMsg("Loading your ride...");
-
-    // Progressive visual simulation (fake load to cover the ArrayBuffer read)
-    const estimatedSecs = Math.max(8, file.size / (1024 * 1024 * 15) + 5);
-    const interval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 98) return 98;
-        return prev + 100 / (estimatedSecs * 10);
-      });
-    }, 100);
-
+    const interval = setInterval(
+      () => setProgress((p) => (p >= 98 ? 98 : p + 1)),
+      150,
+    );
     try {
-      setStatusMsg("Scanning every frame of your ride...");
-      await new Promise(resolve => setTimeout(resolve, 150)); // Yield to let the spinner render
-      
-      const { points: videoPoints, cameraModel } = await GoProEngineClient.extractTelemetry(file);
-      console.log("[Video] GPMF cameraModel:", JSON.stringify(cameraModel));
+      setStatusMsg("Analysing GPMF...");
+      const {
+        points: vpts,
+        syncPoints,
+        gpsVideoOffsetMs,
+      } = await GoProEngineClient.extractTelemetry(file);
 
-      // If GPMF didn't return a device name, detect from filename patterns
-      let resolvedCameraModel = cameraModel;
-      if (!resolvedCameraModel) {
-        const fn = file.name.toUpperCase();
-        if (/^G[HXL]\d{6}\.MP4$/.test(fn) || fn.startsWith("GOPR") || fn.startsWith("GP")) {
-          resolvedCameraModel = "GoPro";
-        } else if (fn.startsWith("DJI_") || fn.includes("DJI")) {
-          resolvedCameraModel = "DJI";
-        } else if (fn.includes("INSTA360") || fn.startsWith("_INSP")) {
-          resolvedCameraModel = "Insta360";
-        } else if (fn.startsWith("SONY") || fn.startsWith("C0") || fn.endsWith(".MTS")) {
-          resolvedCameraModel = "Sony";
-        }
-        if (resolvedCameraModel) console.log("[Video] Camera detected from filename:", resolvedCameraModel);
-      }
+      // ── Analyse video GPS structure ──────────────────────────────────────
+      const videoProfile = VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
 
-      const camera = resolvedCameraModel ? detectCamera(resolvedCameraModel) : undefined;
-      if (camera?.label) setActivityMeta(prev => ({ ...prev, camera }));
+      // ── Select sync strategy based on both file analyses ─────────────────
+      const syncPlan = gpxProfile
+        ? SyncStrategySelector.select(gpxProfile, videoProfile)
+        : {
+            method: "position-match" as const,
+            distanceThresholdM: 10,
+            timeWindowMs: 30_000,
+            confidence: "LOW" as const,
+            reason: "no GPX profile",
+          };
+      console.log(
+        `[SyncPlan] method=${syncPlan.method} threshold=${syncPlan.distanceThresholdM.toFixed(1)}m window=${syncPlan.timeWindowMs}ms confidence=${syncPlan.confidence} | ${syncPlan.reason}`,
+      );
 
-      setStatusMsg("Finding your best moments...");
-      await new Promise(resolve => setTimeout(resolve, 50)); // Yield
+      // ── Clock offset: always 0 ────────────────────────────────────────────
+      // gopro-telemetry derives sample.date from GPSU — the GPS UTC string
+      // embedded in the GPMF stream by the GPS receiver. This is the same
+      // GPS satellite clock used by Garmin/Wahoo activity files.
+      // There is no independent camera clock domain to correct for.
+      // Any non-zero clockOffsetMs would introduce a spurious seek shift.
+      const clockOffsetMs = 0;
+      console.log(
+        `[Sync] sample.date=GPS UTC → clockOffsetMs=0, gpsVideoOffsetMs=${gpsVideoOffsetMs}ms`,
+      );
+      const segments = TelemetryCrossRef.findHighlights(
+        activityPoints,
+        vpts as any,
+        unit,
+        clockOffsetMs,
+        gpsVideoOffsetMs,
+      );
+      if (!segments || segments.length === 0)
+        throw new Error("No GPS signal found in video.");
 
-      const segments = TelemetryCrossRef.findHighlights(activityPoints, videoPoints as any, unit);
-      if (!segments || segments.length === 0) {
-        throw new Error("No GPS data could be matched from the video.");
-      }
+      // TODO: workaround — remove after root cause of residual 4s gap is confirmed
+      const VIDEO_SEEK_WORKAROUND_SEC = 0;
+      segments.forEach((s) => {
+        if (s.videoStartTime !== undefined)
+          s.videoStartTime += VIDEO_SEEK_WORKAROUND_SEC;
+      });
 
-      setStatusMsg("Crafting your cinematic story...");
-      const plan = StorytellingProcessor.generatePlan(activityPoints, videoPoints as any, unit);
-      setStoryPlan(plan);
-
-      // Save JSON for backend evaluation
-      try {
-        await fetch("/api/save-story-plan", {
-           method: "POST",
-           headers: { "Content-Type": "application/json" },
-           body: JSON.stringify(plan)
-        });
-      } catch (e) {
-        console.warn("[Upload] Failed to save story plan debug file:", e);
-      }
-
+      const storyPlan = StorytellingProcessor.generatePlan(
+        activityPoints,
+        vpts as any,
+        unit,
+        clockOffsetMs,
+        gpsVideoOffsetMs,
+      );
+      storyPlan.segments.forEach((s) => {
+        if (s.videoStartTime !== undefined)
+          s.videoStartTime += VIDEO_SEEK_WORKAROUND_SEC;
+      });
+      setStoryPlan(storyPlan);
       clearInterval(interval);
       setProgress(100);
       setTimeout(() => {
@@ -147,18 +138,9 @@ export default function ProRefuelPage() {
         setStep("READY");
         setLoading(false);
       }, 500);
-
-    } catch (error: any) {
+    } catch (e: any) {
       clearInterval(interval);
-      const msg: string = error.message || "Failed to process video.";
-      // Map technical errors to user-friendly English messages
-      const friendly = msg.includes("GPS") || msg.includes("telemetria") || msg.includes("GPMF") || msg.includes("GPS5")
-        ? "This video has no embedded GPS telemetry. Use a video recorded with GoPro Hero 5 or later with GPS enabled."
-        : msg.includes("null") || msg.includes("undefined") || msg.includes("Cannot read")
-        ? "The video file appears corrupted or in an unsupported format."
-        : msg;
-      setUploadError(friendly);
-      setVideoFile(null);
+      setUploadError(e.message);
       setLoading(false);
     }
   };
@@ -167,252 +149,327 @@ export default function ProRefuelPage() {
     const file = e.target.files?.[0];
     if (!file) return;
     const text = await file.text();
-    const parser = new DOMParser();
-    const xml = parser.parseFromString(text, "text/xml");
-    
-    // Helper to read Garmin/Strava extension fields.
-    // Falls back to localName matching so <ns3:hr>, <gpxtpx:hr>, etc. are found
-    // regardless of how the browser resolves namespace-prefixed tag names.
-    const getExt = (pt: Element, tag: string): number | undefined => {
-       const el = pt.getElementsByTagName(tag)[0] ||
-                  pt.getElementsByTagName(`gpxtpx:${tag}`)[0] ||
-                  pt.getElementsByTagName(`ns3:${tag}`)[0] ||
-                  pt.getElementsByTagName(`tpx:${tag}`)[0] ||
-                  Array.from(pt.getElementsByTagName('*')).find(e => e.localName === tag);
-       if (!el) return undefined;
-       const val = parseFloat(el.textContent?.trim() || "");
-       return isNaN(val) ? undefined : val;
-    };
 
-    const pts = Array.from(xml.querySelectorAll("trkpt")).map((pt: Element) => ({
-      lat: parseFloat(pt.getAttribute("lat") || "0"),
-      lon: parseFloat(pt.getAttribute("lon") || "0"),
-      ele: parseFloat(pt.querySelector("ele")?.textContent || "0"),
-      time: new Date(pt.querySelector("time")?.textContent || "").getTime(),
-      hr: getExt(pt, "hr"),
-      cad: getExt(pt, "cad"),
-      power: getExt(pt, "power") || getExt(pt, "watts"),
-      speed: getExt(pt, "speed"),
-    }));
+    // Deep structural analysis — runs before point extraction
+    const profile = GPXAnalyzer.analyze(text);
+    setGpxProfile(profile);
+
+    const xml = new DOMParser().parseFromString(text, "text/xml");
+    const pts = Array.from(xml.querySelectorAll("trkpt")).map(
+      (pt: Element) => ({
+        lat: parseFloat(pt.getAttribute("lat") || "0"),
+        lon: parseFloat(pt.getAttribute("lon") || "0"),
+        ele: parseFloat(pt.querySelector("ele")?.textContent || "0"),
+        time: new Date(pt.querySelector("time")?.textContent || "").getTime(),
+      }),
+    );
     setActivityPoints(pts);
-
-    // ── Extract activity metadata from GPX ─────────────────────────────────────
-    // querySelector("trk > name") fails on namespaced GPX (Garmin, Strava, etc.)
-    // getElementsByTagName ignores namespaces and works universally.
-    const allNameEls = Array.from(xml.getElementsByTagName("name"));
-    const trackName  =
-      // Prefer <trk><name> — skip root <gpx> or <metadata> names if they appear first
-      allNameEls.find(el => el.parentElement?.localName === "trk")?.textContent?.trim() ||
-      allNameEls.find(el => el.textContent?.trim())?.textContent?.trim() ||
-      "EPIC RIDE";
-
-    console.log("[GPX] trackName detected:", trackName);
-
-    const creatorRaw = xml.documentElement.getAttribute("creator") || "";
-    const gpsDevice  = creatorRaw ? detectGPSDevice(creatorRaw) : undefined;
-
-    // Reverse geocode first GPS point → city, state
-    let location = "";
-    if (pts.length > 0) {
-      try {
-        const { lat, lon } = pts[0];
-        const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
-        const resp = await fetch(
-          `https://api.mapbox.com/geocoding/v5/mapbox.places/${lon},${lat}.json?types=place,region&access_token=${token}`
-        );
-        if (resp.ok) {
-          const geo = await resp.json();
-          const feature = geo.features?.[0];
-          if (feature) {
-            const city = feature.text || "";
-            const regionCtx = (feature.context as any[])?.find((c: any) => c.id?.startsWith("region"));
-            const stateRaw  = regionCtx?.short_code ?? regionCtx?.text ?? "";
-            const state     = stateRaw.includes("-") ? stateRaw.split("-").pop()! : stateRaw;
-            location = state ? `${city}, ${state}` : city;
-          }
-        }
-      } catch { /* geocoding is optional — skip silently */ }
-    }
-
-    setActivityMeta(prev => ({
-      ...prev,
-      name: trackName,
-      location: location || undefined,
-      gpsDevice: gpsDevice?.label ? gpsDevice : undefined,
-    }));
-  };
-
-  const startShow = () => {
-    setStep("EXPERIENCE");
-    setIsRecording(true);
   };
 
   return (
-    <main className="min-h-screen bg-[#050505] text-white flex items-center justify-center p-4 font-sans">
-      <div className="w-full max-w-[400px] aspect-[9/16] bg-zinc-900 rounded-[3rem] overflow-hidden relative border border-white/10 shadow-2xl flex flex-col">
-        {step !== "EXPERIENCE" ? (
-          <div className="p-8 flex flex-col h-full">
-            <header className="mb-10 text-center flex flex-col items-center">
-              <img src="/prorefuel_logo.png" alt="ProRefuel Logo" className="w-56 mb-1 drop-shadow-2xl" />
-              <p className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 font-bold mt-2">
-                Upload your ride. Get a cinematic story!
-              </p>
-            </header>
-            <div className="flex-1 space-y-6">
-              {/* Unit System Toggle */}
-              <div className="flex items-center justify-between px-1">
-                <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Units</span>
-                <div className="flex items-center gap-1 p-1 rounded-full bg-zinc-800 border border-zinc-700">
-                  <button
-                    onClick={() => setUnit('metric')}
-                    disabled={highlights.length > 0}
-                    className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${unit === 'metric' ? 'bg-amber-500 text-black' : 'text-zinc-400 hover:text-white'} disabled:opacity-40 disabled:cursor-not-allowed`}
+    <main className="min-h-screen bg-[#050505] text-white font-sans selection:bg-amber-500/40 overflow-x-hidden">
+      {/* BACKGROUND EFFECTS */}
+      <div className="fixed inset-0 z-0 pointer-events-none">
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-amber-500/10 blur-[120px] rounded-full" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-amber-500/5 blur-[120px] rounded-full" />
+      </div>
+
+      <div className="flex min-h-screen flex-col lg:flex-row max-w-[1600px] mx-auto relative z-10">
+        {/* LEFT SECTION: THE SHOWCASE */}
+        <section className="w-full lg:w-3/5 flex flex-col items-center justify-center p-8 lg:p-16">
+          <div className="max-w-2xl w-full text-center lg:text-left flex flex-col items-center lg:items-start">
+            <div className="flex items-center gap-3 px-4 py-2 rounded-full bg-zinc-900 border border-amber-500/30 mb-8 shadow-xl">
+              <Zap
+                size={16}
+                className="text-amber-500 fill-amber-500 animate-pulse"
+              />
+              <span className="text-xs font-black uppercase tracking-[0.2em] text-zinc-100">
+                ProRefuel | Lens v1.0
+              </span>
+            </div>
+
+            <h1 className="text-6xl md:text-8xl font-black tracking-tight leading-[0.9] mb-8">
+              CREATE YOUR STORY IN <br />
+              <span className="text-amber-500 drop-shadow-[0_0_30px_rgba(245,158,11,0.3)]">
+                3 CLICKS.
+              </span>
+            </h1>
+
+            <p className="text-zinc-400 text-xl font-medium max-w-lg mb-12 leading-relaxed">
+              Transform raw GoPro files into{" "}
+              <span className="text-white border-b-2 border-amber-500">
+                Cinematic 3D Edits
+              </span>
+              . No cloud. No wait. 100% Local.
+            </p>
+
+            {/* THE SIMULATOR (ENHANCED) */}
+            <div className="relative group">
+              <div className="absolute -inset-4 bg-amber-500/20 rounded-[4rem] blur-3xl opacity-40 group-hover:opacity-100 transition duration-700"></div>
+
+              <div className="relative w-[320px] md:w-[420px] aspect-[9/17] bg-[#0c0c0c] rounded-[3.8rem] border-[12px] border-zinc-800 shadow-[0_0_80px_rgba(0,0,0,0.9)] p-1 overflow-hidden ring-1 ring-white/10 transition-transform duration-500 group-hover:scale-[1.01]">
+                {/* iPhone Notch */}
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-zinc-800 rounded-b-2xl z-30" />
+
+                {/* Video Content */}
+                <div className="w-full h-full rounded-[2.8rem] overflow-hidden bg-black relative">
+                  <video
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
+                    className="w-full h-full object-cover"
                   >
-                    KM/H
-                  </button>
-                  <button
-                    onClick={() => setUnit('imperial')}
-                    disabled={highlights.length > 0}
-                    className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${unit === 'imperial' ? 'bg-amber-500 text-black' : 'text-zinc-400 hover:text-white'} disabled:opacity-40 disabled:cursor-not-allowed`}
-                  >
-                    MPH
-                  </button>
+                    <source src="/videos/hero-preview.mp4" type="video/mp4" />
+                  </video>
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
                 </div>
               </div>
 
-              <div
-                className={`p-6 rounded-3xl border-2 border-dashed transition-all ${activityPoints.length > 0 ? "border-green-500/50 bg-green-500/5" : "border-zinc-700 bg-white/5"}`}
-              >
-                <label className="flex flex-col items-center cursor-pointer">
-                  {activityPoints.length > 0 ? (
-                    <>
-                      <CheckCircle2 className="text-green-500 mb-2" />
-                      <span className="text-xs font-bold uppercase tracking-widest">
-                        GPX Synced
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <Gauge className="text-amber-500 mb-2" />
-                      <span className="text-xs font-bold uppercase tracking-widest text-center">
-                        Upload Activity GPX
-                      </span>
-                      <span className="text-[10px] text-zinc-500 mt-1">Garmin / Strava export</span>
-                    </>
-                  )}
-                  <input
-                    type="file"
-                    accept=".gpx"
-                    onChange={handleGPXUpload}
-                    className="hidden"
-                  />
-                </label>
-              </div>
-              <div
-                className={`p-6 rounded-3xl border-2 border-dashed transition-all ${
-                  uploadError ? "border-red-500/50 bg-red-500/5" :
-                  highlights.length > 0 ? "border-green-500/50 bg-green-500/5" :
-                  "border-zinc-700 bg-white/5"
-                }`}
-              >
-                {uploadError ? (
-                  /* Error state — inline, no alert() */
-                  <div className="flex flex-col items-center w-full text-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-red-500/15 border border-red-500/30 flex items-center justify-center">
-                      <span className="text-red-400 text-lg font-black">!</span>
-                    </div>
-                    <p className="text-red-400 text-[11px] font-bold uppercase tracking-widest">
-                      Incompatible video
-                    </p>
-                    <p className="text-zinc-400 text-[10px] leading-relaxed px-1">
-                      {uploadError}
-                    </p>
-                    <label className="mt-1 cursor-pointer px-4 py-1.5 rounded-full bg-zinc-800 hover:bg-zinc-700 transition-colors">
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-300">
-                        Try another video
-                      </span>
-                      <input
-                        type="file"
-                        accept="video/mp4"
-                        disabled={activityPoints.length === 0}
-                        onChange={handleVideoUpload}
-                        className="hidden"
-                      />
-                    </label>
+              {/* Floating Success Badge */}
+              <div className="absolute -right-10 bottom-20 bg-zinc-900 border border-zinc-700 p-4 rounded-2xl shadow-2xl animate-bounce-slow hidden md:block">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-green-500 flex items-center justify-center shadow-[0_0_15px_rgba(34,197,94,0.4)]">
+                    <CheckCircle2 size={20} className="text-black" />
                   </div>
-                ) : (
-                  <label className="flex flex-col items-center cursor-pointer w-full text-center">
-                    {loading ? (
-                      <div className="w-full flex flex-col items-center">
-                        <Loader2 className="animate-spin text-amber-500 mb-4" />
-                        <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden mb-2">
-                          <div
-                            className="bg-amber-500 h-full transition-all duration-500"
-                            style={{ width: `${progress}%` }}
-                          />
-                        </div>
-                        <span className="text-[10px] font-black uppercase text-amber-500">
-                          {Math.round(progress)}% - {statusMsg}
-                        </span>
-                      </div>
-                    ) : highlights.length > 0 ? (
-                      <>
-                        <CheckCircle2 className="text-green-500 mb-2" />
-                        <span className="text-xs font-bold uppercase tracking-widest text-center">
-                          Video Mapped<br/>
-                          <span className="text-[10px] text-amber-500 mt-1">[{(storyPlan?.segments.filter(s => s.type === "ACTION").length ?? highlights.length)} Action {(storyPlan?.segments.filter(s => s.type === "ACTION").length ?? highlights.length) === 1 ? "Scene" : "Scenes"}]</span>
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="text-zinc-400 mb-2" />
-                        <span className="text-xs font-bold uppercase tracking-widest text-zinc-400">
-                          Upload Camera Video
-                        </span>
-                        <span className="text-[10px] text-zinc-500 mt-1">Local .MP4 file</span>
-                      </>
-                    )}
+                  <div>
+                    <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">
+                      Status
+                    </p>
+                    <p className="text-sm font-black text-white">
+                      READY TO POST
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* RIGHT SECTION: THE ENGINE CARD */}
+        <section className="flex-1 flex flex-col items-center justify-center p-6 lg:p-12">
+          <div className="w-full max-w-[480px]">
+            {/* Header */}
+            <div className="flex flex-col items-center lg:items-start mb-10">
+              <img
+                src="/prorefuel_logo.png"
+                alt="ProRefuel"
+                className="w-56 mb-6 drop-shadow-2xl"
+              />
+              <h2 className="text-4xl font-black italic tracking-tighter uppercase text-white">
+                LENS <span className="text-amber-500">ENGINE</span>
+              </h2>
+              <p className="text-zinc-500 font-bold mt-2 tracking-widest uppercase text-[10px]">
+                Professional Telemetry Visualizer
+              </p>
+            </div>
+
+            {/* THE UPLOAD CARD (HIGH CONTRAST) */}
+            <div className="bg-[#111111] rounded-[3.5rem] border-2 border-zinc-800 p-8 md:p-10 shadow-2xl relative ring-1 ring-white/5">
+              {step !== "EXPERIENCE" ? (
+                <div className="space-y-6 relative z-10">
+                  {/* Unit Selector (High Contrast) */}
+                  <div className="flex p-1.5 bg-black rounded-2xl border border-zinc-800 shadow-inner">
+                    <button
+                      onClick={() => setUnit("metric")}
+                      className={`flex-1 py-3 rounded-xl text-[11px] font-black tracking-widest transition-all ${unit === "metric" ? "bg-amber-500 text-black shadow-[0_5px_15px_rgba(245,158,11,0.3)]" : "text-zinc-500 hover:text-white"}`}
+                    >
+                      METRIC
+                    </button>
+                    <button
+                      onClick={() => setUnit("imperial")}
+                      className={`flex-1 py-3 rounded-xl text-[11px] font-black tracking-widest transition-all ${unit === "imperial" ? "bg-amber-500 text-black shadow-[0_5px_15px_rgba(245,158,11,0.3)]" : "text-zinc-500 hover:text-white"}`}
+                    >
+                      IMPERIAL
+                    </button>
+                  </div>
+
+                  {/* STEP 01: GPX (The Hook) */}
+                  <label
+                    className={`group flex items-center gap-6 p-7 rounded-3xl border-2 transition-all cursor-pointer shadow-lg ${
+                      activityPoints.length > 0
+                        ? "border-green-500 bg-green-500/10"
+                        : "border-amber-500 bg-amber-500/5 hover:bg-amber-500/10 animate-glow-pulse"
+                    }`}
+                  >
+                    <div
+                      className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all ${activityPoints.length > 0 ? "bg-green-500 text-black" : "bg-amber-500 text-black shadow-xl"}`}
+                    >
+                      {activityPoints.length > 0 ? (
+                        <CheckCircle2 size={32} />
+                      ) : (
+                        <Gauge size={32} />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <span
+                        className={`block text-[11px] font-black uppercase tracking-widest mb-1 ${activityPoints.length > 0 ? "text-green-500" : "text-amber-500"}`}
+                      >
+                        Step 01
+                      </span>
+                      <p className="text-lg font-black uppercase text-white leading-none">
+                        Import GPX
+                      </p>
+                      <p className="text-[11px] text-zinc-400 font-bold mt-2">
+                        Garmin / Strava / Wahoo
+                      </p>
+                    </div>
                     <input
                       type="file"
-                      accept="video/mp4"
-                      disabled={loading || activityPoints.length === 0}
-                      onChange={handleVideoUpload}
+                      accept=".gpx"
+                      onChange={handleGPXUpload}
                       className="hidden"
                     />
                   </label>
-                )}
-              </div>
+
+                  {/* STEP 02: MP4 (The Action) */}
+                  <label
+                    className={`group flex items-center gap-6 p-7 rounded-3xl border-2 transition-all cursor-pointer shadow-lg ${
+                      uploadError
+                        ? "border-red-500 bg-red-500/10"
+                        : highlights.length > 0
+                          ? "border-green-500 bg-green-500/10"
+                          : activityPoints.length === 0
+                            ? "border-zinc-800 bg-zinc-900/50 cursor-not-allowed"
+                            : "border-amber-500 bg-amber-500/5 hover:bg-amber-500/10"
+                    }`}
+                  >
+                    <div
+                      className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all ${highlights.length > 0 ? "bg-green-500 text-black" : activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" : "bg-amber-500 text-black shadow-xl"}`}
+                    >
+                      {loading ? (
+                        <Loader2 className="animate-spin" size={32} />
+                      ) : highlights.length > 0 ? (
+                        <CheckCircle2 size={32} />
+                      ) : (
+                        <Upload size={32} />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <span
+                        className={`block text-[11px] font-black uppercase tracking-widest mb-1 ${activityPoints.length === 0 ? "text-zinc-600" : "text-amber-500"}`}
+                      >
+                        Step 02
+                      </span>
+                      <p
+                        className={`text-lg font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}
+                      >
+                        Import MP4
+                      </p>
+                      <p className="text-[11px] text-zinc-400 font-bold mt-2">
+                        {loading
+                          ? statusMsg
+                          : activityPoints.length === 0
+                            ? "Lock: Load GPX first"
+                            : "Raw GoPro Video"}
+                      </p>
+                    </div>
+                    <input
+                      type="file"
+                      accept="video/mp4"
+                      disabled={activityPoints.length === 0}
+                      onChange={handleVideoUpload}
+                      className="hidden"
+                    />
+                    {activityPoints.length === 0 && (
+                      <Lock size={18} className="text-zinc-800" />
+                    )}
+                  </label>
+
+                  {/* CTA BUTTON */}
+                  <div className="pt-4">
+                    <button
+                      onClick={() => setStep("EXPERIENCE")}
+                      disabled={!highlights.length}
+                      className={`w-full py-8 rounded-3xl font-black uppercase tracking-[0.4em] text-xs transition-all flex items-center justify-center gap-4 ${
+                        highlights.length
+                          ? "bg-amber-500 text-black shadow-[0_20px_50px_rgba(245,158,11,0.4)] hover:scale-[1.02] active:scale-95"
+                          : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
+                      }`}
+                    >
+                      <Zap
+                        size={22}
+                        fill={highlights.length ? "black" : "none"}
+                      />{" "}
+                      Generate & Download
+                    </button>
+                  </div>
+
+                  {/* Trust Footer */}
+                  <div className="flex justify-center gap-8 pt-10 border-t border-zinc-800">
+                    <div className="flex items-center gap-2 text-zinc-500">
+                      <Shield size={14} />
+                      <span className="text-[10px] font-black uppercase tracking-widest">
+                        Private
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-zinc-500">
+                      <Smartphone size={14} />
+                      <span className="text-[10px] font-black uppercase tracking-widest">
+                        WASM Power
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-zinc-500">
+                      <PlayCircle size={14} />
+                      <span className="text-[10px] font-black uppercase tracking-widest">
+                        Insta Ready
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Engine Viewport */
+                <div className="aspect-[9/16] w-full rounded-[3rem] overflow-hidden bg-black relative shadow-2xl ring-2 ring-amber-500/20">
+                  <MapEngine
+                    ref={mapEngineRef}
+                    activityPoints={activityPoints}
+                    highlights={highlights}
+                    storyPlan={storyPlan}
+                    videoFile={videoFile}
+                    autoRecord={true}
+                    unit={unit}
+                  />
+                </div>
+              )}
             </div>
 
-            <button
-              onClick={startShow}
-              disabled={!highlights.length || !videoFile}
-              className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-all mt-6 ${
-                highlights.length && videoFile
-                  ? "bg-amber-500 text-black hover:bg-amber-400 hover:scale-[1.02]"
-                  : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
-              }`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-              Download MP4
-            </button>
+            {/* The Final Punchline */}
+            <p className="mt-12 text-center text-[12px] text-white uppercase font-black tracking-[0.8em] opacity-80">
+              PROREFUEL.APP
+            </p>
+            <p className="text-center text-[9px] text-zinc-600 uppercase font-bold tracking-[0.3em] mt-2">
+              Elevate your performance.
+            </p>
           </div>
-        ) : (
-          <div className="w-full h-full relative">
-            <MapEngine
-              ref={mapEngineRef}
-              activityPoints={activityPoints}
-              highlights={highlights}
-              storyPlan={storyPlan}
-              videoFile={videoFile}
-              activityMeta={activityMeta}
-              autoRecord={true}
-              unit={unit}
-            />
-
-          </div>
-        )}
+        </section>
       </div>
+
+      <style jsx global>{`
+        @keyframes glow-pulse {
+          0%,
+          100% {
+            border-color: rgba(245, 158, 11, 0.4);
+          }
+          50% {
+            border-color: rgba(245, 158, 11, 1);
+          }
+        }
+        .animate-glow-pulse {
+          animation: glow-pulse 2s infinite;
+        }
+        @keyframes bounce-slow {
+          0%,
+          100% {
+            transform: translateY(0);
+          }
+          50% {
+            transform: translateY(-10px);
+          }
+        }
+        .animate-bounce-slow {
+          animation: bounce-slow 4s ease-in-out infinite;
+        }
+      `}</style>
     </main>
   );
 }

@@ -6,8 +6,10 @@ export interface GPSPoint {
 }
 
 export interface TelemetryResult {
-  points: GPSPoint[];
-  cameraModel: string; // e.g. "GoPro Hero9 Black" — empty string if unavailable
+  points: GPSPoint[];       // 1 Hz — for map rendering and scene detection
+  syncPoints: GPSPoint[];   // ~5 Hz — higher-resolution GPS used only for clock offset estimation
+  cameraModel: string;      // e.g. "GoPro Hero9 Black" — empty string if unavailable
+  gpsVideoOffsetMs: number; // ms from video start to first valid GPS sample (GPS startup latency)
 }
 
 export class GoProEngineClient {
@@ -24,8 +26,10 @@ export class GoProEngineClient {
 
       worker.onmessage = (e) => {
         if (e.data.success) {
-          const downsampled   = e.data.points;
-          const cameraModel   = e.data.cameraModel || "";
+          const downsampled       = e.data.points;
+          const syncPoints        = e.data.syncPoints ?? downsampled; // fallback: use 1Hz if worker didn't send 5Hz
+          const cameraModel       = e.data.cameraModel || "";
+          const gpsVideoOffsetMs  = typeof e.data.gpsVideoOffsetMs === 'number' ? e.data.gpsVideoOffsetMs : 0;
 
           // --- DEBUGGING: Salvar secretamente na pasta temp_gpx do servidor de testes ---
           try {
@@ -44,8 +48,8 @@ export class GoProEngineClient {
           }
           // --------------------------------------------------------------------------------
 
-          console.log(`[GoProEngineClient] Web Worker finalizou! ${downsampled.length} pontos | câmera: "${cameraModel}"`);
-          resolve({ points: downsampled, cameraModel });
+          console.log(`[GoProEngineClient] Web Worker finalizou! ${downsampled.length} pts (1Hz) | ${syncPoints.length} pts (5Hz sync) | câmera: "${cameraModel}" | GPS offset: ${gpsVideoOffsetMs}ms`);
+          resolve({ points: downsampled, syncPoints, cameraModel, gpsVideoOffsetMs });
         } else {
           console.error("[GoProEngineClient] Erro no Worker:", e.data.error);
           reject(new Error(e.data.error));
