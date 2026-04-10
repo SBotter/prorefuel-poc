@@ -598,12 +598,6 @@ function MobileLanding() {
           </div>
         </nav>
 
-        {/* Privacy pill */}
-        <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-green-500/10 border border-green-500/20 mb-6">
-          <Lock size={10} className="text-green-400" />
-          <span className="text-[10px] font-black uppercase tracking-widest text-green-400">100% Local · No Data Ever Leaves Your Device</span>
-        </div>
-
         {/* Headline */}
         <h1 className="text-[2.6rem] font-black tracking-tight leading-[0.88] text-center mb-5">
           YOUR CINEMATIC<br />ADVENTURE VIDEO<br />
@@ -616,11 +610,11 @@ function MobileLanding() {
         </p>
 
         {/* Phone mockup with hero video */}
-        <div className="relative w-[220px] mb-12">
+        <div className="relative w-[220px] mb-5">
           {/* Phone frame */}
           <div className="relative w-full aspect-[9/16] rounded-[2.5rem] bg-zinc-900 border-2 border-zinc-700 shadow-[0_30px_80px_rgba(0,0,0,0.8)] overflow-hidden">
             <video
-              src="/videos/hero_demo.mp4"
+              src="/videos/hero-preview.mp4"
               autoPlay
               loop
               muted
@@ -632,6 +626,12 @@ function MobileLanding() {
           </div>
           {/* Decorative glow behind phone */}
           <div className="absolute inset-0 -z-10 blur-[40px] bg-amber-500/20 rounded-[3rem]" />
+        </div>
+
+        {/* Privacy pill */}
+        <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-green-500/10 border border-green-500/20 mb-10">
+          <Lock size={10} className="text-green-400" />
+          <span className="text-[10px] font-black uppercase tracking-widest text-green-400">100% Local · No Data Ever Leaves Your Device</span>
         </div>
 
         {/* Desktop CTA block */}
