@@ -80,12 +80,13 @@ function crudeDistance(p1: GPSPoint, p2: GPSPoint): number {
 //   - Otherwise                                         → "RIDE"
 
 function selectClipsFromVideoWindow(
-  activityPoints: EnhancedGPSPoint[],
-  intensityV2:    IntensityV2Result,
-  videoStart:     number,
-  videoEnd:       number,
-  actionBudget:   number,
-  unit:           UnitSystem,
+  activityPoints:   EnhancedGPSPoint[],
+  intensityV2:      IntensityV2Result,
+  videoStart:       number,
+  videoEnd:         number,
+  actionBudget:     number,
+  unit:             UnitSystem,
+  gpsVideoOffsetMs: number = 0,
 ): { clips: ScoredActionSegmentV2[]; reason: string } {
 
   // ── 1. Extract activity points inside the video time window ──────────────
@@ -243,7 +244,11 @@ function selectClipsFromVideoWindow(
         endIndex:        endIdx,
         startPoint:      startPt,
         endPoint:        endPt,
-        videoStartTime:  Math.max(0, (startPt.time - videoStart) / 1000),
+        // videoStart is GPS satellite time at GPS lock (videoLockGPS).
+        // startPt.time is GPS satellite time.
+        // (startPt - videoStart) = seconds from GPS lock.
+        // Add gpsVideoOffsetMs/1000 to convert to seconds from video frame 0.
+        videoStartTime:  gpsVideoOffsetMs / 1000 + Math.max(0, (startPt.time - videoStart) / 1000),
         duration:        dur,
         normalizedScore: w.score,
         title,
@@ -273,13 +278,14 @@ function selectClipsFromVideoWindow(
 // of raw local-maxima intensity peaks.
 
 function selectActionClipsV2(
-  candidates:      SceneCandidateV2[],
-  activityPoints:  EnhancedGPSPoint[],
-  videoStart:      number,
-  videoEnd:        number,
-  actionBudget:    number,
-  rhythmFactor:    number,
-  unit:            UnitSystem,
+  candidates:       SceneCandidateV2[],
+  activityPoints:   EnhancedGPSPoint[],
+  videoStart:       number,
+  videoEnd:         number,
+  actionBudget:     number,
+  rhythmFactor:     number,
+  unit:             UnitSystem,
+  gpsVideoOffsetMs: number = 0,
 ): { clips: ScoredActionSegmentV2[]; rejected: Array<{ candidate: SceneCandidateV2; reason: string }> } {
 
   const rejected: Array<{ candidate: SceneCandidateV2; reason: string }> = [];
@@ -394,7 +400,13 @@ function selectActionClipsV2(
         endIndex:       cand.endIndex,
         startPoint:     startPt,
         endPoint:       endPt,
-        videoStartTime: Math.max(0, (startPt.time - videoStart) / 1000),
+        // videoStart is GPS satellite time; startPt.time is also GPS satellite time.
+        // Do NOT clamp to gpsVideoOffsetMs — breaks startIndex/videoStartTime invariant.
+        // videoStart is GPS satellite time at GPS lock (= videoLockGPS).
+        // startPt.time is also GPS satellite time.
+        // (startPt.time - videoStart) = seconds from GPS lock in GPS time.
+        // Add lockSeekSec to convert to seconds from video frame 0.
+        videoStartTime: gpsVideoOffsetMs / 1000 + Math.max(0, (startPt.time - videoStart) / 1000),
         duration:       durationSec,
         normalizedScore: cand.compositeScore,
         title,
@@ -409,9 +421,11 @@ function selectActionClipsV2(
 
 export class StorytellingProcessorV2 {
   static generatePlan(
-    activityPoints: EnhancedGPSPoint[],
-    videoPoints:    GPSPoint[],
-    unit:           UnitSystem = 'metric',
+    activityPoints:   EnhancedGPSPoint[],
+    videoPoints:      GPSPoint[],
+    unit:             UnitSystem = 'metric',
+    clockOffsetMs:    number    = 0,
+    gpsVideoOffsetMs: number    = 0,
   ): StoryPlan & { v2Debug?: StorytellingV2Debug } {
 
     const t0 = performance.now();
@@ -426,70 +440,114 @@ export class StorytellingProcessorV2 {
     }
 
     // ── 1. Timestamps ────────────────────────────────────────────────────────
-    const videoStart = videoPoints.length > 0 ? videoPoints[0].time : 0;
-    const videoEnd   = videoPoints.length > 0 ? videoPoints[videoPoints.length - 1].time : 0;
+    // videoStart/videoEnd are camera RTC. Activity timestamps are GPS satellite.
+    // GPS lock latency: first gpsVideoOffsetMs ms of video GPS are stale.
+    // Effective video window for telemetry starts at the GPS lock moment.
+    const videoStart    = videoPoints.length > 0 ? videoPoints[0].time : 0;
+    const videoEnd      = videoPoints.length > 0 ? videoPoints[videoPoints.length - 1].time : 0;
+    const videoLockRTC  = videoStart + gpsVideoOffsetMs;          // camera RTC at GPS lock
+    const videoStartGPS = videoLockRTC > 0 ? videoLockRTC - clockOffsetMs : 0; // GPS satellite
+    const videoEndGPS   = videoEnd     > 0 ? videoEnd     - clockOffsetMs : 0;
+    const lockSeekSec   = gpsVideoOffsetMs / 1000; // video seek position at GPS lock
+
+    // ── Window slice: scope all detection to the video window ────────────────
+    // Running detection on a 3-hour activity finds the most intense scenes globally
+    // (e.g. at 16:00 or 17:57) even when the video covers only 17:29–17:34.
+    // Slicing ensures:
+    //   a) All candidates are INSIDE the window — no score penalties needed.
+    //   b) Percentiles reflect the intensity distribution of THIS segment, not the full activity.
+    const winStartIdx = (() => {
+      if (videoStartGPS <= 0) return 0;
+      let lo = 0, hi = activityPoints.length - 1;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (activityPoints[mid].time < videoStartGPS) lo = mid + 1; else hi = mid; }
+      return lo;
+    })();
+    const winEndIdx = (() => {
+      if (videoEndGPS <= 0) return activityPoints.length - 1;
+      let lo = 0, hi = activityPoints.length - 1;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (activityPoints[mid].time < videoEndGPS) lo = mid + 1; else hi = mid; }
+      return lo;
+    })();
+    const windowPts  = videoStartGPS > 0 && winEndIdx > winStartIdx + 10
+      ? activityPoints.slice(winStartIdx, winEndIdx + 1)
+      : activityPoints;
+    const useWindow  = windowPts !== activityPoints;
+    // Helper: remap window-relative index → absolute activity index
+    const toAbsIdx = (relIdx: number) => useWindow ? relIdx + winStartIdx : relIdx;
 
     // ── 2. V2 Intensity + Eventfulness + MasterScore ─────────────────────────
-    const intensityV2 = computeIntensityV2(activityPoints);
+    const intensityV2 = computeIntensityV2(windowPts);
 
     // ── 3. Build Percentiles ─────────────────────────────────────────────────
-    const hrValues    = activityPoints.map(p => p.hr    ?? null);
-    const speedValues = activityPoints.map(p => p.speed ?? null);
+    const hrValues    = windowPts.map(p => p.hr    ?? null);
+    const speedValues = windowPts.map(p => p.speed ?? null);
     const gradValues: number[] = [];
-    for (let i = 1; i < activityPoints.length; i++) {
-      const d = crudeDistance(activityPoints[i - 1], activityPoints[i]);
-      gradValues.push(d > 0.5 ? ((activityPoints[i].ele - activityPoints[i - 1].ele) / d) * 100 : 0);
+    for (let i = 1; i < windowPts.length; i++) {
+      const d = crudeDistance(windowPts[i - 1], windowPts[i]);
+      gradValues.push(d > 0.5 ? ((windowPts[i].ele - windowPts[i - 1].ele) / d) * 100 : 0);
     }
-    const accelValues   = activityPoints.map(p => p.accel  ?? null);
+    const accelValues   = windowPts.map(p => p.accel  ?? null);
     const masterValues  = Array.from(intensityV2.masterScore);
 
     const percentiles = computeActivityPercentiles(hrValues, speedValues, gradValues, accelValues, masterValues);
 
-    // ── 4. V2 Scene Detection ─────────────────────────────────────────────────
-    const candidates = detectScenesV2(activityPoints, intensityV2, percentiles, videoStart, videoEnd, unit);
+    // ── 4. V2 Scene Detection (window-scoped) ────────────────────────────────
+    // No videoStart/End proximity params needed — all candidates are inside by construction.
+    const rawCandidates = detectScenesV2(windowPts, intensityV2, percentiles, 0, 0, unit);
+    // Remap indices to absolute activityPoints positions
+    const candidates = rawCandidates.map(c => ({
+      ...c,
+      startIndex:        toAbsIdx(c.startIndex),
+      endIndex:          toAbsIdx(c.endIndex),
+      zone:              'INSIDE' as const,  // all are inside the window by construction
+      videoOverlapScore: 1.0,               // 100% overlap — detected within window slice
+    }));
 
-    // ── 5. Video Overlap Scores ───────────────────────────────────────────────
-    if (videoStart > 0) {
-      applyVideoOverlapScores(candidates, activityPoints, videoStart, videoEnd);
-    }
+    // ── 5. Video Overlap Scores — all INSIDE, no penalty adjustments needed ──
+    // (skipped — candidates already have zone=INSIDE; applyVideoOverlapScores
+    //  would just confirm overlap=1.0 for all of them)
 
     // ── 6. Composite Scores ───────────────────────────────────────────────────
     applyCompositeScores(candidates);
 
     const detectionMs = performance.now() - t0;
 
-    // ── 7. V1 NarrativePlanner (MAP budget allocation — unchanged in Phase 1) ──
-    // We still use V1 scenes for the NarrativePlanner to maintain MAP structure.
-    // V2 candidates replace only the ACTION clip selection.
-    const v1Intensity   = computeIntensity(activityPoints);
-    const v1Scenes      = detectScenes(activityPoints, v1Intensity, videoStart, videoEnd);
+    // ── 7. V1 NarrativePlanner (MAP budget allocation — window-scoped) ────────
+    const v1Intensity   = computeIntensity(windowPts);
+    const v1RawScenes   = detectScenes(windowPts, v1Intensity);
+    // Remap V1 scene indices to absolute before passing to NarrativePlanner
+    const v1Scenes      = v1RawScenes.map(s => ({ ...s, startIndex: toAbsIdx(s.startIndex), endIndex: toAbsIdx(s.endIndex) }));
     const narrativePlan = buildNarrativePlan(v1Scenes, activityPoints, v1Intensity, ACTION_BUDGET);
 
     const rhythmFactor  = narrativePlan.editingRhythm === 'FAST' ? 0.8
                         : narrativePlan.editingRhythm === 'SLOW' ? 1.3 : 1.0;
 
     // ── 8. V2 ACTION Clip Selection ───────────────────────────────────────────
-    const insideCandCount = candidates.filter(c => c.zone === 'INSIDE').length;
-    const nearCandCount   = candidates.filter(c => c.zone === 'NEAR').length;
+    // Cast to SceneCandidateV2[] so zone comparison works (we set zone='INSIDE' for all window-scoped candidates)
+    const allCandidates = candidates as SceneCandidateV2[];
+    const insideCandCount = allCandidates.filter(c => c.zone === 'INSIDE').length;
+    const nearCandCount   = allCandidates.filter(c => c.zone === 'NEAR').length;
 
     console.log(`[ProRefuel V2] Sport: ${intensityV2.sportProfile} | α=${intensityV2.alpha} | Profile: ${intensityV2.profile}`);
     console.log(`[ProRefuel V2] Activity: ${activityPoints.length} pts | [${new Date(activityPoints[0].time).toISOString()} → ${new Date(activityPoints[activityPoints.length - 1].time).toISOString()}]`);
+    console.log(`[ProRefuel V2] Window:   [${winStartIdx}→${winEndIdx}] (${windowPts.length} pts) | scoped=${useWindow}`);
     console.log(`[ProRefuel V2] Video:    [${videoStart > 0 ? new Date(videoStart).toISOString() : 'n/a'} → ${videoEnd > 0 ? new Date(videoEnd).toISOString() : 'n/a'}]`);
-    console.log(`[ProRefuel V2] Candidates: ${candidates.length} total | INSIDE: ${insideCandCount} | NEAR: ${nearCandCount} | FAR: ${candidates.filter(c => c.zone === 'FAR').length}`);
+    console.log(`[ProRefuel V2] Candidates: ${allCandidates.length} total | INSIDE: ${insideCandCount} | NEAR: ${nearCandCount} | FAR: ${allCandidates.filter(c => c.zone === 'FAR').length}`);
 
     let rawSegments: ScoredActionSegmentV2[] = [];
     let rejected:    Array<{ candidate: SceneCandidateV2; reason: string }> = [];
     let windowScanFallbackReason = '';
 
-    if (videoStart > 0) {
-      const v2Result = selectActionClipsV2(candidates, activityPoints, videoStart, videoEnd, ACTION_BUDGET, rhythmFactor, unit);
+    if (videoStartGPS > 0) {
+      // Pass GPS-corrected times so videoStartTime formulas inside produce correct seek positions
+      const v2Result = selectActionClipsV2(allCandidates, activityPoints, videoStartGPS, videoEndGPS, ACTION_BUDGET, rhythmFactor, unit, gpsVideoOffsetMs);
       rawSegments = v2Result.clips;
       rejected    = v2Result.rejected;
 
       // If V2 typed candidates yielded nothing (all FAR), scan the video window by intensity
       if (rawSegments.length === 0) {
         console.warn(`[ProRefuel V2] No INSIDE typed candidates — running cinematic scan on video window`);
-        const scanResult = selectClipsFromVideoWindow(activityPoints, intensityV2, videoStart, videoEnd, ACTION_BUDGET, unit);
+        const scanResult = selectClipsFromVideoWindow(activityPoints, intensityV2, videoStartGPS, videoEndGPS, ACTION_BUDGET, unit, gpsVideoOffsetMs);
         rawSegments = scanResult.clips;
         windowScanFallbackReason = scanResult.reason;
       }
@@ -504,8 +562,8 @@ export class StorytellingProcessorV2 {
 
     const firstActionIndex = rawSegments.length > 0
       ? rawSegments[0].startIndex
-      : (videoStart > 0
-          ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStart))
+      : (videoStartGPS > 0
+          ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStartGPS))
           : Math.floor(totalPoints / 2));
     const lastActionEndIndex = rawSegments.length > 0
       ? rawSegments[rawSegments.length - 1].endIndex
@@ -614,10 +672,10 @@ export class StorytellingProcessorV2 {
     if (segments.filter(s => s.type === 'ACTION').length === 0 && videoPoints.length > 0) {
       fallbacksUsed.push('last-resort: no intensity data in video window — full video clip');
       console.error(`[ProRefuel V2] Last-resort fallback triggered — check activity/video timestamp alignment`);
-      const vidIdx      = videoStart > 0
-        ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStart))
+      const vidIdx      = videoStartGPS > 0
+        ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStartGPS))
         : Math.floor(activityPoints.length / 2);
-      const videoDurSec = videoEnd > videoStart ? (videoEnd - videoStart) / 1000 : ACTION_BUDGET;
+      const videoDurSec = videoEndGPS > videoStartGPS ? (videoEndGPS - videoStartGPS) / 1000 : ACTION_BUDGET;
       segments.push({
         type:           'ACTION',
         startIndex:     vidIdx,

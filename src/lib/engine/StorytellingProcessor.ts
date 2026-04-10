@@ -40,13 +40,13 @@ export interface StoryPlan {
 type ScoredActionSegment = ActionSegment & { normalizedScore: number };
 
 export class StorytellingProcessor {
-  static generatePlan(activityPoints: EnhancedGPSPoint[], videoPoints: GPSPoint[], unit: UnitSystem = 'metric'): StoryPlan {
+  static generatePlan(activityPoints: EnhancedGPSPoint[], videoPoints: GPSPoint[], unit: UnitSystem = 'metric', clockOffsetMs: number = 0, gpsVideoOffsetMs: number = 0): StoryPlan {
 
     // ── V2 routing ───────────────────────────────────────────────────────────
     if (STORYTELLING_VERSION === "V2") {
       // Lazy import to keep V1 bundle unchanged when V2 is disabled
       const { StorytellingProcessorV2 } = require("./v2/StorytellingProcessorV2");
-      return StorytellingProcessorV2.generatePlan(activityPoints, videoPoints, unit);
+      return StorytellingProcessorV2.generatePlan(activityPoints, videoPoints, unit, clockOffsetMs, gpsVideoOffsetMs);
     }
 
     const TOTAL_BUDGET = 59;
@@ -59,12 +59,16 @@ export class StorytellingProcessor {
     }
 
     // 1. TIMESTAMPS SYNC
-    const videoStart = videoPoints.length > 0 ? videoPoints[0].time : 0;
-    const videoEnd = videoPoints.length > 0 ? videoPoints[videoPoints.length - 1].time : 0;
+    // videoStart/videoEnd are camera RTC. Activity uses GPS satellite time.
+    // videoStartGPS = GPS time at video frame 0.
+    const videoStart    = videoPoints.length > 0 ? videoPoints[0].time : 0;
+    const videoEnd      = videoPoints.length > 0 ? videoPoints[videoPoints.length - 1].time : 0;
+    const videoStartGPS = videoStart - clockOffsetMs;
+    const videoEndGPS   = videoEnd   - clockOffsetMs;
 
     // 2a. INTENSITY ENGINE + SCENE DETECTOR + NARRATIVE PLANNER
     const intensity = computeIntensity(activityPoints);
-    const scenes    = detectScenes(activityPoints, intensity, videoStart, videoEnd);
+    const scenes    = detectScenes(activityPoints, intensity, videoStartGPS, videoEndGPS);
     // Pass ACTION_BUDGET (49s) — NarrativePlanner fills exactly this; INTRO+BRAND are added by this class
     const narrativePlan = buildNarrativePlan(scenes, activityPoints, intensity, ACTION_BUDGET);
 
@@ -76,7 +80,7 @@ export class StorytellingProcessor {
     // 2b. PEAK DETECTION — rhythm drives variable clip window size
     const rhythmFactor = narrativePlan.editingRhythm === "FAST" ? 0.8
                        : narrativePlan.editingRhythm === "SLOW" ? 1.3 : 1.0;
-    const rawSegments: ScoredActionSegment[] = this.detectAllPeaks(activityPoints, videoStart, videoEnd, rhythmFactor, unit);
+    const rawSegments: ScoredActionSegment[] = this.detectAllPeaks(activityPoints, videoStartGPS, videoEndGPS, rhythmFactor, unit, clockOffsetMs, gpsVideoOffsetMs);
 
     // 3. BUDGET ALLOCATION & STRATEGY SELECTION
     // Calculate required travel speed for a continuous journey
@@ -309,10 +313,12 @@ export class StorytellingProcessor {
 
   private static detectAllPeaks(
     activityPoints: EnhancedGPSPoint[],
-    videoStart: number,
-    videoEnd: number,
+    videoStart: number,   // GPS satellite time of video start
+    videoEnd: number,     // GPS satellite time of video end
     rhythmFactor: number,
     unit: UnitSystem = 'metric',
+    clockOffsetMs: number = 0,
+    gpsVideoOffsetMs: number = 0,
   ): ScoredActionSegment[] {
     if (activityPoints.length === 0 || videoStart === 0) return [];
     const spdLbl = SPEED_LABEL[unit];
@@ -468,7 +474,10 @@ export class StorytellingProcessor {
                 endIndex: eIdx,
                 startPoint: activityPoints[sIdx],
                 endPoint: activityPoints[eIdx],
-                videoStartTime: (activityPoints[sIdx].time - videoStart) / 1000,
+                // videoStart is GPS satellite time; activityPoints[sIdx].time also GPS satellite.
+                // Both same domain → (GPS_time - videoStart_GPS) / 1000 = video seek in seconds.
+                // Do NOT clamp to gpsVideoOffsetMs — breaks startIndex/videoStartTime invariant.
+                videoStartTime: Math.max(0, (activityPoints[sIdx].time - videoStart) / 1000),
                 duration: clipSec,
                 normalizedScore,
                 title: w.title,
