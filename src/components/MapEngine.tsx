@@ -94,6 +94,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
   const [clipIdx, setClipIdx] = useState(0); // increments on each ACTION clip change → triggers cutFlash
    const [isRecording, setIsRecording] = useState(false);
    const [isTranscoding, setIsTranscoding] = useState(false);
+   const [renderError, setRenderError] = useState<{ message: string; isOOM: boolean } | null>(null);
    const [isLongActivity, setIsLongActivity] = useState(false);
 
 
@@ -223,6 +224,11 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       bearing: calculateBearing(activityPoints[0], activityPoints[Math.min(10, activityPoints.length - 1)]),
       attributionControl: false,
       logoPosition: "top-left",
+    });
+
+    map.on("error", (e) => {
+      // Tile load errors and style errors are non-fatal — log and continue
+      console.warn("[MapEngine] Mapbox error:", e.error?.message ?? e);
     });
 
     map.on("load", () => {
@@ -457,7 +463,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
             if (Math.abs(vid.currentTime - currentSeg.videoStartTime) > 0.5) {
               vid.currentTime = currentSeg.videoStartTime;
             }
-            vid.play().catch(() => {});
+            vid.play().catch((err) => { console.warn("[MapEngine] video.play() failed:", err); });
           }
         } else {
           // Non-ACTION (INTRO/MAP/BRAND): pause video and pre-seek to the NEXT action segment
@@ -756,33 +762,26 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         });
       } catch (err: any) {
         console.error("[ProRefuel] FFmpeg error:", err);
+
+        // Detect OOM: WebAssembly memory errors, RangeError, or ENOMEM in message
+        const errMsg = (err?.message ?? "") + (err?.stack ?? "");
+        const isOOM  = /out of memory|memory access out of bounds|RangeError|WebAssembly\.Memory|Cannot allocate|ENOMEM/i.test(errMsg);
+
         const fallbackBlob = new Blob(chunks, { type: mimeType });
-        if (fallbackBlob.size > 0) {
-          const url = URL.createObjectURL(fallbackBlob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `ProRefuel_Cinematic_${Date.now()}.webm`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          alert("MP4 failed — downloading as WebM. See console for details.");
-          onRenderComplete?.({
-            durationMs: Date.now() - renderStart,
-            outputFormat: "webm",
-            outputSizeBytes: fallbackBlob.size,
-            status: "fallback",
-            errorMessage: err?.message,
-          });
-        } else {
-          alert("Recording error: no data was captured.");
-          onRenderComplete?.({
-            durationMs: Date.now() - renderStart,
-            outputFormat: "mp4",
-            outputSizeBytes: 0,
-            status: "error",
-            errorMessage: err?.message,
-          });
-        }
+
+        setRenderError({
+          message: isOOM
+            ? "Not enough memory to render. Close other tabs and try again."
+            : "Render failed. Please try again.",
+          isOOM,
+        });
+        onRenderComplete?.({
+          durationMs:      Date.now() - renderStart,
+          outputFormat:    "mp4",
+          outputSizeBytes: 0,
+          status:          "error",
+          errorMessage:    (isOOM ? "OOM: " : "") + (err?.message ?? "unknown"),
+        });
       } finally {
         setIsTranscoding(false);
       }
@@ -1981,6 +1980,29 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           </svg>
           <p className="text-white text-xs font-black uppercase tracking-[0.3em]">Generating MP4...</p>
           <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Please wait</p>
+        </div>
+      )}
+
+      {/* RENDER ERROR OVERLAY */}
+      {renderError && (
+        <div className="absolute inset-0 z-[100] bg-black/95 flex flex-col items-center justify-center gap-5 px-8 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-center justify-center">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-red-400">
+              <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-white font-black text-sm uppercase tracking-wide mb-2">
+              {renderError.isOOM ? "Out of Memory" : "Render Failed"}
+            </p>
+            <p className="text-zinc-400 text-xs leading-relaxed">{renderError.message}</p>
+          </div>
+          <button
+            onClick={() => setRenderError(null)}
+            className="px-6 py-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white text-[11px] font-black uppercase tracking-widest hover:bg-zinc-700 transition-colors"
+          >
+            Dismiss
+          </button>
         </div>
       )}
       <style dangerouslySetInnerHTML={{ __html: `

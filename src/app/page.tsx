@@ -786,6 +786,8 @@ function MobileLanding() {
     navigator.clipboard.writeText(url).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
+    }).catch(() => {
+      // Clipboard API unavailable or denied — fail silently
     });
   };
 
