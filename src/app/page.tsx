@@ -577,75 +577,78 @@ function MobileLanding() {
   };
 
   return (
-    <main className="min-h-screen bg-[#050505] text-white font-sans flex flex-col overflow-hidden">
-      {/* Ambient glow */}
+    <main className="min-h-screen bg-[#050505] text-white font-sans overflow-x-hidden">
+      {/* Ambient glows */}
       <div className="fixed inset-0 z-0 pointer-events-none">
-        <div className="absolute top-[-20%] left-[-10%] w-[70%] h-[50%] bg-amber-500/10 blur-[120px] rounded-full" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[40%] bg-amber-500/6 blur-[100px] rounded-full" />
+        <div className="absolute top-[-15%] left-[-10%] w-[80%] h-[50%] bg-amber-500/8 blur-[130px] rounded-full" />
+        <div className="absolute bottom-[10%] right-[-15%] w-[60%] h-[40%] bg-amber-600/6 blur-[110px] rounded-full" />
       </div>
 
-      <div className="relative z-10 flex flex-col min-h-screen px-6 pt-12 pb-10">
+      <div className="relative z-10 flex flex-col items-center px-6 pt-10 pb-16">
 
-        {/* Top: logo */}
-        <div className="flex items-center gap-2 mb-auto">
-          <span className="text-2xl font-black tracking-tight">LENS</span>
-          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-1">by ProRefuel.app</span>
+        {/* Navbar */}
+        <nav className="w-full flex items-center justify-between mb-10">
+          <div className="flex items-center gap-2">
+            <span className="text-xl font-black tracking-tight">LENS</span>
+            <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mt-0.5">by ProRefuel.app</span>
+          </div>
+          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/25">
+            <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-[9px] font-black uppercase tracking-widest text-amber-400">Beta v1.0.29</span>
+          </div>
+        </nav>
+
+        {/* Headline */}
+        <h1 className="text-[2.6rem] font-black tracking-tight leading-[0.88] text-center mb-5">
+          YOUR CINEMATIC<br />ADVENTURE VIDEO<br />
+          <span className="text-amber-500">IN 3 CLICKS.</span>
+        </h1>
+
+        {/* Subheadline */}
+        <p className="text-zinc-400 text-[15px] leading-relaxed text-center max-w-xs mb-10">
+          Turn your adventure into a cinematic GPS telemetry edit — auto-generated, synced, ready to share.
+        </p>
+
+        {/* Phone mockup with hero video */}
+        <div className="relative w-[220px] mb-5">
+          {/* Phone frame */}
+          <div className="relative w-full aspect-[9/16] rounded-[2.5rem] bg-zinc-900 border-2 border-zinc-700 shadow-[0_30px_80px_rgba(0,0,0,0.8)] overflow-hidden">
+            <video
+              src="/videos/hero-preview.mp4"
+              autoPlay
+              loop
+              muted
+              playsInline
+              className="w-full h-full object-fill"
+            />
+            {/* Notch overlay */}
+            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-20 h-5 bg-black rounded-b-2xl z-10" />
+          </div>
+          {/* Decorative glow behind phone */}
+          <div className="absolute inset-0 -z-10 blur-[40px] bg-amber-500/20 rounded-[3rem]" />
         </div>
 
-        {/* Center block */}
-        <div className="flex flex-col items-center text-center py-10">
+        {/* Privacy pill */}
+        <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-green-500/10 border border-green-500/20 mb-10">
+          <Lock size={10} className="text-green-400" />
+          <span className="text-[10px] font-black uppercase tracking-widest text-green-400">100% Local · No Data Ever Leaves Your Device</span>
+        </div>
 
-          {/* Icon */}
-          <div className="w-20 h-20 rounded-3xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-8 shadow-2xl">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-amber-400">
-              <rect x="2" y="3" width="20" height="14" rx="2" />
-              <path d="M8 21h8M12 17v4" />
-            </svg>
-          </div>
-
-          {/* Badge */}
-          <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/25 mb-6">
-            <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-amber-400">Desktop App · Beta v1.0.29 · Free</span>
-          </div>
-
-          {/* Headline */}
-          <h1 className="text-4xl font-black tracking-tight leading-[0.9] mb-5">
-            OPEN ON YOUR<br />
-            <span className="text-amber-500">LAPTOP OR DESKTOP</span>
-          </h1>
-
-          {/* Description */}
-          <p className="text-zinc-400 text-base leading-relaxed max-w-sm mb-8">
-            LENS processes your GoPro videos and GPS data entirely inside your browser — using the full compute power of a desktop or laptop.
-          </p>
-
-          {/* What LENS does */}
-          <div className="w-full max-w-sm space-y-3 mb-10 text-left">
-            <FeatureRow icon="🎬" text="Auto-generates cinematic adventure edits" />
-            <FeatureRow icon="🛰️" text="Syncs GoPro GPS telemetry with your activity" />
-            <FeatureRow icon="📱" text="Outputs 9:16 video ready for Instagram & TikTok" />
-            <FeatureRow icon="🔒" text="100% local — your files never leave your device" />
-            <FeatureRow icon="💸" text="Completely free — no account, no subscription" />
-          </div>
-
-          {/* Compatible browsers */}
-          <p className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest mb-5">
-            Works best with
-          </p>
-          <div className="flex items-center gap-4 mb-10">
-            <BrowserBadge name="Chrome" />
-            <BrowserBadge name="Edge" />
-            <BrowserBadge name="Firefox" />
-          </div>
-
-          {/* URL + copy */}
-          <div className="w-full max-w-sm">
-            <p className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest mb-3">
-              Copy the link and open it on your computer
+        {/* Desktop CTA block */}
+        <div className="w-full max-w-sm mb-8">
+          <div className="p-5 rounded-3xl bg-zinc-900/70 border border-zinc-800 text-center">
+            <div className="flex items-center justify-center gap-2 mb-3">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-amber-400">
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <path d="M8 21h8M12 17v4" />
+              </svg>
+              <span className="text-[11px] font-black uppercase tracking-widest text-zinc-300">Open on your Desktop with Chrome</span>
+            </div>
+            <p className="text-zinc-500 text-[11px] leading-relaxed mb-4">
+              LENS uses GPU, WebAssembly, and Web Workers — it requires the full power of a desktop browser.
             </p>
-            <div className="flex items-center gap-3 px-5 py-4 rounded-2xl bg-zinc-900 border border-zinc-700">
-              <span className="flex-1 text-sm font-bold text-amber-400 tracking-wide truncate">{url}</span>
+            <div className="flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-black/60 border border-zinc-700 mb-3">
+              <span className="flex-1 text-sm font-bold text-amber-400 tracking-wide truncate text-left">{url}</span>
               <button
                 onClick={handleCopy}
                 className="shrink-0 px-4 py-2 rounded-xl bg-amber-500 text-black text-[11px] font-black uppercase tracking-widest transition-all active:scale-95"
@@ -653,34 +656,34 @@ function MobileLanding() {
                 {copied ? "Copied!" : "Copy"}
               </button>
             </div>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-widest">
+              Paste it in Chrome on your laptop or desktop
+            </p>
           </div>
         </div>
 
-        {/* Bottom */}
-        <div className="text-center mt-auto pt-6">
-          <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">lens.prorefuel.app · Elevate your adventure.</p>
+        {/* Feature rows */}
+        <div className="w-full max-w-sm space-y-2.5 mb-10">
+          <MobileFeatureRow icon="🎬" text="Auto-generates cinematic adventure edits" />
+          <MobileFeatureRow icon="🛰️" text="Syncs GoPro GPS telemetry with your activity" />
+          <MobileFeatureRow icon="📱" text="Outputs 9:16 video ready for Instagram & TikTok" />
+          <MobileFeatureRow icon="🔒" text="100% local — your files never leave your device" />
         </div>
+
+        {/* Footer */}
+        <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">
+          © {new Date().getFullYear()} ProRefuel.app
+        </p>
       </div>
     </main>
   );
 }
 
-function FeatureRow({ icon, text }: { icon: string; text: string }) {
+function MobileFeatureRow({ icon, text }: { icon: string; text: string }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-zinc-900/60 border border-zinc-800/60">
+    <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-zinc-900/50 border border-zinc-800/60">
       <span className="text-lg shrink-0">{icon}</span>
       <span className="text-sm text-zinc-300 font-medium">{text}</span>
-    </div>
-  );
-}
-
-function BrowserBadge({ name }: { name: string }) {
-  return (
-    <div className="flex flex-col items-center gap-1.5">
-      <div className="w-12 h-12 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-xl">
-        {name === "Chrome" ? "🟡" : name === "Edge" ? "🔵" : "🟠"}
-      </div>
-      <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">{name}</span>
     </div>
   );
 }
