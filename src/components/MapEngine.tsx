@@ -24,6 +24,14 @@ interface ActivityMeta {
   camera?: DeviceInfo;
 }
 
+export interface RenderResult {
+  durationMs: number;
+  outputFormat: "mp4" | "webm";
+  outputSizeBytes: number;
+  status: "success" | "error" | "fallback";
+  errorMessage?: string;
+}
+
 interface MapEngineProps {
   activityPoints: any[];
   highlights: ActionSegment[];
@@ -32,6 +40,7 @@ interface MapEngineProps {
   activityMeta?: ActivityMeta;
   autoRecord?: boolean;
   unit?: UnitSystem;
+  onRenderComplete?: (result: RenderResult) => void;
 }
 
 function calculateBearing(start: GPSPoint, end: GPSPoint) {
@@ -50,7 +59,7 @@ function getDistance(p1: GPSPoint, p2: GPSPoint) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, activityMeta, autoRecord = false, unit = 'metric' }: MapEngineProps, ref) => {
+const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, activityMeta, autoRecord = false, unit = 'metric', onRenderComplete }: MapEngineProps, ref) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -668,6 +677,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     recorder.onstop = async () => {
       setIsRecording(false);
       setIsTranscoding(true);
+      const renderStart = Date.now();
       try {
         const inputBlob = new Blob(chunks, { type: mimeType });
         console.log("[ProRefuel] Recorded blob size:", inputBlob.size, "bytes | codec:", mimeType);
@@ -738,7 +748,13 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         a.click();
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 5000);
-      } catch (err) {
+        onRenderComplete?.({
+          durationMs: Date.now() - renderStart,
+          outputFormat: "mp4",
+          outputSizeBytes: mp4Blob.size,
+          status: "success",
+        });
+      } catch (err: any) {
         console.error("[ProRefuel] FFmpeg error:", err);
         const fallbackBlob = new Blob(chunks, { type: mimeType });
         if (fallbackBlob.size > 0) {
@@ -750,8 +766,22 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           a.click();
           document.body.removeChild(a);
           alert("MP4 failed — downloading as WebM. See console for details.");
+          onRenderComplete?.({
+            durationMs: Date.now() - renderStart,
+            outputFormat: "webm",
+            outputSizeBytes: fallbackBlob.size,
+            status: "fallback",
+            errorMessage: err?.message,
+          });
         } else {
           alert("Recording error: no data was captured.");
+          onRenderComplete?.({
+            durationMs: Date.now() - renderStart,
+            outputFormat: "mp4",
+            outputSizeBytes: 0,
+            status: "error",
+            errorMessage: err?.message,
+          });
         }
       } finally {
         setIsTranscoding(false);

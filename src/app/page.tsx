@@ -13,6 +13,9 @@ import {
   PlayCircle,
 } from "lucide-react";
 import MapEngine from "@/components/MapEngine";
+import { trackProcessingSession, trackGpxSession, computeGpxMetrics, trackVideoExport, trackVideoUpload } from "@/lib/supabase/tracking";
+import type { RenderResult } from "@/components/MapEngine";
+import type { VideoUploadInsert } from "@/lib/supabase/types";
 import {
   ActionSegment,
   TelemetryCrossRef,
@@ -82,6 +85,11 @@ export default function ProRefuelPage() {
     startRecording: () => Promise<void>;
     isRecording: boolean;
   }>(null);
+  const gpxMetricsRef = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
+  const videoMetricsRef = useRef<Omit<VideoUploadInsert, "app_version" | "processing_session_id"> | null>(null);
+  const processingSessionIdRef = useRef<string | null>(null);
+  const readyStepStartRef = useRef<number | null>(null);
+  const experienceStartRef = useRef<number | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -100,6 +108,7 @@ export default function ProRefuelPage() {
     setUploadError(null);
     setVideoFile(file);
     setProgress(0);
+    const processingStart = Date.now();
     const interval = setInterval(
       () => setProgress((p) => (p >= 98 ? 98 : p + 1)),
       150,
@@ -131,6 +140,33 @@ export default function ProRefuelPage() {
 
       // ── Analyse video GPS structure ──────────────────────────────────────
       const videoProfile = VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
+
+      // ── Store video metrics — persisted after processing_session is created ──
+      const totalPts = vpts.length;
+      const fixDist  = videoProfile.fixDistribution;
+      const fixTotal = (fixDist.fix0 + fixDist.fix2 + fixDist.fix3) || 1;
+      videoMetricsRef.current = {
+        filename:                 file.name,
+        file_size_bytes:          file.size,
+        camera_model:             resolvedModel ?? null,
+        has_gps:                  totalPts > 0,
+        gps_points_count:         totalPts,
+        gps_duration_s:           videoProfile.durationSec,
+        gps_sampling_interval_ms: videoProfile.samplingIntervalMs,
+        gps_start_utc:            totalPts > 0 ? new Date((vpts[0] as any).time).toISOString() : null,
+        gps_end_utc:              totalPts > 0 ? new Date((vpts[totalPts - 1] as any).time).toISOString() : null,
+        gps_video_offset_ms:      gpsVideoOffsetMs,
+        has_gps_lock:             videoProfile.hasGPSLock,
+        gps_lock_latency_s:       videoProfile.lockLatencySec,
+        pre_lock_points:          videoProfile.preLockPoints,
+        post_lock_points:         videoProfile.postLockPoints,
+        speed_avg_kmh:            Math.round(videoProfile.postLockSpeedAvgKmh * 10) / 10,
+        speed_max_kmh:            Math.round(videoProfile.postLockSpeedMaxKmh * 10) / 10,
+        distance_m:               Math.round(videoProfile.postLockDistanceM),
+        fix_pct_no_fix:           Math.round((fixDist.fix0 / fixTotal) * 1000) / 10,
+        fix_pct_2d:               Math.round((fixDist.fix2 / fixTotal) * 1000) / 10,
+        fix_pct_3d:               Math.round((fixDist.fix3 / fixTotal) * 1000) / 10,
+      };
 
       // ── Select sync strategy based on both file analyses ─────────────────
       const syncPlan = gpxProfile
@@ -187,15 +223,70 @@ export default function ProRefuelPage() {
       setStoryPlan(storyPlan);
       clearInterval(interval);
       setProgress(100);
+
+      // ── Track processing session → then attach GPX child record ─────────
+      trackProcessingSession({
+        status:             "success",
+        video_filename:     file.name,
+        video_duration_s:   vpts.length > 0 ? (vpts[vpts.length - 1] as any).time / 1000 : null,
+        camera_model:       resolvedModel ?? null,
+        activity_name:      activityMeta.name ?? null,
+        gpx_points_count:   activityPoints.length || null,
+        gps_device:         activityMeta.gpsDevice?.label ?? null,
+        activity_location:  activityMeta.location ?? null,
+        sync_strategy:      syncPlan.method ?? null,
+        scenes_count:       storyPlan.segments.length ?? null,
+        unit_system:        unit,
+        processing_time_ms: Date.now() - processingStart,
+        error_message:      null,
+      }).then((processingSessionId) => {
+        processingSessionIdRef.current = processingSessionId;
+        if (processingSessionId) {
+          if (gpxMetricsRef.current) {
+            trackGpxSession({ ...gpxMetricsRef.current, processing_session_id: processingSessionId });
+          }
+          if (videoMetricsRef.current) {
+            trackVideoUpload({ ...videoMetricsRef.current, processing_session_id: processingSessionId });
+          }
+        }
+      });
+
       setTimeout(() => {
         setHighlights(segments);
         setStep("READY");
+        readyStepStartRef.current = Date.now();
         setLoading(false);
       }, 500);
     } catch (e: any) {
       clearInterval(interval);
       setUploadError(e.message);
       setLoading(false);
+
+      // ── Track failed processing session → still attach GPX child record ──
+      trackProcessingSession({
+        status:             "error",
+        video_filename:     file.name,
+        video_duration_s:   null,
+        camera_model:       null,
+        activity_name:      activityMeta.name ?? null,
+        gpx_points_count:   activityPoints.length || null,
+        gps_device:         activityMeta.gpsDevice?.label ?? null,
+        activity_location:  activityMeta.location ?? null,
+        sync_strategy:      null,
+        scenes_count:       null,
+        unit_system:        unit,
+        processing_time_ms: Date.now() - processingStart,
+        error_message:      e.message ?? null,
+      }).then((processingSessionId) => {
+        if (processingSessionId) {
+          if (gpxMetricsRef.current) {
+            trackGpxSession({ ...gpxMetricsRef.current, processing_session_id: processingSessionId });
+          }
+          if (videoMetricsRef.current) {
+            trackVideoUpload({ ...videoMetricsRef.current, processing_session_id: processingSessionId });
+          }
+        }
+      });
     }
   };
 
@@ -246,10 +337,12 @@ export default function ProRefuelPage() {
       "EPIC RIDE";
 
     const creatorRaw = xml.documentElement.getAttribute("creator") || "";
+    const activityType = xml.querySelector("trk > type")?.textContent?.trim() ?? undefined;
     const gpsDevice  = creatorRaw ? detectGPSDevice(creatorRaw) : undefined;
     setActivityMeta({ name: trackName, ...(gpsDevice?.label ? { gpsDevice } : {}) });
 
     // ── Reverse geocode first GPS point → city name (optional, silent on failure) ─
+    let resolvedLocation: string | undefined;
     if (pts.length > 0) {
       try {
         const { lat, lon } = pts[0];
@@ -265,12 +358,20 @@ export default function ProRefuelPage() {
             const regionCtx = (feature.context as any[])?.find((c: any) => c.id?.startsWith("region"));
             const stateRaw  = regionCtx?.short_code ?? regionCtx?.text ?? "";
             const state     = stateRaw.includes("-") ? stateRaw.split("-").pop()! : stateRaw;
-            const location  = state ? `${city}, ${state}` : city;
-            if (location) setActivityMeta(prev => ({ ...prev, location }));
+            resolvedLocation = state ? `${city}, ${state}` : city;
+            if (resolvedLocation) setActivityMeta(prev => ({ ...prev, location: resolvedLocation }));
           }
         }
       } catch { /* geocoding is optional */ }
     }
+
+    // ── Store GPX metrics — will be persisted once the processing session ID is known ──
+    gpxMetricsRef.current = computeGpxMetrics(pts, {
+      creator:          gpsDevice?.label ?? creatorRaw ?? undefined,
+      activityType:     activityType,
+      activityName:     trackName,
+      activityLocation: resolvedLocation,
+    });
   };
 
   return (
@@ -472,7 +573,24 @@ export default function ProRefuelPage() {
 
                   {/* CTA */}
                   <button
-                    onClick={() => setStep("EXPERIENCE")}
+                    onClick={() => {
+                      experienceStartRef.current = Date.now();
+                      trackVideoExport({
+                        processing_session_id: processingSessionIdRef.current,
+                        reached_experience:    true,
+                        clicked_record:        true, // autoRecord=true → starts immediately
+                        completed_download:    false,
+                        time_on_ready_ms:      readyStepStartRef.current ? Date.now() - readyStepStartRef.current : null,
+                        time_to_download_ms:   null,
+                        render_duration_ms:    null,
+                        render_status:         null,
+                        error_message:         null,
+                        output_format:         null,
+                        output_size_bytes:     null,
+                        output_duration_s:     null,
+                      });
+                      setStep("EXPERIENCE");
+                    }}
                     disabled={!highlights.length}
                     className={`w-full py-6 mt-2 rounded-2xl font-black uppercase tracking-[0.35em] text-xs transition-all flex items-center justify-center gap-3 ${
                       highlights.length
@@ -512,6 +630,26 @@ export default function ProRefuelPage() {
                     activityMeta={activityMeta}
                     autoRecord={true}
                     unit={unit}
+                    onRenderComplete={(result: RenderResult) => {
+                      trackVideoExport({
+                        processing_session_id: processingSessionIdRef.current,
+                        reached_experience:    true,
+                        clicked_record:        true,
+                        completed_download:    true,
+                        time_on_ready_ms:      readyStepStartRef.current && experienceStartRef.current
+                                                 ? experienceStartRef.current - readyStepStartRef.current
+                                                 : null,
+                        time_to_download_ms:   experienceStartRef.current ? Date.now() - experienceStartRef.current : null,
+                        render_duration_ms:    result.durationMs,
+                        render_status:         result.status,
+                        error_message:         result.errorMessage ?? null,
+                        output_format:         result.outputFormat,
+                        output_size_bytes:     result.outputSizeBytes,
+                        output_duration_s:     storyPlan
+                                                 ? storyPlan.segments.reduce((s, seg) => s + (seg.durationSec ?? 0), 0)
+                                                 : null,
+                      });
+                    }}
                   />
                 </div>
               )}
