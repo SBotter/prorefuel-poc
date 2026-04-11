@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
-  const { password } = await req.json();
-  const expected = process.env.DASH_PASS;
+  let password: string;
+  try {
+    const body = await req.json();
+    password = body?.password ?? "";
+  } catch {
+    return NextResponse.json({ ok: false, error: "Invalid request body" }, { status: 400 });
+  }
 
+  const expected = process.env.DASH_PASS;
   if (!expected || password !== expected) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }

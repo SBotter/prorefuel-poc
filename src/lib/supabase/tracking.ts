@@ -17,6 +17,10 @@ export async function trackProcessingSession(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...data, app_version: APP_VERSION }),
     });
+    if (!res.ok) {
+      console.warn("[track] /api/track responded", res.status);
+      return null;
+    }
     const json = await res.json();
     return json?.id ?? null;
   } catch (err) {
@@ -159,11 +163,12 @@ export async function trackVideoUpload(
   data: Omit<VideoUploadInsert, "app_version">
 ): Promise<void> {
   try {
-    await fetch("/api/track-video", {
+    const res = await fetch("/api/track-video", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...data, app_version: APP_VERSION }),
     });
+    if (!res.ok) console.warn("[track] track-video responded", res.status);
   } catch (err) {
     console.warn("[track] Failed to record video upload:", err);
   }
@@ -177,11 +182,12 @@ export async function trackVideoExport(
   data: Omit<VideoExportInsert, "app_version">
 ): Promise<void> {
   try {
-    await fetch("/api/track-export", {
+    const res = await fetch("/api/track-export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...data, app_version: APP_VERSION }),
     });
+    if (!res.ok) console.warn("[track] track-export responded", res.status);
   } catch (err) {
     console.warn("[track] Failed to record video export:", err);
   }
@@ -196,11 +202,12 @@ export async function trackGpxSession(
   data: Omit<GpxSessionInsert, "app_version">
 ): Promise<void> {
   try {
-    await fetch("/api/track-gpx", {
+    const res = await fetch("/api/track-gpx", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...data, app_version: APP_VERSION }),
     });
+    if (!res.ok) console.warn("[track] track-gpx responded", res.status);
   } catch (err) {
     console.warn("[track] Failed to record GPX session:", err);
   }
