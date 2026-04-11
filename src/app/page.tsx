@@ -77,6 +77,7 @@ export default function ProRefuelPage() {
   const [step, setStep] = useState<"UPLOAD" | "READY" | "EXPERIENCE">("UPLOAD");
   const [statusMsg, setStatusMsg] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [gpxError, setGpxError] = useState<string | null>(null);
   const [unit, setUnit] = useState<UnitSystem>("metric");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [activityMeta, setActivityMeta] = useState<{ name: string; location?: string; gpsDevice?: DeviceInfo; camera?: DeviceInfo }>({ name: "EPIC RIDE" });
@@ -104,6 +105,15 @@ export default function ProRefuelPage() {
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // ── File type guard ───────────────────────────────────────────────────────
+    const isMP4 = file.name.toLowerCase().endsWith(".mp4") || file.type === "video/mp4";
+    if (!isMP4) {
+      setUploadError("Only .mp4 files are accepted.");
+      e.target.value = "";
+      return;
+    }
+
     setLoading(true);
     setUploadError(null);
     setVideoFile(file);
@@ -138,8 +148,18 @@ export default function ProRefuelPage() {
         if (camera.label) setActivityMeta(prev => ({ ...prev, camera }));
       }
 
+      // ── Validate: video must have GPS data ───────────────────────────────
+      if (vpts.length === 0) {
+        throw new Error("No GPS found in this video. Enable GPS before recording.");
+      }
+
       // ── Analyse video GPS structure ──────────────────────────────────────
       const videoProfile = VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
+
+      // ── Validate: GPS lock must have been acquired ────────────────────────
+      if (!videoProfile.hasGPSLock || videoProfile.postLockPoints === 0) {
+        throw new Error("Video GPS signal too weak — no valid fix acquired during recording.");
+      }
 
       // ── Store video metrics — persisted after processing_session is created ──
       const totalPts = vpts.length;
@@ -167,6 +187,40 @@ export default function ProRefuelPage() {
         fix_pct_2d:               Math.round((fixDist.fix2 / fixTotal) * 1000) / 10,
         fix_pct_3d:               Math.round((fixDist.fix3 / fixTotal) * 1000) / 10,
       };
+
+      // ── Validate: video GPS must overlap with GPX activity ───────────────
+      // Strategy 1 — Temporal: timestamps must overlap within ±5 min of drift tolerance.
+      // Strategy 2 — Spatial fallback: if clock is wildly wrong, check geographic proximity.
+      // Both failing = different ride → block.
+      {
+        const DRIFT_MS      = 5 * 60_000;
+        const videoGPSStart = (vpts[0] as any).time + gpsVideoOffsetMs;
+        const videoGPSEnd   = (vpts[vpts.length - 1] as any).time;
+        const actStart      = activityPoints[0]?.time;
+        const actEnd        = activityPoints[activityPoints.length - 1]?.time;
+
+        const temporalOverlap =
+          actStart !== undefined && actEnd !== undefined &&
+          videoGPSStart - DRIFT_MS <= actEnd &&
+          videoGPSEnd   + DRIFT_MS >= actStart;
+
+        if (!temporalOverlap) {
+          // Spatial fallback — sample post-lock video points vs sampled GPX points
+          const postLock  = (vpts as any[]).filter((p: any) => p.time >= videoGPSStart).slice(0, 20);
+          const step      = Math.max(1, Math.floor(activityPoints.length / 40));
+          const actSample = activityPoints.filter((_, i) => i % step === 0);
+          const hav = (a: {lat:number;lon:number}, b: {lat:number;lon:number}) => {
+            const R = 6_371_000, r = (d: number) => d * Math.PI / 180;
+            const dLat = r(b.lat - a.lat), dLon = r(b.lon - a.lon);
+            const h = Math.sin(dLat/2)**2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dLon/2)**2;
+            return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1-h));
+          };
+          const spatialOverlap = postLock.some((vp: any) => actSample.some(ap => hav(vp, ap) < 2_000));
+          if (!spatialOverlap) {
+            throw new Error("This video doesn't match the activity. Check both files are from the same ride.");
+          }
+        }
+      }
 
       // ── Select sync strategy based on both file analyses ─────────────────
       const syncPlan = gpxProfile
@@ -200,7 +254,7 @@ export default function ProRefuelPage() {
         gpsVideoOffsetMs,
       );
       if (!segments || segments.length === 0)
-        throw new Error("No GPS signal found in video.");
+        throw new Error("Scene detection failed — no segments produced.");
 
       // TODO: workaround — remove after root cause of residual 4s gap is confirmed
       const VIDEO_SEEK_WORKAROUND_SEC = 0;
@@ -293,6 +347,15 @@ export default function ProRefuelPage() {
   const handleGPXUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // ── File type guard ───────────────────────────────────────────────────────
+    if (!file.name.toLowerCase().endsWith(".gpx")) {
+      setGpxError("Only .gpx files are accepted.");
+      e.target.value = "";
+      return;
+    }
+    setGpxError(null);
+
     const text = await file.text();
 
     // Deep structural analysis — runs before point extraction
@@ -326,6 +389,13 @@ export default function ProRefuelPage() {
                                        ...(speed !== undefined && { speed }) };
       },
     );
+    // ── Validate: GPX must contain a GPS track ───────────────────────────────
+    if (pts.length === 0) {
+      setGpxError("No GPS track found in this file.");
+      e.target.value = "";
+      return;
+    }
+
     setActivityPoints(pts);
 
     // ── Activity name ─────────────────────────────────────────────────────────
@@ -518,20 +588,24 @@ export default function ProRefuelPage() {
                   {/* STEP 01: GPX */}
                   <label
                     className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all cursor-pointer ${
-                      activityPoints.length > 0
-                        ? "border-green-500 bg-green-500/8"
-                        : "border-amber-500 bg-amber-500/5 hover:bg-amber-500/10 animate-glow-pulse"
+                      gpxError
+                        ? "border-red-500 bg-red-500/8"
+                        : activityPoints.length > 0
+                          ? "border-green-500 bg-green-500/8"
+                          : "border-amber-500 bg-amber-500/5 hover:bg-amber-500/10 animate-glow-pulse"
                     }`}
                   >
-                    <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${activityPoints.length > 0 ? "bg-green-500 text-black" : "bg-amber-500 text-black shadow-lg"}`}>
+                    <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${gpxError ? "bg-red-500 text-white" : activityPoints.length > 0 ? "bg-green-500 text-black" : "bg-amber-500 text-black shadow-lg"}`}>
                       {activityPoints.length > 0 ? <CheckCircle2 size={28} /> : <Gauge size={28} />}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${activityPoints.length > 0 ? "text-green-500" : "text-amber-500"}`}>
+                      <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${gpxError ? "text-red-400" : activityPoints.length > 0 ? "text-green-500" : "text-amber-500"}`}>
                         Step 01
                       </span>
                       <p className="text-base font-black uppercase text-white leading-none">Import GPX</p>
-                      <p className="text-[11px] text-zinc-500 font-semibold mt-1">Garmin · Strava · Wahoo</p>
+                      {gpxError && (
+                        <p className="text-[11px] font-semibold mt-1 text-red-400">{gpxError}</p>
+                      )}
                     </div>
                     <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
                   </label>
@@ -552,24 +626,25 @@ export default function ProRefuelPage() {
                       {loading ? <Loader2 className="animate-spin" size={28} /> : highlights.length > 0 ? <CheckCircle2 size={28} /> : <Upload size={28} />}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${activityPoints.length === 0 ? "text-zinc-600" : "text-amber-500"}`}>
+                      <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${uploadError ? "text-red-400" : activityPoints.length === 0 ? "text-zinc-600" : "text-amber-500"}`}>
                         Step 02
                       </span>
                       <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>
                         Import MP4
                       </p>
-                      <p className="text-[11px] text-zinc-500 font-semibold mt-1">
-                        {loading ? statusMsg : activityPoints.length === 0 ? "Load GPX first" : "GoPro Video with GPS"}
+                      <p className={`text-[11px] font-semibold mt-1 ${uploadError ? "text-red-400" : "text-zinc-500"}`}>
+                        {uploadError
+                          ? uploadError
+                          : loading
+                            ? statusMsg
+                            : activityPoints.length === 0
+                              ? "Load GPX first"
+                              : "GoPro Video with GPS"}
                       </p>
                     </div>
-                    <input type="file" accept="video/mp4" disabled={activityPoints.length === 0} onChange={handleVideoUpload} className="hidden" />
+                    <input type="file" accept=".mp4,video/mp4" disabled={activityPoints.length === 0} onChange={handleVideoUpload} className="hidden" />
                     {activityPoints.length === 0 && <Lock size={16} className="text-zinc-700 shrink-0" />}
                   </label>
-
-                  {/* Error */}
-                  {uploadError && (
-                    <p className="text-red-400 text-[11px] font-bold px-2 leading-relaxed">{uploadError}</p>
-                  )}
 
                   {/* CTA */}
                   <button
