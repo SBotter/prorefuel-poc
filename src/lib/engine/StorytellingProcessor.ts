@@ -40,19 +40,84 @@ export interface StoryPlan {
 type ScoredActionSegment = ActionSegment & { normalizedScore: number };
 
 export class StorytellingProcessor {
-  static generatePlan(activityPoints: EnhancedGPSPoint[], videoPoints: GPSPoint[], unit: UnitSystem = 'metric', clockOffsetMs: number = 0, gpsVideoOffsetMs: number = 0): StoryPlan {
+  static generatePlan(activityPoints: EnhancedGPSPoint[], videoPoints: GPSPoint[], unit: UnitSystem = 'metric', clockOffsetMs: number = 0, gpsVideoOffsetMs: number = 0, videoDurationSec: number = 0): StoryPlan {
 
     // ── V2 routing ───────────────────────────────────────────────────────────
     if (STORYTELLING_VERSION === "V2") {
-      // Lazy import to keep V1 bundle unchanged when V2 is disabled
       const { StorytellingProcessorV2 } = require("./v2/StorytellingProcessorV2");
-      return StorytellingProcessorV2.generatePlan(activityPoints, videoPoints, unit, clockOffsetMs, gpsVideoOffsetMs);
+      return StorytellingProcessorV2.generatePlan(activityPoints, videoPoints, unit, clockOffsetMs, gpsVideoOffsetMs, videoDurationSec);
     }
 
-    const TOTAL_BUDGET = 59;
-    const INTRO_SEC = 6.5;
-    const BRAND_SEC = 3.5;
-    const ACTION_BUDGET = TOTAL_BUDGET - INTRO_SEC - BRAND_SEC; // 49s
+    const INTRO_SEC     = 6.5;
+    const BRAND_SEC     = 3.5;
+    const ACTION_BUDGET = 49; // max content budget (59 - 6.5 - 3.5)
+
+    // If the supplied video is shorter than the max budget, honour that — the
+    // output will be INTRO + actual_footage + BRAND (< 59s).  When the video is
+    // long enough we use the full 49s budget unchanged.
+    const effectiveActionBudget = videoDurationSec > 0
+      ? Math.min(ACTION_BUDGET, videoDurationSec)
+      : ACTION_BUDGET;
+
+    // Short-video fast path: when the video is shorter than the action budget,
+    // highlight selection is meaningless — show the full video as-is.
+    if (videoDurationSec > 0 && videoDurationSec < ACTION_BUDGET) {
+      const videoStart    = videoPoints.length > 0 ? videoPoints[0].time : 0;
+      const videoEnd      = videoPoints.length > 0 ? videoPoints[videoPoints.length - 1].time : 0;
+      const videoStartGPS = videoStart - clockOffsetMs;
+      const videoEndGPS   = videoEnd   - clockOffsetMs;
+      const totalPoints   = activityPoints.length;
+
+      const intensity     = computeIntensity(activityPoints);
+      const scenes        = detectScenes(activityPoints, intensity, videoStartGPS, videoEndGPS);
+      const narrativePlan = buildNarrativePlan(scenes, activityPoints, intensity, ACTION_BUDGET);
+      const isLongActivity = (totalPoints / ACTION_BUDGET) > 10;
+
+      const firstActionIndex = videoStartGPS > 0
+        ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStartGPS))
+        : Math.floor(totalPoints / 2);
+      const vidEndIdx = (() => {
+        if (videoEndGPS <= 0) return Math.min(firstActionIndex + 60, totalPoints - 1);
+        const idx = activityPoints.findIndex((p, i) => i > firstActionIndex && p.time >= videoEndGPS);
+        return idx >= 0 ? idx : Math.min(firstActionIndex + 60, totalPoints - 1);
+      })();
+
+      const segments: StorySegment[] = [];
+      segments.push({ type: 'INTRO', startIndex: 0, endIndex: 0, durationSec: INTRO_SEC });
+
+      if (!isLongActivity) {
+        const preclimaxMapBudget = narrativePlan.acts.reduce((sum, a) => {
+          if (a.act === 'INTRO' || a.act === 'OUTRO' || a.act === 'CLIMAX' || a.act === 'RELIEF') return sum;
+          return sum + a.targetDurationSec;
+        }, 0);
+        let preclimaxCursor   = 0;
+        let preclimaxFracUsed = 0;
+        for (const act of narrativePlan.acts) {
+          if (act.act === 'INTRO' || act.act === 'OUTRO' || act.act === 'CLIMAX' || act.act === 'RELIEF') continue;
+          const actFrac   = preclimaxMapBudget > 0 ? act.targetDurationSec / preclimaxMapBudget : 1;
+          const cumFrac   = preclimaxFracUsed + actFrac;
+          const segStart  = preclimaxCursor;
+          const segEnd    = Math.min(Math.round(firstActionIndex * cumFrac), firstActionIndex);
+          preclimaxFracUsed = cumFrac;
+          preclimaxCursor   = segEnd;
+          if (segEnd - segStart < 2) continue;
+          const realSec        = (activityPoints[segEnd].time - activityPoints[segStart].time) / 1000;
+          const mapSpeedFactor = realSec > 0 ? realSec / act.targetDurationSec : 1;
+          segments.push({ type: 'MAP', startIndex: segStart, endIndex: segEnd, durationSec: act.targetDurationSec, mapSpeedFactor });
+        }
+      }
+
+      segments.push({
+        type: 'ACTION', startIndex: firstActionIndex, endIndex: vidEndIdx,
+        videoStartTime: 0, durationSec: Math.min(videoDurationSec, ACTION_BUDGET),
+        title: 'FULL RIDE', value: '',
+      });
+      segments.push({ type: 'BRAND', startIndex: totalPoints - 1, endIndex: totalPoints - 1, durationSec: BRAND_SEC });
+
+      const totalBudgetSec = segments.reduce((s, seg) => s + seg.durationSec, 0);
+      console.log(`[ProRefuel] Short-video path: video=${videoDurationSec.toFixed(1)}s → output=${totalBudgetSec.toFixed(1)}s`);
+      return { totalBudgetSec, isLongActivity, segments, activityPoints, narrativePlan, intensityScores: intensity.scores, detectedScenes: scenes };
+    }
 
     if (activityPoints.length === 0) {
         throw new Error("Activity points required for storytelling.");
@@ -67,10 +132,9 @@ export class StorytellingProcessor {
     const videoEndGPS   = videoEnd   - clockOffsetMs;
 
     // 2a. INTENSITY ENGINE + SCENE DETECTOR + NARRATIVE PLANNER
-    const intensity = computeIntensity(activityPoints);
-    const scenes    = detectScenes(activityPoints, intensity, videoStartGPS, videoEndGPS);
-    // Pass ACTION_BUDGET (49s) — NarrativePlanner fills exactly this; INTRO+BRAND are added by this class
-    const narrativePlan = buildNarrativePlan(scenes, activityPoints, intensity, ACTION_BUDGET);
+    const intensity     = computeIntensity(activityPoints);
+    const scenes        = detectScenes(activityPoints, intensity, videoStartGPS, videoEndGPS);
+    const narrativePlan = buildNarrativePlan(scenes, activityPoints, intensity, effectiveActionBudget);
 
     console.log("[ProRefuel] Intensity profile:", intensity.profile);
     console.log("[ProRefuel] Scenes detected:", scenes.map(s => `${s.id}(${s.label})`).join(", "));
@@ -154,10 +218,11 @@ export class StorytellingProcessor {
         // ACTION clips from detectAllPeaks — within video window, budget-aware
         if (rawSegments.length > 0) {
           const MIN_CLIP_SEC = 3;
-          // isLongActivity: no per-clip cap — clips extend as needed to fill full ACTION budget
           const MAX_CLIP_SEC = isLongActivity ? Number.MAX_SAFE_INTEGER : 12;
-          // isLongActivity: MAP acts are all skipped, so CLIMAX owns the full ACTION budget
-          const climaxBudget = isLongActivity ? ACTION_BUDGET : narrativeAct.targetDurationSec;
+          // When video is short, CLIMAX budget is capped to available footage.
+          const climaxBudget = isLongActivity
+            ? effectiveActionBudget
+            : Math.min(narrativeAct.targetDurationSec, effectiveActionBudget);
 
           // Budget is the only hard cap — use all detected peaks, best scores first
           const selectedSegs = [...rawSegments]
@@ -184,12 +249,20 @@ export class StorytellingProcessor {
             }));
           }
 
-          // Budget fill guarantee: if total clips < climaxBudget, extend last clip to close the gap
-          // This handles: few peaks detected + MAX_CLIP_SEC cap eating into budget
+          // Budget fill: extend last clip up to the effective budget, but never
+          // past the end of the video file.
           const allocatedTotal = distributed.reduce((s, d) => s + d.durationSec, 0);
           const fillGap = climaxBudget - allocatedTotal;
           if (fillGap > 0.1 && distributed.length > 0) {
-            distributed[distributed.length - 1].durationSec += fillGap;
+            const last = distributed[distributed.length - 1];
+            if (videoDurationSec > 0) {
+              // seekEnd = where this clip ends in the video file
+              const seekStart = (gpsVideoOffsetMs / 1000) + (last.seg.videoStartTime ?? 0);
+              const canExtend = Math.max(0, videoDurationSec - seekStart - last.durationSec);
+              last.durationSec += Math.min(fillGap, canExtend);
+            } else {
+              last.durationSec += fillGap;
+            }
           }
 
           for (const { seg, durationSec } of distributed) {
@@ -277,10 +350,12 @@ export class StorytellingProcessor {
       const vidIdx = videoStart > 0
         ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStart))
         : Math.floor(activityPoints.length / 2);
-      // isLongActivity: use full ACTION_BUDGET (no MAP to share it with)
       const fallbackDur = isLongActivity
-        ? ACTION_BUDGET
-        : (narrativePlan.acts.find(a => a.act === "CLIMAX")?.targetDurationSec ?? Math.round(ACTION_BUDGET * 0.60));
+        ? effectiveActionBudget
+        : Math.min(
+            narrativePlan.acts.find(a => a.act === "CLIMAX")?.targetDurationSec ?? Math.round(effectiveActionBudget * 0.60),
+            effectiveActionBudget,
+          );
       segments.push({
         type: "ACTION",
         startIndex: vidIdx,
@@ -300,8 +375,9 @@ export class StorytellingProcessor {
       durationSec: BRAND_SEC
     });
 
+    const totalBudgetSec = segments.reduce((s, seg) => s + seg.durationSec, 0);
     return {
-      totalBudgetSec: TOTAL_BUDGET,
+      totalBudgetSec,
       isLongActivity,
       segments,
       activityPoints,

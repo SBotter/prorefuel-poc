@@ -33,6 +33,9 @@ import {
   VideoGPSProfile,
 } from "@/lib/engine/VideoGPSAnalyzer";
 import { SyncStrategySelector } from "@/lib/engine/SyncStrategySelector";
+import { CameraDetector } from "@/lib/media/CameraDetector";
+import { iPhoneEngineClient } from "@/lib/media/iPhoneEngineClient";
+import { iPhoneVideoGPSAnalyzer } from "@/lib/engine/iphone/iPhoneVideoGPSAnalyzer";
 
 // ── Device detection helpers ──────────────────────────────────────────────
 const LOGO_BASE = "/devices/logos";
@@ -107,16 +110,17 @@ export default function ProRefuelPage() {
     if (!file) return;
 
     // ── File type guard ───────────────────────────────────────────────────────
-    const isMP4 = file.name.toLowerCase().endsWith(".mp4") || file.type === "video/mp4";
-    if (!isMP4) {
-      setUploadError("Only .mp4 files are accepted.");
+    const nameLc = file.name.toLowerCase();
+    const isMP4  = nameLc.endsWith(".mp4") || file.type === "video/mp4";
+    const isMOV  = nameLc.endsWith(".mov") || file.type === "video/quicktime";
+    if (!isMP4 && !isMOV) {
+      setUploadError("Unsupported format. Use .mp4 (GoPro) or .mov (iPhone).");
       e.target.value = "";
       return;
     }
 
     setLoading(true);
     setUploadError(null);
-    setVideoFile(file);
     setProgress(0);
     const processingStart = Date.now();
     const interval = setInterval(
@@ -124,16 +128,123 @@ export default function ProRefuelPage() {
       150,
     );
     try {
-      setStatusMsg("Analysing GPMF...");
-      const {
-        points: vpts,
-        syncPoints,
-        cameraModel,
-        gpsVideoOffsetMs,
-      } = await GoProEngineClient.extractTelemetry(file);
+      // ── Detect camera type before any heavy work ──────────────────────────
+      // Fast path: filename → extension (zero I/O). exifr is only used as
+      // last resort for files that are neither .mp4 nor .mov.
+      setStatusMsg("Identifying camera...");
+      const cameraDetection = await CameraDetector.detect(file);
+      const isIPhone = cameraDetection.type === 'iphone';
 
-      // ── Detect camera from GPMF model string or filename fallback ────────
-      let resolvedModel = cameraModel;
+      // ── GoPro: set video file immediately so it loads in parallel ─────────
+      // GoPro MP4 has moov at the START — the browser reads only the header
+      // (< 1 MB) and is ready to play within milliseconds. Loading in parallel
+      // with the 30-120s GPMF worker means the video is always ready when the
+      // READY screen appears.
+      // iPhone MOV is intentionally deferred (setVideoFile below, after processing)
+      // because MOV has moov at the END — an early preload would scan the entire
+      // file causing disk I/O lag. MapEngine uses preload="none" for MOV and lets
+      // the pre-seek during INTRO trigger loading naturally.
+      if (!isIPhone) {
+        setVideoFile(file);
+      }
+
+      if (cameraDetection.type === 'unknown') {
+        throw new Error(
+          `Camera not supported: ${cameraDetection.make || 'unknown'}. Use GoPro (.mp4) or iPhone (.mov).`
+        );
+      }
+
+      // ── Extract telemetry — branched by camera type ───────────────────────
+      let vpts: any[];
+      let syncPoints: any[];
+      let cameraModel: string;
+      let gpsVideoOffsetMs: number;
+      let iPhoneVideoStartMs = 0;
+      let iPhoneDurationMs   = 0;
+      let iPhoneHasStartGPS  = false;
+
+      if (isIPhone) {
+        // iPhone MOV pipeline — uses QuickTime metadata (CreateDate + Duration)
+        setStatusMsg("Reading iPhone metadata...");
+        const result = await iPhoneEngineClient.extractTelemetry(file);
+        vpts             = result.points;
+        syncPoints       = result.syncPoints;
+        cameraModel      = result.cameraModel;
+        gpsVideoOffsetMs = result.gpsVideoOffsetMs; // always 0 for iPhone
+        iPhoneVideoStartMs = result.videoStartMs;
+        iPhoneDurationMs   = result.durationMs;
+        iPhoneHasStartGPS  = result.hasStartGPS;
+
+        // ── Align iPhone NTP → GPS UTC ──────────────────────────────────────
+        // iPhone CreateDate is often stored in local time (not UTC). This causes
+        // all videoStartTime values to be negative → clamped to 0 → every clip
+        // starts at t=0 → the video appears to "loop" (same footage plays N times).
+        //
+        // Strategy A (spatial): if iPhone has a recording-start GPS coordinate,
+        // find the matching activity GPS point and compute the exact offset.
+        //
+        // Strategy B (timezone scan): if no GPS or spatial match fails, scan all
+        // common timezone offsets (-12h → +14h in 30-min steps) and pick the one
+        // where the video window overlaps with the activity. This catches any
+        // timezone mismatch regardless of whether the iPhone had Location Services.
+        if (activityPoints.length >= 5) {
+          let clockCorrected = false;
+
+          // Strategy A: spatial match using recording-start GPS coordinate
+          if (iPhoneHasStartGPS && vpts[0].lat !== 0) {
+            const iPhoneClockOffset = estimateIPhoneClockOffsetMs(
+              vpts[0].lat, vpts[0].lon, iPhoneVideoStartMs, activityPoints,
+            );
+            if (iPhoneClockOffset !== 0) {
+              vpts               = vpts.map((p: any) => ({ ...p, time: p.time - iPhoneClockOffset }));
+              iPhoneVideoStartMs = iPhoneVideoStartMs - iPhoneClockOffset;
+              clockCorrected = true;
+              console.log(`[iPhone Sync] Strategy A (spatial): offset=${iPhoneClockOffset}ms`);
+            }
+          }
+
+          // Strategy B: timezone scan — activates when spatial fails or iPhone has no GPS.
+          // Checks if the (possibly corrected) video window overlaps with the activity.
+          if (!clockCorrected) {
+            const actStart   = activityPoints[0].time;
+            const actEnd     = activityPoints[activityPoints.length - 1].time;
+            const vidStart   = vpts[0].time;
+            const vidEnd     = vpts[vpts.length - 1].time;
+            const alreadyOk  = vidStart <= actEnd + 60_000 && vidEnd >= actStart - 60_000;
+
+            if (!alreadyOk) {
+              // Scan -12h to +14h in 30-min steps (52 iterations)
+              let bestOffset  = 0;
+              let bestOverlap = 0;
+              for (let tzMin = -720; tzMin <= 840; tzMin += 30) {
+                const offsetMs  = tzMin * 60_000;
+                const adjStart  = vidStart - offsetMs;
+                const adjEnd    = vidEnd   - offsetMs;
+                const overlap   = Math.max(0, Math.min(adjEnd, actEnd) - Math.max(adjStart, actStart));
+                if (overlap > bestOverlap) { bestOverlap = overlap; bestOffset = offsetMs; }
+              }
+              if (bestOffset !== 0) {
+                console.log(`[iPhone Sync] Strategy B (timezone scan): offset=${bestOffset / 3_600_000}h`);
+                vpts               = vpts.map((p: any) => ({ ...p, time: p.time - bestOffset }));
+                iPhoneVideoStartMs = iPhoneVideoStartMs - bestOffset;
+              } else {
+                console.warn('[iPhone Sync] Strategy B: no timezone offset gives overlap — timestamps may be wrong');
+              }
+            }
+          }
+        }
+      } else {
+        // GoPro MP4 pipeline — uses GPMF telemetry stream (unchanged)
+        setStatusMsg("Analysing GPMF...");
+        const result = await GoProEngineClient.extractTelemetry(file);
+        vpts             = result.points;
+        syncPoints       = result.syncPoints;
+        cameraModel      = result.cameraModel;
+        gpsVideoOffsetMs = result.gpsVideoOffsetMs;
+      }
+
+      // ── Detect camera from model string or filename fallback ─────────────
+      let resolvedModel = cameraModel || cameraDetection.model || cameraDetection.make;
       if (!resolvedModel) {
         const fn = file.name.toUpperCase();
         if (/^G[HXL]\d{6}\.MP4$/.test(fn) || fn.startsWith("GOPR") || fn.startsWith("GP"))
@@ -148,40 +259,49 @@ export default function ProRefuelPage() {
         if (camera.label) setActivityMeta(prev => ({ ...prev, camera }));
       }
 
-      // ── Validate: video must have GPS data ───────────────────────────────
-      if (vpts.length === 0) {
-        throw new Error("No GPS found in this video. Enable GPS before recording.");
+      // ── Validate: video must have GPS data (GoPro only — iPhone uses timestamps) ──
+      if (!isIPhone && vpts.length === 0) {
+        throw new Error("No GPS in this video. Enable GPS on your GoPro before recording.");
       }
 
       // ── Analyse video GPS structure ──────────────────────────────────────
-      const videoProfile = VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
+      const videoProfile = isIPhone
+        ? iPhoneVideoGPSAnalyzer.analyze(iPhoneVideoStartMs, iPhoneDurationMs, iPhoneHasStartGPS)
+        : VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
 
-      // ── Validate: GPS lock must have been acquired ────────────────────────
-      if (!videoProfile.hasGPSLock || videoProfile.postLockPoints === 0) {
-        throw new Error("Video GPS signal too weak — no valid fix acquired during recording.");
+      // ── Validate: GPS lock must have been acquired (GoPro only) ──────────
+      if (!isIPhone && (!videoProfile.hasGPSLock || videoProfile.postLockPoints === 0)) {
+        throw new Error("GPS signal too weak — no valid fix during recording.");
       }
 
       // ── Store video metrics — persisted after processing_session is created ──
       const totalPts = vpts.length;
       const fixDist  = videoProfile.fixDistribution;
       const fixTotal = (fixDist.fix0 + fixDist.fix2 + fixDist.fix3) || 1;
+      // For iPhone: GPS start/end come from CreateDate + Duration (not a GPS track).
+      const gpsStartUtc = isIPhone
+        ? new Date(iPhoneVideoStartMs).toISOString()
+        : (totalPts > 0 ? new Date((vpts[0] as any).time).toISOString() : null);
+      const gpsEndUtc = isIPhone
+        ? new Date(iPhoneVideoStartMs + iPhoneDurationMs).toISOString()
+        : (totalPts > 0 ? new Date((vpts[totalPts - 1] as any).time).toISOString() : null);
       videoMetricsRef.current = {
         filename:                 file.name,
         file_size_bytes:          file.size,
         camera_model:             resolvedModel ?? null,
-        has_gps:                  totalPts > 0,
+        has_gps:                  isIPhone ? iPhoneHasStartGPS : totalPts > 0,
         gps_points_count:         totalPts,
         gps_duration_s:           videoProfile.durationSec,
         gps_sampling_interval_ms: videoProfile.samplingIntervalMs,
-        gps_start_utc:            totalPts > 0 ? new Date((vpts[0] as any).time).toISOString() : null,
-        gps_end_utc:              totalPts > 0 ? new Date((vpts[totalPts - 1] as any).time).toISOString() : null,
+        gps_start_utc:            gpsStartUtc,
+        gps_end_utc:              gpsEndUtc,
         gps_video_offset_ms:      gpsVideoOffsetMs,
         has_gps_lock:             videoProfile.hasGPSLock,
         gps_lock_latency_s:       videoProfile.lockLatencySec,
         pre_lock_points:          videoProfile.preLockPoints,
         post_lock_points:         videoProfile.postLockPoints,
-        speed_avg_kmh:            Math.round(videoProfile.postLockSpeedAvgKmh * 10) / 10,
-        speed_max_kmh:            Math.round(videoProfile.postLockSpeedMaxKmh * 10) / 10,
+        speed_avg_kmh:            isIPhone ? null : Math.round(videoProfile.postLockSpeedAvgKmh * 10) / 10,
+        speed_max_kmh:            isIPhone ? null : Math.round(videoProfile.postLockSpeedMaxKmh * 10) / 10,
         distance_m:               Math.round(videoProfile.postLockDistanceM),
         fix_pct_no_fix:           Math.round((fixDist.fix0 / fixTotal) * 1000) / 10,
         fix_pct_2d:               Math.round((fixDist.fix2 / fixTotal) * 1000) / 10,
@@ -217,21 +337,31 @@ export default function ProRefuelPage() {
           };
           const spatialOverlap = postLock.some((vp: any) => actSample.some(ap => hav(vp, ap) < 2_000));
           if (!spatialOverlap) {
-            throw new Error("This video doesn't match the activity. Check both files are from the same ride.");
+            throw new Error("Video doesn't match this activity. Check both files are from the same ride.");
           }
         }
       }
 
       // ── Select sync strategy based on both file analyses ─────────────────
-      const syncPlan = gpxProfile
-        ? SyncStrategySelector.select(gpxProfile, videoProfile)
-        : {
-            method: "position-match" as const,
-            distanceThresholdM: 10,
-            timeWindowMs: 30_000,
-            confidence: "LOW" as const,
-            reason: "no GPX profile",
-          };
+      // iPhone always uses timestamp-based sync: CreateDate (NTP UTC) aligns
+      // directly with activity GPS (satellite UTC) — no clock correction needed.
+      const syncPlan = isIPhone
+        ? {
+            method:             "timestamp-based" as const,
+            distanceThresholdM: 0,
+            timeWindowMs:       0,
+            confidence:         "HIGH" as const,
+            reason:             "iPhone CreateDate (NTP UTC) = activity GPS UTC — no correction needed",
+          }
+        : gpxProfile
+          ? SyncStrategySelector.select(gpxProfile, videoProfile)
+          : {
+              method:             "position-match" as const,
+              distanceThresholdM: 10,
+              timeWindowMs:       30_000,
+              confidence:         "LOW" as const,
+              reason:             "no GPX profile",
+            };
       console.log(
         `[SyncPlan] method=${syncPlan.method} threshold=${syncPlan.distanceThresholdM.toFixed(1)}m window=${syncPlan.timeWindowMs}ms confidence=${syncPlan.confidence} | ${syncPlan.reason}`,
       );
@@ -254,7 +384,7 @@ export default function ProRefuelPage() {
         gpsVideoOffsetMs,
       );
       if (!segments || segments.length === 0)
-        throw new Error("Scene detection failed — no segments produced.");
+        throw new Error("No scenes detected in this activity.");
 
       // TODO: workaround — remove after root cause of residual 4s gap is confirmed
       const VIDEO_SEEK_WORKAROUND_SEC = 0;
@@ -263,12 +393,22 @@ export default function ProRefuelPage() {
           s.videoStartTime += VIDEO_SEEK_WORKAROUND_SEC;
       });
 
+      // Actual duration of the video file in seconds.
+      // GoPro: pre-lock delay + GPS recording span.
+      // iPhone: CreateDate metadata duration.
+      const videoDurationSec = isIPhone
+        ? iPhoneDurationMs / 1000
+        : (vpts.length > 1
+            ? gpsVideoOffsetMs / 1000 + (vpts[vpts.length - 1].time - vpts[0].time) / 1000
+            : 0);
+
       const storyPlan = StorytellingProcessor.generatePlan(
         activityPoints,
         vpts as any,
         unit,
         clockOffsetMs,
         gpsVideoOffsetMs,
+        videoDurationSec,
       );
       storyPlan.segments.forEach((s) => {
         if (s.videoStartTime !== undefined)
@@ -279,10 +419,13 @@ export default function ProRefuelPage() {
       setProgress(100);
 
       // ── Track processing session → then attach GPX child record ─────────
+      const videoDurationS = isIPhone
+        ? iPhoneDurationMs / 1000
+        : (vpts.length > 0 ? (vpts[vpts.length - 1] as any).time / 1000 : null);
       trackProcessingSession({
         status:             "success",
         video_filename:     file.name,
-        video_duration_s:   vpts.length > 0 ? (vpts[vpts.length - 1] as any).time / 1000 : null,
+        video_duration_s:   videoDurationS,
         camera_model:       resolvedModel ?? null,
         activity_name:      activityMeta.name ?? null,
         gpx_points_count:   activityPoints.length || null,
@@ -307,6 +450,11 @@ export default function ProRefuelPage() {
 
       setTimeout(() => {
         setHighlights(segments);
+        // iPhone MOV: set videoFile here (deferred) to avoid preloading the file
+        // during processing. MOV has moov at the end — early preload scans the
+        // entire file. MapEngine uses preload="none" for MOV so no I/O fires here.
+        // GoPro: already set above (parallel with GPMF worker).
+        if (isIPhone) setVideoFile(file);
         setStep("READY");
         readyStepStartRef.current = Date.now();
         setLoading(false);
@@ -504,10 +652,12 @@ export default function ProRefuelPage() {
             </h1>
 
             {/* SUBHEADLINE */}
-            <p className="text-zinc-400 text-lg font-medium max-w-md mb-4 leading-relaxed">
-              Turn your adventure into a{" "}
-              <span className="text-white border-b border-amber-500/70">cinematic GPS telemetry edit</span>
-              {" "}— auto-generated, synced, ready to share.
+            <p className="text-zinc-400 text-lg font-medium max-w-md mb-2 leading-relaxed">
+              Turn your{" "}
+              <span className="text-white border-b border-amber-500/70">Activity into a story.</span>
+            </p>
+            <p className="text-zinc-500 text-sm max-w-sm mb-6 leading-relaxed">
+              Import your GPX. Add your GoPro video. LENS generates a cinematic edit — synced, scored, ready to post.
             </p>
 
             {/* PRIVACY PILL */}
@@ -555,11 +705,13 @@ export default function ProRefuelPage() {
 
             {/* Card header */}
             <div className="flex flex-col items-center lg:items-start mb-8">
-              <img src="/prorefuel_logo.png" alt="ProRefuel" className="w-48 mb-5 drop-shadow-2xl" />
-              <h2 className="text-3xl font-black italic tracking-tighter uppercase text-white">
-                LENS <span className="text-amber-500">ENGINE</span>
+              <h2 className="text-7xl font-black tracking-tight uppercase text-white mb-3">
+                LENS
               </h2>
-              <p className="text-zinc-500 font-bold mt-1.5 tracking-widest uppercase text-[10px]">
+              <div className="flex items-center gap-2 mb-3">
+                <img src="/prorefuel_logo.png" alt="ProRefuel" className="w-36 opacity-70" />
+              </div>
+              <p className="text-zinc-500 font-bold tracking-widest uppercase text-[10px]">
                 Telemetry · Sync · Cinematic Edit
               </p>
             </div>
@@ -610,7 +762,7 @@ export default function ProRefuelPage() {
                     <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
                   </label>
 
-                  {/* STEP 02: MP4 */}
+                  {/* STEP 02: VIDEO */}
                   <label
                     className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all cursor-pointer ${
                       uploadError
@@ -630,7 +782,7 @@ export default function ProRefuelPage() {
                         Step 02
                       </span>
                       <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>
-                        Import MP4
+                        Import Video
                       </p>
                       <p className={`text-[11px] font-semibold mt-1 ${uploadError ? "text-red-400" : "text-zinc-500"}`}>
                         {uploadError
@@ -639,10 +791,10 @@ export default function ProRefuelPage() {
                             ? statusMsg
                             : activityPoints.length === 0
                               ? "Load GPX first"
-                              : "GoPro Video with GPS"}
+                              : "GoPro .mp4"}
                       </p>
                     </div>
-                    <input type="file" accept=".mp4,video/mp4" disabled={activityPoints.length === 0} onChange={handleVideoUpload} className="hidden" />
+                    <input type="file" accept=".mp4,.mov,video/mp4,video/quicktime" disabled={activityPoints.length === 0} onChange={handleVideoUpload} className="hidden" />
                     {activityPoints.length === 0 && <Lock size={16} className="text-zinc-700 shrink-0" />}
                   </label>
 
@@ -734,6 +886,66 @@ export default function ProRefuelPage() {
         </section>
       </div>
 
+      {/* ── FEATURE SECTION ────────────────────────────────────────────────── */}
+      <section className="relative z-10 border-t border-zinc-800/40 bg-gradient-to-b from-black/0 to-black/40">
+        <div className="max-w-[1600px] mx-auto px-6 md:px-12 py-20">
+
+          {/* Section headline */}
+          <div className="text-center mb-14">
+            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-amber-500/70 mb-4">What LENS does</p>
+            <h2 className="text-4xl sm:text-5xl font-black tracking-tight leading-tight mb-4">
+              Turn your{" "}
+              <span className="text-amber-500">activity</span><br className="hidden sm:block" />
+              {" "}into a story.
+            </h2>
+            <p className="text-zinc-400 text-base max-w-lg mx-auto leading-relaxed">
+              Every ride, run, or hike has a story. LENS reads your GPS data, finds the best moments, and edits them together automatically — no video editing skills needed.
+            </p>
+          </div>
+
+          {/* Camera support row */}
+          <div className="flex flex-col sm:flex-row gap-4 justify-center mb-16">
+
+            {/* GoPro card */}
+            <div className="flex-1 max-w-sm mx-auto sm:mx-0 p-6 rounded-3xl bg-zinc-900/60 border border-amber-500/25 relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/5 blur-[40px] rounded-full pointer-events-none" />
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-2xl">🎥</div>
+                <div>
+                  <p className="font-black text-white text-sm uppercase tracking-wide">GoPro</p>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">Maximum quality</p>
+                </div>
+              </div>
+              <p className="text-zinc-400 text-sm leading-relaxed mb-4">
+                Full GPS telemetry at 18Hz embedded in the .mp4 file. LENS reads speed, acceleration, and gyroscope data to detect every climb, sprint, and technical section.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {["GPS 18Hz","Accelerometer","Gyroscope","Barometer","Auto Sync"].map(f => (
+                  <span key={f} className="px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] font-black text-amber-400 uppercase tracking-wide">{f}</span>
+                ))}
+              </div>
+            </div>
+
+
+          </div>
+
+          {/* Feature grid */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <FeatureTile icon="⚡" title="Auto-edited" body="LENS finds your best moments and builds the story automatically." />
+            <FeatureTile icon="🛰️" title="GPS-synced" body="Millisecond precision — video and activity matched to the exact second." />
+            <FeatureTile icon="🎬" title="9:16 format" body="Instagram Reels, TikTok, YouTube Shorts — ready to post instantly." />
+            <FeatureTile icon="🔒" title="100% private" body="Everything runs in your browser. Your files never leave your device." />
+          </div>
+
+          {/* Bottom CTA */}
+          <div className="mt-14 text-center">
+            <p className="text-zinc-500 text-sm mb-1">No account. No subscription. No upload.</p>
+            <p className="text-zinc-300 font-black text-base">Just open Chrome on your desktop and go. ↑</p>
+          </div>
+
+        </div>
+      </section>
+
       {/* ── FOOTER ─────────────────────────────────────────────────────────── */}
       <footer className="relative z-10 border-t border-zinc-800/50 bg-black/30 backdrop-blur-sm">
         <div className="max-w-[1600px] mx-auto px-6 md:px-12 py-10 flex flex-col md:flex-row items-center justify-between gap-6">
@@ -776,121 +988,618 @@ export default function ProRefuelPage() {
   );
 }
 
+// ── iPhone clock correction ───────────────────────────────────────────────────
+//
+// iPhone stores QuickTime CreateDate (mvhd) in UTC per spec, but some iOS
+// versions write local time. A UTC+1 timezone turns every seek into a negative
+// number (clamped to 0) → video stuck at frame 0 → "lag fortissimo".
+//
+// Fix: use the ISO 6709 recording-start GPS coordinate (when available) to
+// find the matching moment in the activity GPS track. The difference between
+// CreateDate and that GPS UTC time is the clock offset to subtract.
+//
+// Search is unconstrained in time (handles ±12 h timezone offsets) but
+// constrained to 100 m spatially (iPhone GPS ≤ 10 m error) and ±24 h
+// (eliminates matches from completely different days / prior sessions).
+//
+// Returns 0 when no confident match is found — no correction applied.
+function estimateIPhoneClockOffsetMs(
+  recordingLat: number,
+  recordingLon: number,
+  createDateMs: number,
+  activityPoints: { lat: number; lon: number; time: number }[],
+): number {
+  if (activityPoints.length < 5) return 0;
+
+  const R = 6_371_000;
+  const toRad = (d: number) => d * Math.PI / 180;
+  const MAX_DIST_M   = 100;            // iPhone GPS is ±5–10 m; 100 m is generous
+  const MAX_DELTA_MS = 24 * 3_600_000; // ignore matches > 24 h away (different day)
+
+  let minDist  = Infinity;
+  let bestMatch: { lat: number; lon: number; time: number } | null = null;
+
+  for (const p of activityPoints) {
+    // Quick time pre-filter to avoid haversine on thousands of distant points
+    if (Math.abs(p.time - createDateMs) > MAX_DELTA_MS) continue;
+
+    const dLat = toRad(p.lat - recordingLat);
+    const dLon = toRad(p.lon - recordingLon);
+    const a    = Math.sin(dLat / 2) ** 2
+               + Math.cos(toRad(recordingLat)) * Math.cos(toRad(p.lat))
+               * Math.sin(dLon / 2) ** 2;
+    const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    if (dist < minDist) { minDist = dist; bestMatch = p; }
+  }
+
+  // If no match within ±24 h, widen to full activity (catches timezone offsets
+  // where the pre-filter excluded all candidates)
+  if (!bestMatch || minDist > MAX_DIST_M) {
+    minDist   = Infinity;
+    bestMatch = null;
+    for (const p of activityPoints) {
+      const dLat = toRad(p.lat - recordingLat);
+      const dLon = toRad(p.lon - recordingLon);
+      const a    = Math.sin(dLat / 2) ** 2
+                 + Math.cos(toRad(recordingLat)) * Math.cos(toRad(p.lat))
+                 * Math.sin(dLon / 2) ** 2;
+      const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      if (dist < minDist) { minDist = dist; bestMatch = p; }
+    }
+  }
+
+  if (!bestMatch || minDist > MAX_DIST_M) {
+    console.log(`[iPhone Sync] No match within ${MAX_DIST_M}m (best: ${minDist.toFixed(0)}m) — skipping clock correction`);
+    return 0;
+  }
+
+  const offset = createDateMs - bestMatch.time;
+  console.log(
+    `[iPhone Sync] Spatial clock fix: ${minDist.toFixed(0)}m match at ${new Date(bestMatch.time).toISOString()} ` +
+    `→ offset=${offset}ms (${(offset / 3_600_000).toFixed(2)}h) applied`,
+  );
+  return offset;
+}
+
 // ── Mobile-only gate — shown when running on iOS / Android ────────────────
 
-function MobileLanding() {
-  const [copied, setCopied] = useState(false);
-  const url = "https://lens.prorefuel.app";
+/** Helper: read video duration via HTML5 video element metadata (lightweight, no full decode) */
+function getVideoDuration(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    const url = URL.createObjectURL(file);
+    video.onloadedmetadata = () => { resolve(video.duration); URL.revokeObjectURL(url); };
+    video.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Cannot read video.")); };
+    video.src = url;
+  });
+}
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(url).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    }).catch(() => {
-      // Clipboard API unavailable or denied — fail silently
+const MOBILE_MAX_SIZE_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5 GB
+const MOBILE_MAX_DURATION_S = 300;                        // 5 minutes
+
+function MobileLanding() {
+  // ── Phase ──────────────────────────────────────────────────────────────
+  const [phase, setPhase] = useState<"upload" | "processing" | "experience">("upload");
+
+  // ── Data ───────────────────────────────────────────────────────────────
+  const [activityPoints, setActivityPoints] = useState<any[]>([]);
+  const [highlights,     setHighlights]     = useState<ActionSegment[]>([]);
+  const [storyPlan,      setStoryPlan]       = useState<StoryPlan | null>(null);
+  const [videoFile,      setVideoFile]       = useState<File | null>(null);
+  const [activityMeta,   setActivityMeta]    = useState<{ name: string; location?: string; gpsDevice?: DeviceInfo; camera?: DeviceInfo }>({ name: "EPIC RIDE" });
+
+  // ── UI ─────────────────────────────────────────────────────────────────
+  const [gpxReady,     setGpxReady]     = useState(false);
+  const [videoReady,   setVideoReady]   = useState(false);
+  const [statusMsg,    setStatusMsg]    = useState("");
+  const [progress,     setProgress]     = useState(0);
+  const [gpxError,     setGpxError]     = useState<string | null>(null);
+  const [videoError,   setVideoError]   = useState<string | null>(null);
+  const [processError, setProcessError] = useState<string | null>(null);
+  const [renderDone,   setRenderDone]   = useState(false);
+  const [renderBlob,   setRenderBlob]   = useState<Blob | null>(null);
+  const [renderFilename, setRenderFilename] = useState("");
+
+  const mapEngineRef = useRef<{ start: () => void; startRecording: () => Promise<void>; isRecording: boolean }>(null);
+
+  // ── GPX upload ─────────────────────────────────────────────────────────
+  const handleGPX = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setGpxError(null);
+    if (!file.name.toLowerCase().endsWith(".gpx")) {
+      setGpxError("Only .gpx files accepted.");
+      e.target.value = "";
+      return;
+    }
+    const text = await file.text();
+    const xml  = new DOMParser().parseFromString(text, "text/xml");
+    const pts  = Array.from(xml.querySelectorAll("trkpt")).map((pt: Element) => {
+      const lat   = parseFloat(pt.getAttribute("lat") || "0");
+      const lon   = parseFloat(pt.getAttribute("lon") || "0");
+      const ele   = parseFloat(pt.querySelector("ele")?.textContent  || "0");
+      const time  = new Date(pt.querySelector("time")?.textContent || "").getTime();
+      const hrEl  = pt.querySelector("hr");
+      const cadEl = pt.querySelector("cad");
+      const hr    = hrEl  ? parseFloat(hrEl.textContent  || "0") || undefined : undefined;
+      const cad   = cadEl ? parseFloat(cadEl.textContent || "0") || undefined : undefined;
+      return { lat, lon, ele, time, ...(hr  !== undefined && { hr }),
+                                     ...(cad !== undefined && { cad }) };
     });
+    if (pts.length === 0) {
+      setGpxError("No GPS track in this file.");
+      e.target.value = "";
+      return;
+    }
+    setActivityPoints(pts);
+    const trackName =
+      Array.from(xml.getElementsByTagName("name"))
+        .find(el => el.parentElement?.localName === "trk")?.textContent?.trim() ||
+      "EPIC RIDE";
+    const creatorRaw = xml.documentElement.getAttribute("creator") || "";
+    const gpsDevice  = creatorRaw ? detectGPSDevice(creatorRaw) : undefined;
+    setActivityMeta({ name: trackName, ...(gpsDevice?.label ? { gpsDevice } : {}) });
+    setGpxReady(true);
   };
 
+  // ── MOV upload with mobile validations ────────────────────────────────
+  const handleMOV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setVideoError(null);
+
+    const nameLc = file.name.toLowerCase();
+    const isMOV  = nameLc.endsWith(".mov") || file.type === "video/quicktime";
+    const isMP4  = nameLc.endsWith(".mp4") || file.type === "video/mp4";
+
+    if (isMP4) {
+      setVideoError("GoPro MP4 requires desktop. Use lens.prorefuel.app on your computer.");
+      e.target.value = "";
+      return;
+    }
+    if (!isMOV) {
+      setVideoError("Only iPhone .mov files supported on mobile.");
+      e.target.value = "";
+      return;
+    }
+    if (file.size > MOBILE_MAX_SIZE_BYTES) {
+      const gb = (file.size / 1024 / 1024 / 1024).toFixed(1);
+      setVideoError(`File is ${gb} GB — max 1.5 GB on mobile. Use lens.prorefuel.app on desktop.`);
+      e.target.value = "";
+      return;
+    }
+    // Duration check (best-effort — HTML5 metadata read, lightweight)
+    try {
+      const dur = await getVideoDuration(file);
+      if (dur > MOBILE_MAX_DURATION_S) {
+        const m = Math.floor(dur / 60);
+        const s = Math.round(dur % 60);
+        setVideoError(`Video is ${m}m ${s}s — over 5 minutes. Use lens.prorefuel.app on desktop.`);
+        e.target.value = "";
+        return;
+      }
+    } catch { /* allow — duration check is best-effort */ }
+
+    setVideoFile(file);
+    setVideoReady(true);
+  };
+
+  // ── Generate handler ───────────────────────────────────────────────────
+  const handleProcess = async () => {
+    if (!videoFile || activityPoints.length === 0) return;
+    setPhase("processing");
+    setProcessError(null);
+    setProgress(0);
+    const interval = setInterval(() => setProgress(p => p >= 95 ? 95 : p + 1), 150);
+
+    try {
+      setStatusMsg("Identifying camera...");
+      const cameraDetection = await CameraDetector.detect(videoFile);
+      if (cameraDetection.type !== "iphone") {
+        throw new Error("Only iPhone MOV files are supported on mobile. Use lens.prorefuel.app for GoPro.");
+      }
+
+      setStatusMsg("Reading iPhone metadata...");
+      const result = await iPhoneEngineClient.extractTelemetry(videoFile);
+      let vpts = result.points;
+      const { gpsVideoOffsetMs } = result;
+      let iPhoneVideoStartMs     = result.videoStartMs;
+      const iPhoneDurationMs     = result.durationMs;
+      const iPhoneHasStartGPS    = result.hasStartGPS;
+
+      // ── Align iPhone NTP → GPS UTC (fixes "lag fortissimo") ────────────
+      if (iPhoneHasStartGPS && vpts[0].lat !== 0 && activityPoints.length >= 5) {
+        const iPhoneClockOffset = estimateIPhoneClockOffsetMs(
+          vpts[0].lat, vpts[0].lon, iPhoneVideoStartMs, activityPoints,
+        );
+        if (iPhoneClockOffset !== 0) {
+          vpts               = vpts.map((p: any) => ({ ...p, time: p.time - iPhoneClockOffset }));
+          iPhoneVideoStartMs = iPhoneVideoStartMs - iPhoneClockOffset;
+        }
+      }
+
+      setStatusMsg("Checking activity overlap...");
+      const DRIFT_MS       = 5 * 60_000;
+      const videoGPSStart  = (vpts[0] as any).time;
+      const videoGPSEnd    = (vpts[vpts.length - 1] as any).time;
+      const actStart       = activityPoints[0]?.time;
+      const actEnd         = activityPoints[activityPoints.length - 1]?.time;
+      const temporalOverlap =
+        actStart !== undefined && actEnd !== undefined &&
+        videoGPSStart - DRIFT_MS <= actEnd &&
+        videoGPSEnd   + DRIFT_MS >= actStart;
+      if (!temporalOverlap) {
+        throw new Error("Video doesn't match this activity. Check both files are from the same ride.");
+      }
+
+      setStatusMsg("Detecting scenes...");
+      const segments = TelemetryCrossRef.findHighlights(
+        activityPoints, vpts as any, "metric", 0, gpsVideoOffsetMs,
+      );
+      if (!segments || segments.length === 0) {
+        throw new Error("No scenes detected. Try a more dynamic activity or longer video.");
+      }
+
+      const sp = StorytellingProcessor.generatePlan(
+        activityPoints, vpts as any, "metric", 0, gpsVideoOffsetMs,
+      );
+
+      clearInterval(interval);
+      setProgress(100);
+      setHighlights(segments);
+      setStoryPlan(sp);
+      setTimeout(() => setPhase("experience"), 400);
+    } catch (err: any) {
+      clearInterval(interval);
+      setProcessError(err.message);
+      setPhase("upload");
+    }
+  };
+
+  // ── Share / download ───────────────────────────────────────────────────
+  const triggerShare = async () => {
+    if (!renderBlob) return;
+    const shareFile = new File([renderBlob], renderFilename, { type: "video/mp4" });
+    const canShare  = typeof navigator.canShare === "function" && navigator.canShare({ files: [shareFile] });
+    if (canShare) {
+      try {
+        await navigator.share({ files: [shareFile] });
+        return;
+      } catch (err: any) {
+        if (err.name === "AbortError") return; // user dismissed — no fallback needed
+      }
+    }
+    // Fallback: browser download
+    const url = URL.createObjectURL(renderBlob);
+    const a   = document.createElement("a");
+    a.href = url; a.download = renderFilename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  };
+
+  // ── EXPERIENCE PHASE ───────────────────────────────────────────────────
+  if (phase === "experience") {
+    return (
+      <main className="fixed inset-0 bg-black overflow-hidden">
+        <div className="absolute inset-0">
+          <MapEngine
+            ref={mapEngineRef}
+            activityPoints={activityPoints}
+            highlights={highlights}
+            storyPlan={storyPlan}
+            videoFile={videoFile}
+            activityMeta={activityMeta as any}
+            autoRecord={true}
+            unit="metric"
+            onDownloadReady={(blob, filename) => {
+              setRenderBlob(blob);
+              setRenderFilename(filename);
+              setRenderDone(true);
+            }}
+            onRenderComplete={() => {}}
+          />
+        </div>
+
+        {/* Recording badge */}
+        {!renderDone && (
+          <div className="absolute top-10 left-0 right-0 flex justify-center pointer-events-none">
+            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/70 border border-zinc-700 backdrop-blur-sm">
+              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+              <span className="text-[11px] font-black uppercase tracking-widest text-white">Recording...</span>
+            </div>
+          </div>
+        )}
+
+        {/* Done overlay */}
+        {renderDone && (
+          <div className="absolute inset-x-0 bottom-0 pb-safe p-6 bg-gradient-to-t from-black via-black/70 to-transparent">
+            <p className="text-center text-zinc-400 text-xs mb-4 font-bold uppercase tracking-widest">Your video is ready</p>
+            <button
+              onClick={triggerShare}
+              className="w-full py-4 rounded-2xl bg-amber-500 text-black font-black text-sm uppercase tracking-widest shadow-[0_0_30px_rgba(245,158,11,0.5)] active:scale-95 transition-transform"
+            >
+              Save & Share
+            </button>
+            <button
+              onClick={() => {
+                setPhase("upload");
+                setRenderDone(false);
+                setRenderBlob(null);
+                setHighlights([]);
+                setStoryPlan(null);
+                setVideoFile(null);
+                setVideoReady(false);
+                setGpxReady(false);
+                setActivityPoints([]);
+              }}
+              className="w-full mt-3 py-3 text-zinc-500 text-xs font-black uppercase tracking-widest active:opacity-70"
+            >
+              Create Another
+            </button>
+          </div>
+        )}
+      </main>
+    );
+  }
+
+  // ── PROCESSING PHASE ───────────────────────────────────────────────────
+  if (phase === "processing") {
+    return (
+      <main className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center px-5">
+        <div className="w-full max-w-xs text-center">
+          <div className="mb-8">
+            <div className="w-16 h-16 mx-auto rounded-full border-2 border-zinc-800 border-t-amber-500 animate-spin" />
+          </div>
+          <p className="font-black text-white text-xl mb-2">Building your edit</p>
+          <p className="text-zinc-400 text-sm mb-8 min-h-[20px]">{statusMsg}</p>
+          <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden mb-2">
+            <div
+              className="h-full bg-amber-500 rounded-full transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <p className="text-zinc-600 text-xs">{progress}%</p>
+        </div>
+      </main>
+    );
+  }
+
+  // ── UPLOAD / LANDING PHASE ─────────────────────────────────────────────
   return (
     <main className="min-h-screen bg-[#050505] text-white font-sans overflow-x-hidden">
+
       {/* Ambient glows */}
       <div className="fixed inset-0 z-0 pointer-events-none">
         <div className="absolute top-[-15%] left-[-10%] w-[80%] h-[50%] bg-amber-500/8 blur-[130px] rounded-full" />
         <div className="absolute bottom-[10%] right-[-15%] w-[60%] h-[40%] bg-amber-600/6 blur-[110px] rounded-full" />
       </div>
 
-      <div className="relative z-10 flex flex-col items-center px-6 pt-10 pb-16">
+      <div className="relative z-10 flex flex-col items-center px-5 pt-10 pb-16">
 
-        {/* Navbar */}
-        <nav className="w-full flex items-center justify-between mb-10">
+        {/* ── NAVBAR ──────────────────────────────────────────────────────── */}
+        <nav className="w-full flex items-center justify-between mb-8">
           <div className="flex items-center gap-2">
             <span className="text-xl font-black tracking-tight">LENS</span>
             <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mt-0.5">by ProRefuel.app</span>
           </div>
           <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/25">
             <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            <span className="text-[9px] font-black uppercase tracking-widest text-amber-400">Beta v1.0.29</span>
+            <span className="text-[9px] font-black uppercase tracking-widest text-amber-400">Free Beta</span>
           </div>
         </nav>
 
-        {/* Headline */}
-        <h1 className="text-[2.6rem] font-black tracking-tight leading-[0.88] text-center mb-5">
+        {/* ── HEADLINE ────────────────────────────────────────────────────── */}
+        <h1 className="text-[2.5rem] font-black tracking-tight leading-[0.88] text-center mb-4">
           YOUR CINEMATIC<br />ADVENTURE VIDEO<br />
           <span className="text-amber-500">IN 3 CLICKS.</span>
         </h1>
-
-        {/* Subheadline */}
-        <p className="text-zinc-400 text-[15px] leading-relaxed text-center max-w-xs mb-10">
-          Turn your adventure into a cinematic GPS telemetry edit — auto-generated, synced, ready to share.
+        <p className="text-zinc-400 text-[15px] leading-relaxed text-center max-w-xs mb-1">
+          Turn your <span className="text-white font-bold">Strava activity into a story.</span>
+        </p>
+        <p className="text-zinc-500 text-[13px] text-center max-w-[260px] mb-6">
+          iPhone .mov + any GPX → cinematic edit, saved to your gallery.
         </p>
 
-        {/* Phone mockup with hero video */}
-        <div className="relative w-[220px] mb-5">
-          {/* Phone frame */}
-          <div className="relative w-full aspect-[9/16] rounded-[2.5rem] bg-zinc-900 border-2 border-zinc-700 shadow-[0_30px_80px_rgba(0,0,0,0.8)] overflow-hidden">
-            <video
-              src="/videos/hero-preview.mp4"
-              autoPlay
-              loop
-              muted
-              playsInline
-              className="w-full h-full object-fill"
-            />
-            {/* Notch overlay */}
-            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-20 h-5 bg-black rounded-b-2xl z-10" />
-          </div>
-          {/* Decorative glow behind phone */}
-          <div className="absolute inset-0 -z-10 blur-[40px] bg-amber-500/20 rounded-[3rem]" />
+        {/* ── DEVICE BADGE ────────────────────────────────────────────────── */}
+        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-800/70 border border-zinc-700/50 mb-2">
+          <span className="text-xs">📱</span>
+          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">iPhone MOV · Up to 5 min · 1.5 GB</span>
+        </div>
+        <div className="flex items-center gap-1.5 mb-8 flex-wrap justify-center">
+          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Works with</span>
+          {["Garmin","Wahoo","Strava","Komoot"].map(d => (
+            <span key={d} className="text-[10px] font-bold text-zinc-500 px-2 py-0.5 rounded-md bg-zinc-900/60 border border-zinc-800">{d}</span>
+          ))}
         </div>
 
-        {/* Privacy pill */}
-        <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-green-500/10 border border-green-500/20 mb-10">
+        {/* ── UPLOAD FORM ─────────────────────────────────────────────────── */}
+        <div className="w-full max-w-sm mb-10">
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500/70 text-center mb-5">Create your video</p>
+
+          {/* GPX */}
+          <div className="mb-3">
+            <label className={`flex items-center gap-4 p-4 rounded-2xl border cursor-pointer transition-colors ${
+              gpxReady
+                ? "bg-green-500/10 border-green-500/40"
+                : "bg-zinc-900/60 border-zinc-700/60 active:border-zinc-500"
+            }`}>
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${gpxReady ? "bg-green-500/20" : "bg-zinc-800"}`}>
+                {gpxReady ? <CheckCircle2 size={20} className="text-green-400" /> : <span className="text-lg">🗺️</span>}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-black text-white text-sm">{gpxReady ? "GPX activity loaded" : "1. Import GPX activity"}</p>
+                <p className="text-zinc-500 text-[11px] mt-0.5 truncate">
+                  {gpxReady ? activityMeta.name : "Garmin · Wahoo · Strava · Komoot"}
+                </p>
+              </div>
+              <input type="file" accept=".gpx" className="hidden" onChange={handleGPX} />
+            </label>
+            {gpxError && <p className="text-red-400 text-[11px] mt-1.5 px-1">{gpxError}</p>}
+          </div>
+
+          {/* MOV */}
+          <div className="mb-5">
+            <label className={`flex items-center gap-4 p-4 rounded-2xl border cursor-pointer transition-colors ${
+              videoReady
+                ? "bg-green-500/10 border-green-500/40"
+                : "bg-zinc-900/60 border-zinc-700/60 active:border-zinc-500"
+            }`}>
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${videoReady ? "bg-green-500/20" : "bg-zinc-800"}`}>
+                {videoReady ? <CheckCircle2 size={20} className="text-green-400" /> : <span className="text-lg">📱</span>}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-black text-white text-sm">{videoReady ? "iPhone video loaded" : "2. Import iPhone video"}</p>
+                <p className="text-zinc-500 text-[11px] mt-0.5 truncate">
+                  {videoReady
+                    ? `${videoFile!.name} · ${(videoFile!.size / 1024 / 1024).toFixed(0)} MB`
+                    : ".mov only · max 5 min · 1.5 GB"}
+                </p>
+              </div>
+              <input type="file" accept=".mov,video/quicktime" className="hidden" onChange={handleMOV} />
+            </label>
+            {videoError && (
+              <p className={`text-[11px] mt-1.5 px-1 leading-relaxed ${videoError.includes("lens.prorefuel.app") ? "text-amber-400" : "text-red-400"}`}>
+                {videoError}
+              </p>
+            )}
+          </div>
+
+          {/* Process error */}
+          {processError && (
+            <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/25">
+              <p className="text-red-400 text-[11px] leading-relaxed">{processError}</p>
+            </div>
+          )}
+
+          {/* Generate button */}
+          <button
+            onClick={handleProcess}
+            disabled={!gpxReady || !videoReady}
+            className={`w-full py-4 rounded-2xl font-black text-sm uppercase tracking-widest transition-all ${
+              gpxReady && videoReady
+                ? "bg-amber-500 text-black shadow-[0_10px_30px_rgba(245,158,11,0.3)] active:scale-95"
+                : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
+            }`}
+          >
+            Generate My Video
+          </button>
+
+          {/* GoPro note */}
+          <div className="mt-4 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800 flex gap-2.5 items-start">
+            <span className="text-sm shrink-0 mt-0.5">🖥️</span>
+            <p className="text-zinc-400 text-[11px] leading-relaxed">
+              <span className="text-white font-bold">GoPro MP4?</span> Requires desktop.{" "}
+              <span className="text-amber-400 font-bold">lens.prorefuel.app</span>
+            </p>
+          </div>
+        </div>
+
+        {/* ── PRIVACY ─────────────────────────────────────────────────────── */}
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-500/10 border border-green-500/20 mb-10">
           <Lock size={10} className="text-green-400" />
-          <span className="text-[10px] font-black uppercase tracking-widest text-green-400">100% Local · No Data Ever Leaves Your Device</span>
+          <span className="text-[10px] font-black uppercase tracking-widest text-green-400">100% Local · Files never leave your device</span>
         </div>
 
-        {/* Desktop CTA block */}
-        <div className="w-full max-w-sm mb-8">
-          <div className="p-5 rounded-3xl bg-zinc-900/70 border border-zinc-800 text-center">
-            <div className="flex items-center justify-center gap-2 mb-3">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-amber-400">
-                <rect x="2" y="3" width="20" height="14" rx="2" />
-                <path d="M8 21h8M12 17v4" />
-              </svg>
-              <span className="text-[11px] font-black uppercase tracking-widest text-zinc-300">Open on your Desktop with Chrome</span>
-            </div>
-            <p className="text-zinc-500 text-[11px] leading-relaxed mb-4">
-              LENS uses GPU, WebAssembly, and Web Workers — it requires the full power of a desktop browser.
-            </p>
-            <div className="flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-black/60 border border-zinc-700 mb-3">
-              <span className="flex-1 text-sm font-bold text-amber-400 tracking-wide truncate text-left">{url}</span>
-              <button
-                onClick={handleCopy}
-                className="shrink-0 px-4 py-2 rounded-xl bg-amber-500 text-black text-[11px] font-black uppercase tracking-widest transition-all active:scale-95"
-              >
-                {copied ? "Copied!" : "Copy"}
-              </button>
-            </div>
-            <p className="text-[10px] text-zinc-600 uppercase tracking-widest">
-              Paste it in Chrome on your laptop or desktop
-            </p>
+        {/* ── HOW IT WORKS ────────────────────────────────────────────────── */}
+        <div className="w-full max-w-sm mb-10">
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500/70 text-center mb-5">How it works</p>
+          <div className="space-y-3">
+            <MobileStep number="01" title="Import your GPX activity" body="Garmin, Wahoo, Strava, Komoot — any .gpx file works." />
+            <MobileStep number="02" title="Import your iPhone video" body=".mov file, up to 5 minutes. Enable Location Services on Camera before recording." />
+            <MobileStep number="03" title="Generate & save to gallery" body="LENS detects your best moments. Tap Save & Share — choose Photos to save to your gallery." />
           </div>
         </div>
 
-        {/* Feature rows */}
-        <div className="w-full max-w-sm space-y-2.5 mb-10">
-          <MobileFeatureRow icon="🎬" text="Auto-generates cinematic adventure edits" />
-          <MobileFeatureRow icon="🛰️" text="Syncs GoPro GPS telemetry with your activity" />
-          <MobileFeatureRow icon="📱" text="Outputs 9:16 video ready for Instagram & TikTok" />
-          <MobileFeatureRow icon="🔒" text="100% local — your files never leave your device" />
+        {/* ── REQUIREMENTS ────────────────────────────────────────────────── */}
+        <div className="w-full max-w-sm mb-10 p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800">
+          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-3">Device requirements</p>
+          <div className="space-y-1.5">
+            {[
+              "iPhone 13 or newer",
+              "iOS 16 or newer",
+              "Safari browser (recommended)",
+              "Video: .mov format, max 5 min · 1.5 GB",
+            ].map(r => (
+              <div key={r} className="flex items-center gap-2">
+                <div className="w-1 h-1 rounded-full bg-amber-500 shrink-0" />
+                <p className="text-zinc-400 text-xs">{r}</p>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Footer */}
-        <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">
-          © {new Date().getFullYear()} ProRefuel.app
-        </p>
+        {/* ── FEATURES ────────────────────────────────────────────────────── */}
+        <div className="w-full max-w-sm space-y-2.5 mb-10">
+          <MobileFeatureRow icon="⚡" text="Auto-edited — no video editing needed" />
+          <MobileFeatureRow icon="🛰️" text="GPS-synced to the millisecond" />
+          <MobileFeatureRow icon="🎬" text="9:16 format — Instagram, TikTok, Shorts ready" />
+          <MobileFeatureRow icon="🔒" text="100% private — files stay on your device" />
+          <MobileFeatureRow icon="🆓" text="Free during beta — no account required" />
+        </div>
+
+        {/* ── GPS DEVICES ─────────────────────────────────────────────────── */}
+        <div className="w-full max-w-sm mb-10">
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600 text-center mb-3">GPX compatible devices</p>
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { name: "Garmin",      emoji: "⌚" },
+              { name: "Wahoo",       emoji: "🚴" },
+              { name: "Strava",      emoji: "🏃" },
+              { name: "Komoot",      emoji: "🗺️" },
+              { name: "RideWithGPS", emoji: "📍" },
+              { name: "Polar",       emoji: "💙" },
+            ].map(d => (
+              <div key={d.name} className="flex flex-col items-center gap-1 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/60">
+                <span className="text-lg">{d.emoji}</span>
+                <span className="text-[10px] font-bold text-zinc-400">{d.name}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── FOOTER ──────────────────────────────────────────────────────── */}
+        <div className="w-full max-w-sm border-t border-zinc-800/60 pt-8 flex flex-col items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-base font-black tracking-tight">LENS</span>
+            <span className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest">by ProRefuel.app</span>
+          </div>
+          <div className="flex items-center gap-5">
+            <a href="/como-funciona" className="text-[11px] font-black uppercase tracking-widest text-zinc-500">How It Works</a>
+            <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500">Privacy</a>
+          </div>
+          <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">
+            © {new Date().getFullYear()} ProRefuel.app
+          </p>
+        </div>
+
       </div>
     </main>
+  );
+}
+
+function FeatureTile({ icon, title, body }: { icon: string; title: string; body: string }) {
+  return (
+    <div className="p-5 rounded-2xl bg-zinc-900/50 border border-zinc-800/60 hover:border-zinc-700 transition-colors">
+      <div className="text-2xl mb-3">{icon}</div>
+      <p className="font-black text-white text-sm uppercase tracking-wide mb-1.5">{title}</p>
+      <p className="text-zinc-500 text-xs leading-relaxed">{body}</p>
+    </div>
+  );
+}
+
+function MobileStep({ number, title, body }: { number: string; title: string; body: string }) {
+  return (
+    <div className="flex gap-4 p-4 rounded-2xl bg-zinc-900/50 border border-zinc-800/60">
+      <div className="shrink-0 w-8 h-8 rounded-xl bg-amber-500 flex items-center justify-center">
+        <span className="text-xs font-black text-black">{number}</span>
+      </div>
+      <div>
+        <p className="font-black text-white text-sm mb-0.5">{title}</p>
+        <p className="text-zinc-400 text-xs leading-relaxed">{body}</p>
+      </div>
+    </div>
   );
 }
 

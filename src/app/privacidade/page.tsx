@@ -55,12 +55,12 @@ export default function PrivacyPage() {
           <PrivacyCard
             icon="🔒"
             title="100% Local Processing"
-            body="All video and activity file processing happens directly on your device — inside your browser. No file is ever uploaded, transmitted, or sent to any server, anywhere."
+            body="All video and activity file processing happens directly on your device — inside your browser. This applies to both desktop (Chrome) and mobile (Safari on iPhone). No file is ever uploaded, transmitted, or sent to any server, anywhere."
           />
           <PrivacyCard
             icon="🚫"
             title="Zero Data Transmission"
-            body="Your GoPro videos, GPX files, GPS coordinates, and location data never leave your machine. LENS has no way to access them remotely — and never will."
+            body="Your GoPro videos, iPhone MOV files, GPX files, GPS coordinates, and location data never leave your machine. LENS has no way to access them remotely — and never will."
           />
           <PrivacyCard
             icon="🧠"

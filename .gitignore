@@ -41,3 +41,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+#improvements
+Improvements.txt
+
+#tests
+*.mp4
+*.mov
