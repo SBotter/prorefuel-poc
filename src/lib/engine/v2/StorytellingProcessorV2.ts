@@ -87,6 +87,8 @@ function selectClipsFromVideoWindow(
   actionBudget:     number,
   unit:             UnitSystem,
   gpsVideoOffsetMs: number = 0,
+  winStartIdx:      number = 0,
+  videoDurationSec: number = 0,
 ): { clips: ScoredActionSegmentV2[]; reason: string } {
 
   // ── 1. Extract activity points inside the video time window ──────────────
@@ -110,7 +112,14 @@ function selectClipsFromVideoWindow(
   const sps     = (n - 1) / spanSec;
 
   const WIN_PTS  = Math.max(2, Math.round(10 * sps)); // 10s window
-  const MIN_GAP  = Math.max(1, Math.round(30 * sps)); // 30s min gap between clips
+  const numWindows = Math.max(1, n - WIN_PTS + 1);
+  // MIN_GAP: 30s equivalent, but capped so at least 3 clips can fit.
+  // Without the cap, dense windows (sps≈1) produce MIN_GAP=30 which exceeds
+  // the total window width → only 1 clip is ever placed.
+  const MIN_GAP  = Math.min(
+    Math.max(1, Math.round(30 * sps)),
+    Math.max(1, Math.floor(numWindows / 3)),
+  );
   const MAX_CLIPS = Math.max(1, Math.floor(actionBudget / 8)); // ~6 clips for 49s
 
   // ── 2. Per-point signals ─────────────────────────────────────────────────
@@ -120,7 +129,11 @@ function selectClipsFromVideoWindow(
 
   for (let i = 0; i < n; i++) {
     speedArr[i]  = videoSlice[i].p.speed ?? 0;
-    masterArr[i] = intensityV2.masterScore[videoSlice[i].i] ?? 0;
+    // masterScore is indexed relative to the window slice (windowPts), NOT
+    // to the full activityPoints array. Subtract winStartIdx to get the
+    // correct index. Without this, masterScore[absoluteIdx] falls outside
+    // the array (undefined → 0) and the scoring ignores intensity entirely.
+    masterArr[i] = intensityV2.masterScore[videoSlice[i].i - winStartIdx] ?? 0;
   }
 
   // Gradient: elevation change / horizontal distance
@@ -256,10 +269,19 @@ function selectClipsFromVideoWindow(
       };
     });
 
-  // Fill any remaining budget by extending the last clip
+  // Fill remaining budget, capped by video file duration (if known) or GPS boundary.
   const allocated = clips.reduce((s, c) => s + c.duration, 0);
   const fillGap   = actionBudget - allocated;
-  if (fillGap > 0.1) clips[clips.length - 1].duration += fillGap;
+  if (fillGap > 0.1 && clips.length > 0) {
+    const lastClip = clips[clips.length - 1];
+    const gpsEndSec = gpsVideoOffsetMs / 1000 + Math.max(0, (last.p.time - videoStart) / 1000);
+    // Hard ceiling: either the video file end or the GPS data end, whichever is earlier.
+    const ceiling    = videoDurationSec > 0
+      ? Math.min(videoDurationSec, gpsEndSec)
+      : gpsEndSec;
+    const canExtend  = Math.max(0, ceiling - lastClip.videoStartTime - lastClip.duration);
+    lastClip.duration += Math.min(fillGap, canExtend);
+  }
 
   // Log selected clips for debug
   console.log(
@@ -286,6 +308,7 @@ function selectActionClipsV2(
   rhythmFactor:     number,
   unit:             UnitSystem,
   gpsVideoOffsetMs: number = 0,
+  videoDurationSec: number = 0,
 ): { clips: ScoredActionSegmentV2[]; rejected: Array<{ candidate: SceneCandidateV2; reason: string }> } {
 
   const rejected: Array<{ candidate: SceneCandidateV2; reason: string }> = [];
@@ -380,11 +403,19 @@ function selectActionClipsV2(
     distributed.push(...valid);
   }
 
-  // 6. Budget fill: if total < actionBudget, extend last clip to close the gap
+  // 6. Budget fill: extend last clip up to budget, but never past the video end.
   const allocated = distributed.reduce((s, d) => s + d.durationSec, 0);
   const fillGap   = actionBudget - allocated;
   if (fillGap > 0.1 && distributed.length > 0) {
-    distributed[distributed.length - 1].durationSec += fillGap;
+    const last = distributed[distributed.length - 1];
+    if (videoDurationSec > 0) {
+      const lastStartPt   = activityPoints[last.cand.startIndex];
+      const seekStart     = gpsVideoOffsetMs / 1000 + Math.max(0, (lastStartPt.time - videoStart) / 1000);
+      const canExtend     = Math.max(0, videoDurationSec - seekStart - last.durationSec);
+      last.durationSec   += Math.min(fillGap, canExtend);
+    } else {
+      last.durationSec   += fillGap;
+    }
   }
 
   // 7. Convert to ScoredActionSegmentV2 (chronological order)
@@ -426,14 +457,28 @@ export class StorytellingProcessorV2 {
     unit:             UnitSystem = 'metric',
     clockOffsetMs:    number    = 0,
     gpsVideoOffsetMs: number    = 0,
+    videoDurationSec: number    = 0,
   ): StoryPlan & { v2Debug?: StorytellingV2Debug } {
 
     const t0 = performance.now();
 
-    const TOTAL_BUDGET  = 59;
     const INTRO_SEC     = 6.5;
     const BRAND_SEC     = 3.5;
-    const ACTION_BUDGET = TOTAL_BUDGET - INTRO_SEC - BRAND_SEC; // 49s
+    const ACTION_BUDGET = 49; // max content budget (59 - 6.5 - 3.5)
+
+    // If the supplied video is shorter than the max budget, honour that — the
+    // output will be INTRO + actual_footage + BRAND (< 59s).
+    const effectiveActionBudget = videoDurationSec > 0
+      ? Math.min(ACTION_BUDGET, videoDurationSec)
+      : ACTION_BUDGET;
+
+    // Short-video fast path: when the video is shorter than the action budget,
+    // highlight selection is meaningless — show the full video as-is.
+    if (videoDurationSec > 0 && videoDurationSec < ACTION_BUDGET) {
+      return StorytellingProcessorV2.buildShortVideoPlan(
+        activityPoints, videoPoints, unit, clockOffsetMs, gpsVideoOffsetMs, videoDurationSec,
+      );
+    }
 
     if (activityPoints.length === 0) {
       throw new Error('[V2] Activity points required for storytelling.');
@@ -515,9 +560,8 @@ export class StorytellingProcessorV2 {
     // ── 7. V1 NarrativePlanner (MAP budget allocation — window-scoped) ────────
     const v1Intensity   = computeIntensity(windowPts);
     const v1RawScenes   = detectScenes(windowPts, v1Intensity);
-    // Remap V1 scene indices to absolute before passing to NarrativePlanner
     const v1Scenes      = v1RawScenes.map(s => ({ ...s, startIndex: toAbsIdx(s.startIndex), endIndex: toAbsIdx(s.endIndex) }));
-    const narrativePlan = buildNarrativePlan(v1Scenes, activityPoints, v1Intensity, ACTION_BUDGET);
+    const narrativePlan = buildNarrativePlan(v1Scenes, activityPoints, v1Intensity, effectiveActionBudget);
 
     const rhythmFactor  = narrativePlan.editingRhythm === 'FAST' ? 0.8
                         : narrativePlan.editingRhythm === 'SLOW' ? 1.3 : 1.0;
@@ -540,14 +584,18 @@ export class StorytellingProcessorV2 {
 
     if (videoStartGPS > 0) {
       // Pass GPS-corrected times so videoStartTime formulas inside produce correct seek positions
-      const v2Result = selectActionClipsV2(allCandidates, activityPoints, videoStartGPS, videoEndGPS, ACTION_BUDGET, rhythmFactor, unit, gpsVideoOffsetMs);
+      const v2Result = selectActionClipsV2(allCandidates, activityPoints, videoStartGPS, videoEndGPS, effectiveActionBudget, rhythmFactor, unit, gpsVideoOffsetMs, videoDurationSec);
       rawSegments = v2Result.clips;
       rejected    = v2Result.rejected;
 
-      // If V2 typed candidates yielded nothing (all FAR), scan the video window by intensity
       if (rawSegments.length === 0) {
         console.warn(`[ProRefuel V2] No INSIDE typed candidates — running cinematic scan on video window`);
-        const scanResult = selectClipsFromVideoWindow(activityPoints, intensityV2, videoStartGPS, videoEndGPS, ACTION_BUDGET, unit, gpsVideoOffsetMs);
+        const scanResult = selectClipsFromVideoWindow(
+          activityPoints, intensityV2, videoStartGPS, videoEndGPS, effectiveActionBudget, unit,
+          gpsVideoOffsetMs,
+          winStartIdx,
+          videoDurationSec,
+        );
         rawSegments = scanResult.clips;
         windowScanFallbackReason = scanResult.reason;
       }
@@ -589,12 +637,15 @@ export class StorytellingProcessorV2 {
         seenClimax = true;
 
         if (rawSegments.length > 0) {
-          const climaxBudget = isLongActivity ? ACTION_BUDGET : narrativeAct.targetDurationSec;
+          // Cap to effective budget — never exceed available video footage.
+          const climaxBudget = isLongActivity
+            ? effectiveActionBudget
+            : Math.min(narrativeAct.targetDurationSec, effectiveActionBudget);
 
-          // V2: clips already have their durationSec from proportional allocation
-          // Re-scale proportionally if climaxBudget differs from ACTION_BUDGET
+          // Re-scale proportionally. Never scale UP beyond what clips provide
+          // (clips are already capped to video duration inside selectActionClipsV2).
           const totalAllocated = rawSegments.reduce((s, r) => s + r.duration, 0);
-          const scale          = totalAllocated > 0 ? climaxBudget / totalAllocated : 1;
+          const scale          = totalAllocated > 0 ? Math.min(1, climaxBudget / totalAllocated) : 1;
 
           for (const seg of rawSegments) {
             segments.push({
@@ -675,13 +726,13 @@ export class StorytellingProcessorV2 {
       const vidIdx      = videoStartGPS > 0
         ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStartGPS))
         : Math.floor(activityPoints.length / 2);
-      const videoDurSec = videoEndGPS > videoStartGPS ? (videoEndGPS - videoStartGPS) / 1000 : ACTION_BUDGET;
+      const videoDurSec = videoEndGPS > videoStartGPS ? (videoEndGPS - videoStartGPS) / 1000 : effectiveActionBudget;
       segments.push({
         type:           'ACTION',
         startIndex:     vidIdx,
         endIndex:       Math.min(vidIdx + Math.round(videoDurSec), activityPoints.length - 1),
         videoStartTime: 0,
-        durationSec:    ACTION_BUDGET,
+        durationSec:    effectiveActionBudget,
         title:          'RIDE',
         value:          'ACTION',
       });
@@ -728,8 +779,9 @@ export class StorytellingProcessorV2 {
 
     logStorytellingDebug(v2Debug);
 
+    const totalBudgetSec = segments.reduce((s, seg) => s + seg.durationSec, 0);
     return {
-      totalBudgetSec:  TOTAL_BUDGET,
+      totalBudgetSec,
       isLongActivity,
       segments,
       activityPoints,
@@ -737,6 +789,92 @@ export class StorytellingProcessorV2 {
       intensityScores: intensityV2.masterScore,  // V2: use masterScore for altimetry visualization
       detectedScenes:  v1Scenes,                  // V1 scenes kept for UI compatibility
       v2Debug,
+    };
+  }
+
+  private static buildShortVideoPlan(
+    activityPoints:   EnhancedGPSPoint[],
+    videoPoints:      GPSPoint[],
+    unit:             UnitSystem,
+    clockOffsetMs:    number,
+    gpsVideoOffsetMs: number,
+    videoDurationSec: number,
+  ): StoryPlan & { v2Debug?: StorytellingV2Debug } {
+    const INTRO_SEC     = 6.5;
+    const BRAND_SEC     = 3.5;
+    const ACTION_BUDGET = 49;
+    const totalPoints   = activityPoints.length;
+
+    const videoStart    = videoPoints.length > 0 ? videoPoints[0].time : 0;
+    const videoEnd      = videoPoints.length > 0 ? videoPoints[videoPoints.length - 1].time : 0;
+    const videoLockRTC  = videoStart + gpsVideoOffsetMs;
+    const videoStartGPS = videoLockRTC > 0 ? videoLockRTC - clockOffsetMs : 0;
+    const videoEndGPS   = videoEnd     > 0 ? videoEnd     - clockOffsetMs : 0;
+
+    // Run V1 pipeline for MAP budget allocation (lightweight, no V2 detection)
+    const v1Intensity   = computeIntensity(activityPoints);
+    const v1Scenes      = detectScenes(activityPoints, v1Intensity, videoStartGPS, videoEndGPS);
+    const narrativePlan = buildNarrativePlan(v1Scenes, activityPoints, v1Intensity, ACTION_BUDGET);
+
+    // isLongActivity with no highlight clips (full video treated as a single unscored block)
+    const isLongActivity = StorytellingProcessorV2.detectLongActivity(activityPoints, [], ACTION_BUDGET);
+
+    const firstActionIndex = videoStartGPS > 0
+      ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStartGPS))
+      : Math.floor(totalPoints / 2);
+    const vidEndIdx = (() => {
+      if (videoEndGPS <= 0) return Math.min(firstActionIndex + 60, totalPoints - 1);
+      const idx = activityPoints.findIndex((p, i) => i > firstActionIndex && p.time >= videoEndGPS);
+      return idx >= 0 ? idx : Math.min(firstActionIndex + 60, totalPoints - 1);
+    })();
+
+    const segments: StorySegment[] = [];
+    segments.push({ type: 'INTRO', startIndex: 0, endIndex: 0, durationSec: INTRO_SEC });
+
+    if (!isLongActivity) {
+      const preclimaxMapBudget = narrativePlan.acts.reduce((sum, a) => {
+        if (a.act === 'INTRO' || a.act === 'OUTRO' || a.act === 'CLIMAX' || a.act === 'RELIEF') return sum;
+        return sum + a.targetDurationSec;
+      }, 0);
+      let preclimaxCursor   = 0;
+      let preclimaxFracUsed = 0;
+      for (const act of narrativePlan.acts) {
+        if (act.act === 'INTRO' || act.act === 'OUTRO' || act.act === 'CLIMAX' || act.act === 'RELIEF') continue;
+        const actFrac   = preclimaxMapBudget > 0 ? act.targetDurationSec / preclimaxMapBudget : 1;
+        const cumFrac   = preclimaxFracUsed + actFrac;
+        const segStart  = preclimaxCursor;
+        const segEnd    = Math.min(Math.round(firstActionIndex * cumFrac), firstActionIndex);
+        preclimaxFracUsed = cumFrac;
+        preclimaxCursor   = segEnd;
+        if (segEnd - segStart < 2) continue;
+        const realSec        = (activityPoints[segEnd].time - activityPoints[segStart].time) / 1000;
+        const mapSpeedFactor = realSec > 0 ? realSec / act.targetDurationSec : 1;
+        segments.push({ type: 'MAP', startIndex: segStart, endIndex: segEnd, durationSec: act.targetDurationSec, mapSpeedFactor });
+      }
+    }
+
+    segments.push({
+      type:           'ACTION',
+      startIndex:     firstActionIndex,
+      endIndex:       vidEndIdx,
+      videoStartTime: 0,
+      durationSec:    Math.min(videoDurationSec, ACTION_BUDGET),
+      title:          'FULL RIDE',
+      value:          '',
+    });
+    segments.push({ type: 'BRAND', startIndex: totalPoints - 1, endIndex: totalPoints - 1, durationSec: BRAND_SEC });
+
+    const totalBudgetSec = segments.reduce((s, seg) => s + seg.durationSec, 0);
+    console.log(`[ProRefuel V2] Short-video path: video=${videoDurationSec.toFixed(1)}s → output=${totalBudgetSec.toFixed(1)}s map=${segments.some(s => s.type === 'MAP')}`);
+
+    return {
+      totalBudgetSec,
+      isLongActivity,
+      segments,
+      activityPoints,
+      narrativePlan,
+      intensityScores: new Float32Array(totalPoints),
+      detectedScenes:  v1Scenes,
     };
   }
 

@@ -14,7 +14,7 @@ import { GPXProfile } from './GPXAnalyzer';
 import { VideoGPSProfile } from './VideoGPSAnalyzer';
 
 export interface SyncPlan {
-  method: 'position-match' | 'speed-correlation' | 'accel-correlation' | 'none';
+  method: 'position-match' | 'speed-correlation' | 'accel-correlation' | 'timestamp-based' | 'none';
   distanceThresholdM: number;
   timeWindowMs: number;
   confidence: 'HIGH' | 'MEDIUM' | 'LOW';

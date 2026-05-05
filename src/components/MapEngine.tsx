@@ -41,6 +41,8 @@ interface MapEngineProps {
   autoRecord?: boolean;
   unit?: UnitSystem;
   onRenderComplete?: (result: RenderResult) => void;
+  /** Mobile: called with the output blob instead of triggering a browser download */
+  onDownloadReady?: (blob: Blob, filename: string) => void;
 }
 
 function calculateBearing(start: GPSPoint, end: GPSPoint) {
@@ -59,7 +61,7 @@ function getDistance(p1: GPSPoint, p2: GPSPoint) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, activityMeta, autoRecord = false, unit = 'metric', onRenderComplete }: MapEngineProps, ref) => {
+const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, activityMeta, autoRecord = false, unit = 'metric', onRenderComplete, onDownloadReady }: MapEngineProps, ref) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -90,6 +92,10 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
   const [viewMode, setViewMode] = useState<"INTRO" | "MAP" | "ACTION" | "BRAND">("BRAND");
   const [preBrandFade, setPreBrandFade] = useState(0);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  // Adaptive preload: GoPro MP4 has moov at the START → preload="auto" is instant.
+  // iPhone MOV has moov at the END → preload="auto" scans the entire file causing disk lag.
+  // For MOV we use "none" and let the pre-seek in startExperience trigger loading naturally.
+  const [videoPreload, setVideoPreload] = useState<'auto' | 'none'>('auto');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [clipIdx, setClipIdx] = useState(0); // increments on each ACTION clip change → triggers cutFlash
    const [isRecording, setIsRecording] = useState(false);
@@ -148,6 +154,15 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
     if (videoFile) {
       const url = URL.createObjectURL(videoFile);
       setVideoUrl(url);
+      // iPhone MOV: moov is at the END of the file. preload="auto" causes the browser
+      // to scan through the entire file to build the seek index — causing disk I/O lag
+      // on the READY screen even though no video is visible yet.
+      // GoPro MP4: moov is at the START — preload="auto" reads only the header, instant.
+      // With preload="none" for MOV, the existing pre-seek in startExperience() triggers
+      // loading during INTRO/MAP time (4-60+ seconds) before the first ACTION clip.
+      const isMOV = videoFile.name.toLowerCase().endsWith('.mov')
+                  || videoFile.type === 'video/quicktime';
+      setVideoPreload(isMOV ? 'none' : 'auto');
       return () => URL.revokeObjectURL(url);
     }
   }, [videoFile]);
@@ -746,14 +761,21 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         if (data.byteLength === 0) throw new Error("FFmpeg produced an empty MP4.");
 
         const mp4Blob = new Blob([data], { type: "video/mp4" });
-        const url = URL.createObjectURL(mp4Blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `ProRefuel_Cinematic_${Date.now()}.mp4`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        const filename = `ProRefuel_Cinematic_${Date.now()}.mp4`;
+        if (onDownloadReady) {
+          // Mobile path: hand blob to parent (Web Share API)
+          onDownloadReady(mp4Blob, filename);
+        } else {
+          // Desktop path: trigger browser download
+          const url = URL.createObjectURL(mp4Blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+        }
         onRenderComplete?.({
           durationMs: Date.now() - renderStart,
           outputFormat: "mp4",
@@ -2088,7 +2110,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           <video
             ref={videoRef}
             src={videoUrl}
-            preload="auto"
+            preload={videoPreload}
             className="absolute inset-0 w-full h-full object-cover"
             style={{ zIndex: 1 }}
             playsInline

@@ -5,13 +5,14 @@ import type { ReactNode } from "react";
 export const metadata: Metadata = {
   title: "How It Works — LENS by ProRefuel",
   description:
-    "Learn how LENS syncs your activity GPS with GoPro video telemetry and automatically generates a cinematic edit.",
+    "LENS syncs your GoPro video with your activity GPS and generates a cinematic edit automatically. Learn how to get the best results.",
 };
 
 export default function HowItWorksPage() {
   return (
     <main className="min-h-screen bg-[#050505] text-white font-sans">
-      {/* Ambient */}
+
+      {/* Ambient glows */}
       <div className="fixed inset-0 z-0 pointer-events-none">
         <div className="absolute top-[-10%] right-[-5%] w-[40%] h-[40%] bg-amber-500/6 blur-[140px] rounded-full" />
         <div className="absolute bottom-0 left-[-5%] w-[30%] h-[40%] bg-amber-500/4 blur-[120px] rounded-full" />
@@ -36,175 +37,171 @@ export default function HowItWorksPage() {
       {/* Content */}
       <div className="relative z-10 max-w-2xl mx-auto px-6 pt-32 pb-24">
 
-        {/* Header */}
+        {/* ── HEADER ──────────────────────────────────────────────────────── */}
         <div className="mb-14">
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-amber-500/10 border border-amber-500/25 mb-8">
             <span className="text-amber-400 text-base">⚡</span>
-            <span className="text-[11px] font-black uppercase tracking-widest text-amber-400">3 Steps · Auto-Edited</span>
+            <span className="text-[11px] font-black uppercase tracking-widest text-amber-400">Auto-Edited · 100% In Browser</span>
           </div>
           <h1 className="text-5xl sm:text-6xl font-black tracking-tight leading-[0.9] mb-6">
             HOW<br />
             <span className="text-amber-500">LENS WORKS</span>
           </h1>
           <p className="text-zinc-400 text-lg leading-relaxed">
-            LENS combines your activity GPS with the internal telemetry of your GoPro video
-            to automatically generate a synced cinematic edit — entirely in your browser.
+            LENS combines your activity GPS with your GoPro footage to automatically generate a synced cinematic edit — entirely in your browser, with no uploads, no accounts, no waiting.
           </p>
         </div>
 
-        {/* DESKTOP ONLY NOTICE */}
-        <div className="mb-14 p-6 rounded-2xl bg-amber-500/8 border border-amber-500/25">
-          <div className="flex gap-4">
-            <span className="text-2xl shrink-0">🖥️</span>
-            <div>
-              <h3 className="font-black text-amber-400 text-sm uppercase tracking-wide mb-2">Desktop + Chrome Required</h3>
-              <p className="text-zinc-300 text-sm leading-relaxed mb-3">
-                LENS runs 100% in your browser — but it is a computationally intensive engine. Processing a raw GoPro video requires significant GPU acceleration, high memory bandwidth, and multi-threaded WebAssembly execution. These capabilities are currently only available at full performance on <strong className="text-white">desktop or laptop computers running Google Chrome</strong>.
-              </p>
-              <div className="space-y-2 text-sm text-zinc-400">
-                <p><span className="text-white font-bold">GPU rendering</span> — The cinematic composite (video + map + telemetry overlay) is rendered frame-by-frame using hardware-accelerated canvas. Mobile GPUs are not powerful enough to maintain the required frame rate.</p>
-                <p><span className="text-white font-bold">Memory</span> — Raw GoPro files can exceed 4 GB. The engine streams and decodes them entirely in-memory. Mobile devices impose hard memory limits that would cause the process to crash.</p>
-                <p><span className="text-white font-bold">WebAssembly (WASM)</span> — The video encoding pipeline uses FFmpeg compiled to WASM with multi-threading (SharedArrayBuffer). This requires a secure cross-origin context that Chrome enforces correctly; other browsers and mobile WebViews do not guarantee this.</p>
-                <p><span className="text-white font-bold">Web Workers</span> — GPS telemetry extraction runs in a background thread to avoid blocking the UI. Mobile browsers throttle background workers aggressively, breaking the timing-sensitive sync pipeline.</p>
-              </div>
-              <p className="text-zinc-500 text-xs mt-3 italic">Support for additional browsers and mobile-optimised processing is planned for future releases.</p>
+        {/* ── GoPro CAMERA CARD ────────────────────────────────────────────── */}
+        <SectionTitle>Supported camera</SectionTitle>
+        <p className="text-zinc-400 text-sm leading-relaxed mb-6">
+          LENS is built around GoPro. The camera embeds a full high-frequency GPS track, accelerometer, and gyroscope directly in the MP4 file — the richest possible data source for scene detection and cinematic storytelling.
+        </p>
+
+        <div className="mb-14 p-6 rounded-2xl bg-zinc-900/60 border border-amber-500/30 flex flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-2xl">🎥</span>
+              <span className="font-black text-white text-sm uppercase tracking-wide">GoPro</span>
             </div>
+            <span className="px-2 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-[9px] font-black uppercase tracking-widest text-amber-400">Maximum Data</span>
+          </div>
+          <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-1">Format</div>
+          <div className="flex items-center gap-2 -mt-2">
+            <span className="px-3 py-1 rounded-lg bg-zinc-800 border border-zinc-700 text-xs font-black text-white font-mono">.MP4</span>
+          </div>
+          <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-1">Sensors embedded in video</div>
+          <ul className="space-y-1 -mt-2">
+            <DataRow label="GPS track" value="18 Hz continuous" good />
+            <DataRow label="Accelerometer" value="200 Hz" good />
+            <DataRow label="Gyroscope" value="Yes" good />
+            <DataRow label="Barometer" value="Yes" good />
+          </ul>
+          <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-1">Compatible models</div>
+          <p className="text-zinc-400 text-xs -mt-2 leading-relaxed">Hero 5 Black, Hero 7–13, Hero 12 Black, GoPro Max</p>
+        </div>
+
+        {/* ── GPS SETUP: GOPRO ────────────────────────────────────────────── */}
+        <SectionTitle>Enabling GPS on GoPro</SectionTitle>
+        <p className="text-zinc-400 text-sm leading-relaxed mb-6">
+          The GoPro embeds a full GPS track — coordinates, speed, altitude — directly in the MP4 file at 18 samples per second. This is what drives scene detection and telemetry overlays. Follow these steps to guarantee GPS is active and locked before you start recording.
+        </p>
+
+        <div className="space-y-3 mb-6">
+          <SetupStep number="1" title="Enable GPS in camera settings">
+            On most models: <strong className="text-white">Settings (wrench icon) → Preferences → GPS → On</strong>. On Hero 10 and newer, GPS is always on when location is enabled in Quik pairing.
+          </SetupStep>
+          <SetupStep number="2" title="Power on outdoors — not inside a bag">
+            The GPS antenna is on the top edge of the camera. Obstruct it or keep it indoors and it will never acquire a lock. Power on with clear sky visibility.
+          </SetupStep>
+          <SetupStep number="3" title="Wait for the GPS lock icon">
+            After power-on, watch for the GPS satellite icon in the camera display. A blinking icon means searching. A <strong className="text-white">solid icon means lock acquired</strong>. This typically takes 10–30 seconds outdoors.
+          </SetupStep>
+          <SetupStep number="4" title="Start recording after lock — not before">
+            If you start recording before lock, the GPS data for those first seconds is stale (cached from the last session). LENS detects and skips these pre-lock samples, but a shorter recording means fewer usable moments.
+          </SetupStep>
+        </div>
+
+        <div className="mb-14 p-5 rounded-2xl bg-zinc-900/40 border border-zinc-800">
+          <p className="text-[11px] font-black uppercase tracking-widest text-amber-500/80 mb-3">Model-specific notes</p>
+          <div className="space-y-2 text-sm text-zinc-400">
+            <p><span className="text-white font-bold">Hero 5 / 6:</span> GPS is off by default. Enable manually in settings before each session.</p>
+            <p><span className="text-white font-bold">Hero 7 / 8 / 9:</span> GPS setting persists between sessions. Check once and leave it on.</p>
+            <p><span className="text-white font-bold">Hero 10 / 11 / 12 / 13:</span> Best GPS chip in the lineup — faster lock, 18 Hz in all video modes, improved performance under tree canopy.</p>
+            <p><span className="text-white font-bold">GoPro Max:</span> GPS included. Same setup as Hero 7+.</p>
           </div>
         </div>
 
-        {/* THE 3 STEPS */}
+        {/* ── GETTING THE BEST FROM GOPRO ─────────────────────────────────── */}
+        <SectionTitle>Getting the most from your GoPro</SectionTitle>
+        <p className="text-zinc-400 text-sm leading-relaxed mb-6">
+          GPS data quality directly affects the quality of the final edit. More data = better scene detection = more dynamic storytelling.
+        </p>
+
+        <div className="p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800/60 mb-14">
+          <div className="space-y-3">
+            <BestPractice icon="🛰️" title="Wait for GPS lock, always">
+              The GoPro GPS needs 10–30 seconds to lock in the first session of the day. Power on early, wait for the solid satellite icon, then start recording. Every locked second is a potential scene.
+            </BestPractice>
+            <BestPractice icon="☀️" title="Keep the top of the camera clear">
+              The GPS antenna is embedded in the top edge of the camera body. Mounting accessories, thick pads, or covering the camera with a bag will degrade signal quality and reduce GPS frequency.
+            </BestPractice>
+            <BestPractice icon="🌳" title="Expect signal gaps in dense canopy">
+              Mountain biking under heavy tree cover causes GPS signal loss and recovery cycles. Hero 12 and 13 Black have improved GPS chips that handle canopy much better than older models.
+            </BestPractice>
+            <BestPractice icon="⚡" title="Hero 12 / 13 for the richest telemetry">
+              Newer GoPro models record at the full 18 Hz GPS rate in all video modes. Older models (Hero 5–8) may drop to lower frequencies in higher-resolution modes. For maximum data density, use the latest hardware you have.
+            </BestPractice>
+            <BestPractice icon="📊" title="How GPS quality affects the edit">
+              A strong GPS signal with 18 Hz lock produces hundreds of data points per minute. LENS uses these to detect climbs, descents, sprints, technical sections, and flow zones with high confidence. Weak GPS produces fewer points — detection still works, but with lower precision.
+            </BestPractice>
+          </div>
+        </div>
+
+        {/* ── THE 3 STEPS ─────────────────────────────────────────────────── */}
         <SectionTitle>How it works in 3 steps</SectionTitle>
         <div className="space-y-4 mb-14">
           <Step
             number="01"
             title="Import your GPX activity file"
-            body="Export your activity in GPX format from Garmin Connect, Strava, Wahoo, Komoot, or any cycling or running app. This file contains the full GPS track of your adventure — coordinates, elevation, and precise timestamps."
-            tip="The GPX file must cover the same time period during which the video was recorded."
+            body="Export your activity in GPX format from Garmin Connect, Wahoo, Komoot, or any cycling or running app. This file contains your full GPS track — coordinates, elevation, timestamps, heart rate, cadence, and power."
+            tip="The GPX must cover the same time period during which the video was recorded. Start your GPS tracker before pressing record."
           />
           <Step
             number="02"
-            title="Import your GoPro video (MP4)"
-            body="Upload the MP4 file directly from your GoPro camera. LENS reads the GPS telemetry data embedded inside the video file itself — no external software, no extra exports needed."
+            title="Import your GoPro MP4"
+            body="Upload your GoPro MP4 directly from your camera. LENS reads the GPS telemetry embedded in the file — no extra exports or apps needed. The camera and activity GPS both use the same satellite clock, so sync is automatic and precise."
             tip={undefined}
           />
           <Step
             number="03"
             title="Generate the cinematic edit"
-            body="LENS automatically syncs both GPS tracks, detects the most intense moments of your adventure, and generates a cinematic edit in 9:16 format — ready to post on Instagram, TikTok, or YouTube Shorts."
+            body="LENS synchronizes both sources, detects the most intense moments of your activity — climbs, sprints, descents — and generates a 9:16 cinematic edit ready for Instagram Reels, TikTok, and YouTube Shorts."
             tip={undefined}
           />
         </div>
 
-        {/* TECHNICAL REQUIREMENTS */}
-        <SectionTitle>Technical requirements</SectionTitle>
-
-        <div className="space-y-5 mb-14">
-
-          <RequirementCard icon="📹" title="GoPro camera with GPS enabled" required>
-            <p>LENS supports GoPro cameras with built-in GPS and GPMF telemetry:</p>
-            <ul className="mt-2 space-y-1">
-              <li>GoPro Hero 5 Black or newer</li>
-              <li>GoPro Hero Session 5 or newer (GPS model)</li>
-              <li>GoPro Hero 7, 8, 9, 10, 11, 12, 13</li>
-              <li>GoPro Max</li>
-            </ul>
-            <p className="mt-3 text-amber-400/80">
-              GPS must be <strong className="text-amber-400">enabled in the camera settings</strong> before starting recording.
-            </p>
-          </RequirementCard>
-
-          <RequirementCard icon="🛰️" title="Camera GPS must be locked (fix acquired)" required>
-            <p>
-              The GoPro needs a few seconds after power-on to acquire a GPS satellite lock (fix).
-              Record a few seconds of stillness before moving to ensure the GPS is locked.
-            </p>
-            <p className="mt-2">
-              If the GPS never locks, the location data embedded in the video will be invalid and LENS will not be able to synchronize.
-            </p>
-            <Tip>Turn the camera on outdoors and wait for the GPS icon to appear before you start recording.</Tip>
-          </RequirementCard>
-
-          <RequirementCard icon="🗺️" title="GPX activity file" required>
-            <p>The GPX file must contain:</p>
-            <ul className="mt-2 space-y-1">
-              <li><strong className="text-white">GPS coordinates</strong> — latitude and longitude for each point</li>
-              <li><strong className="text-white">UTC timestamps</strong> — precise time for each point (ISO 8601 format)</li>
-              <li><strong className="text-white">Elevation</strong> — required for the 3D visualization overlay</li>
-            </ul>
-            <p className="mt-3">Compatible sources: Garmin Connect, Strava, Wahoo, Komoot, RideWithGPS, and any standard GPX 1.1 export.</p>
-          </RequirementCard>
-
-          <RequirementCard icon="⏱️" title="Time overlap is required" required>
-            <p>
-              The period recorded in the GoPro video <strong className="text-white">must overlap with the GPX activity period</strong>.
-              LENS finds the overlap using the GPS timestamps from both sources.
-            </p>
-            <Tip>Start both the camera recording and the activity tracker (Garmin/Strava) before you begin your ride or run. Make sure both are running at the same time.</Tip>
-          </RequirementCard>
-
-          <RequirementCard icon="📍" title="Spatial overlap is required" required>
-            <p>
-              The route recorded by the camera GPS must pass through the same geographic points as the activity GPX.
-              LENS cross-references GPS positions from both sources to confirm they share the same route.
-            </p>
-            <p className="mt-2">
-              If the camera was used in a completely different location from the recorded activity, synchronization will not work.
-            </p>
-          </RequirementCard>
-
-        </div>
-
-        {/* HOW THE SYNC WORKS */}
+        {/* ── HOW THE SYNC ENGINE WORKS ───────────────────────────────────── */}
         <SectionTitle>How the sync engine works</SectionTitle>
-
         <div className="space-y-4 mb-14">
-          <InfoCard icon="🔗">
+          <InfoCard icon="🛰️">
             <p>
-              <strong className="text-white">Two GPS sources, one clock.</strong> The activity GPX comes from your Garmin or smartphone — both use the GPS satellite clock. The GoPro video also embeds GPS timestamps in its internal telemetry. LENS uses these two GPS clocks to automatically align the two sources with no manual adjustment needed.
+              <strong className="text-white">GPS satellite clock.</strong> Both your activity GPS (Garmin, Wahoo) and the GoPro video use the GPS satellite clock as their time reference — the same signal, worldwide. LENS matches them directly with no correction needed, down to the millisecond.
             </p>
           </InfoCard>
-
           <InfoCard icon="🎯">
             <p>
-              <strong className="text-white">Position and speed matching.</strong> LENS cross-references the GPS coordinates from the video with those from the activity to identify matching points. It then analyzes the speed patterns from both sources to confirm alignment — ensuring precision even with minor clock variations.
+              <strong className="text-white">Scene detection from combined data.</strong> LENS analyzes speed, elevation, gradient, heart rate, cadence, and power from your activity GPX — plus the accelerometer and gyroscope from the GoPro video — to identify the most intense moments with high precision.
             </p>
           </InfoCard>
-
           <InfoCard icon="🎬">
             <p>
-              <strong className="text-white">Intensity moment detection.</strong> With both tracks synced, LENS automatically analyzes acceleration, speed, and elevation data to identify the most intense segments of your adventure — climbs, descents, sprints, corners — and selects them for the final edit.
-            </p>
-          </InfoCard>
-
-          <InfoCard icon="📱">
-            <p>
-              <strong className="text-white">9:16 vertical edit, ready to post.</strong> The final video is rendered in the ideal format for social media — Instagram Reels, TikTok, YouTube Shorts. Telemetry overlays (speed, elevation, map) are composited in real-time during generation.
+              <strong className="text-white">Cinematic cuts, 9:16 format.</strong> Each detected scene maps to a specific video seek position. LENS cuts between scenes, fades in and out, overlays speed and map data, and composes the final video frame-by-frame — entirely in your browser.
             </p>
           </InfoCard>
         </div>
 
-        {/* COMMON ISSUES */}
+        {/* ── COMMON ISSUES ───────────────────────────────────────────────── */}
         <SectionTitle>Common issues</SectionTitle>
-
         <div className="space-y-4 mb-14">
-          <ProblemCard problem="Error: No GPS signal found in video">
-            The camera GPS was not enabled or did not acquire a lock before recording. Check your GoPro settings to confirm GPS is turned on, and record outdoors while waiting for the fix.
+          <ProblemCard problem="No GPS in this video">
+            GPS was not enabled in GoPro settings, or the camera never acquired a lock. Enable GPS in the settings menu, power on outdoors, and wait for the solid satellite icon before recording.
           </ProblemCard>
-          <ProblemCard problem="Error: No valid GPS points found">
-            The GPS points in the video are corrupted or the camera was in a location with very weak signal (tunnels, covered areas). Try recording in locations with clear sky visibility.
+          <ProblemCard problem="GPS signal too weak">
+            The camera started recording before GPS lock was acquired. Record a few seconds of stillness outdoors before moving. Avoid starting recordings inside or in areas with poor sky visibility.
           </ProblemCard>
-          <ProblemCard problem="Sync is off or misaligned">
-            Verify that the GPX file covers the same time window as the video. The Garmin/Wahoo clock and the camera GPS clock both need to be set to the correct time.
+          <ProblemCard problem="Video doesn't match this activity">
+            The video and the GPX file are from different sessions — their timestamps don't overlap. Make sure you import the GPX from the same ride during which the video was recorded. Check that your GPS device clock is set correctly.
           </ProblemCard>
-          <ProblemCard problem="Video has no GPMF telemetry">
-            Only GoPro cameras with built-in GPS (Hero 5 and newer) generate files with GPMF telemetry. Videos from other cameras, smartphones, or older GoPros are not supported.
+          <ProblemCard problem="No scenes detected">
+            The activity window covered by the video is too short, or the activity data is too uniform (constant flat speed). Try a longer video, or check that your GPX contains speed, elevation, or heart rate data.
           </ProblemCard>
         </div>
 
-        {/* CTA */}
+        {/* ── CTA ─────────────────────────────────────────────────────────── */}
         <div className="p-8 rounded-3xl bg-zinc-900/60 border border-zinc-800 text-center">
           <p className="text-white font-black text-xl mb-2">Ready to generate your edit?</p>
-          <p className="text-zinc-400 text-sm mb-6">Open on your desktop with Chrome.</p>
+          <p className="text-zinc-400 text-sm mb-6">GoPro MP4 · Desktop · Chrome</p>
           <Link
             href="/"
             className="inline-flex items-center gap-2 px-8 py-4 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-widest text-sm hover:scale-105 transition-transform shadow-[0_15px_40px_rgba(245,158,11,0.35)]"
@@ -233,13 +230,58 @@ export default function HowItWorksPage() {
   );
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────
+// ── Sub-components ──────────────────────────────────────────────────────────
 
 function SectionTitle({ children }: { children: ReactNode }) {
   return (
     <h2 className="text-xs font-black uppercase tracking-[0.3em] text-amber-500/80 mb-5 mt-2">
       {children}
     </h2>
+  );
+}
+
+function DataRow({
+  label, value, good, neutral, bad,
+}: {
+  label: string; value: string;
+  good?: boolean; neutral?: boolean; bad?: boolean;
+}) {
+  const dot = good ? "bg-amber-500" : neutral ? "bg-zinc-500" : "bg-zinc-700";
+  const val = good ? "text-white" : neutral ? "text-zinc-400" : "text-zinc-600";
+  return (
+    <li className="flex items-center justify-between gap-2">
+      <span className="flex items-center gap-2 text-zinc-500 text-xs">
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+        {label}
+      </span>
+      <span className={`text-xs font-bold ${val}`}>{value}</span>
+    </li>
+  );
+}
+
+function SetupStep({ number, title, children }: { number: string; title: string; children: ReactNode }) {
+  return (
+    <div className="flex gap-4 p-5 rounded-2xl bg-zinc-900/50 border border-zinc-800/60">
+      <div className="shrink-0 w-8 h-8 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center">
+        <span className="text-xs font-black text-amber-400">{number}</span>
+      </div>
+      <div>
+        <p className="font-black text-white text-sm mb-1">{title}</p>
+        <p className="text-zinc-400 text-sm leading-relaxed">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+function BestPractice({ icon, title, children }: { icon: string; title: string; children: ReactNode }) {
+  return (
+    <div className="flex gap-3">
+      <span className="text-base shrink-0">{icon}</span>
+      <div>
+        <p className="font-black text-white text-xs uppercase tracking-wide mb-0.5">{title}</p>
+        <p className="text-zinc-400 text-sm leading-relaxed">{children}</p>
+      </div>
+    </div>
   );
 }
 
@@ -252,34 +294,12 @@ function Step({ number, title, body, tip }: { number: string; title: string; bod
       <div>
         <h3 className="font-black text-white text-sm uppercase tracking-wide mb-2">{title}</h3>
         <p className="text-zinc-400 text-sm leading-relaxed">{body}</p>
-        {tip && <Tip>{tip}</Tip>}
-      </div>
-    </div>
-  );
-}
-
-function RequirementCard({
-  icon, title, required, children,
-}: {
-  icon: string; title: string; required?: boolean; children: ReactNode;
-}) {
-  return (
-    <div className="p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800/60 hover:border-zinc-700 transition-colors">
-      <div className="flex items-start gap-3 mb-3">
-        <span className="text-xl shrink-0">{icon}</span>
-        <div className="flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-black text-white text-sm uppercase tracking-wide">{title}</h3>
-            {required && (
-              <span className="px-2 py-0.5 rounded-full bg-red-500/15 border border-red-500/30 text-[9px] font-black uppercase tracking-widest text-red-400">
-                Required
-              </span>
-            )}
+        {tip && (
+          <div className="flex gap-2 mt-3 p-3 rounded-xl bg-amber-500/8 border border-amber-500/20">
+            <span className="text-amber-400 text-sm shrink-0">💡</span>
+            <p className="text-amber-400/80 text-[12px] leading-relaxed">{tip}</p>
           </div>
-        </div>
-      </div>
-      <div className="text-zinc-400 text-sm leading-relaxed ml-8 space-y-1 [&_li]:flex [&_li]:gap-2 [&_li]:before:content-['·'] [&_li]:before:text-amber-500/60 [&_li]:before:shrink-0">
-        {children}
+        )}
       </div>
     </div>
   );
@@ -299,15 +319,6 @@ function ProblemCard({ problem, children }: { problem: string; children: ReactNo
     <div className="p-5 rounded-2xl bg-zinc-900/40 border border-zinc-800/50">
       <p className="text-[11px] font-black uppercase tracking-widest text-red-400/80 mb-2 font-mono">{problem}</p>
       <p className="text-zinc-400 text-sm leading-relaxed">{children}</p>
-    </div>
-  );
-}
-
-function Tip({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex gap-2 mt-3 p-3 rounded-xl bg-amber-500/8 border border-amber-500/20">
-      <span className="text-amber-400 text-sm shrink-0">💡</span>
-      <p className="text-amber-400/80 text-[12px] leading-relaxed">{children}</p>
     </div>
   );
 }
