@@ -173,28 +173,52 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
       v.currentTime = t;
     }), []);
 
-  // Video playback — IntersectionObserver so we only play when visible
+  // Video playback — IntersectionObserver so we only load+play when visible
   useEffect(() => {
     const raw  = rawRef.current;
     const lens = lensRef.current;
     if (!raw || !lens) return;
 
+    // iOS fix: React doesn't propagate the `muted` HTML attribute correctly;
+    // set it as a JS property so WebKit allows muted autoplay.
+    raw.muted  = true;
+    lens.muted = true;
+
     let started = false;
     const startPlayback = () => {
       if (started) return;
       started = true;
+
       if (isMobile) {
-        // Mobile: no seek — just play from 0 once data is available
-        let rawReady  = raw.readyState  >= 3;
-        let lensReady = lens.readyState >= 3;
+        // Trigger loading now (videos have preload="none" so nothing fetched yet)
+        raw.load();
+        lens.load();
+
+        let rawReady  = false;
+        let lensReady = false;
+        let played    = false; // guard against double-fire from canplay + loadeddata
+
         const tryPlay = () => {
-          if (!rawReady || !lensReady) return;
-          raw.play().catch(() => {});
-          lens.play().catch(() => {});
+          if (!rawReady || !lensReady || played) return;
+          played = true;
+          // Play both simultaneously — if autoplay is blocked, resume on next touch
+          Promise.all([raw.play(), lens.play()]).catch(() => {
+            played = false; // allow retry
+            const resume = () => {
+              played = true;
+              raw.play().catch(() => {});
+              lens.play().catch(() => {});
+            };
+            document.addEventListener("touchstart", resume, { once: true, passive: true });
+          });
         };
-        if (!rawReady)  raw.addEventListener("canplay",  () => { rawReady  = true; tryPlay(); }, { once: true });
-        if (!lensReady) lens.addEventListener("canplay", () => { lensReady = true; tryPlay(); }, { once: true });
-        tryPlay();
+
+        // canplay = enough data to start; loadeddata = first frame decoded.
+        // Both are needed because iOS versions differ on which one fires first.
+        raw.addEventListener("canplay",    () => { rawReady  = true; tryPlay(); }, { once: true });
+        lens.addEventListener("canplay",   () => { lensReady = true; tryPlay(); }, { once: true });
+        raw.addEventListener("loadeddata", () => { rawReady  = true; tryPlay(); }, { once: true });
+        lens.addEventListener("loadeddata",() => { lensReady = true; tryPlay(); }, { once: true });
       } else {
         // Desktop: seek to CLIP_START then play
         const start = () => {
@@ -212,7 +236,7 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
       }
     };
 
-    // Only play when the slider is actually visible on screen
+    // Only start loading+playing when the slider enters the viewport
     const observer = new IntersectionObserver(
       ([entry]) => { if (entry.isIntersecting) startPlayback(); },
       { threshold: 0.25 }
@@ -265,7 +289,7 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
       <video
         ref={rawRef}
         src={isMobile ? "/videos/hero-preview-raw-mobile.mp4" : "/videos/hero-preview-raw.mp4"}
-        muted playsInline preload="auto"
+        muted playsInline preload={isMobile ? "none" : "auto"}
         className="absolute inset-0 w-full h-full object-cover"
       />
 
@@ -290,7 +314,7 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
         <video
           ref={lensRef}
           src={isMobile ? "/videos/hero-preview-mobile.mp4" : "/videos/hero-preview.mp4"}
-          muted playsInline preload="auto"
+          muted playsInline preload={isMobile ? "none" : "auto"}
           className="absolute inset-0 w-full h-full object-cover"
         />
         {/* LENS watermark — orange, visible on right side only */}
