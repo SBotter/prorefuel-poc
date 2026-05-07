@@ -197,8 +197,8 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
       {/* RAW video — base layer */}
       <video
         ref={rawRef}
-        src="/videos/hero-preview-raw.mp4"
-        muted playsInline preload={isMobile ? "metadata" : "auto"}
+        src={isMobile ? "/videos/hero-preview-raw-mobile.mp4" : "/videos/hero-preview-raw.mp4"}
+        muted playsInline preload={isMobile ? "auto" : "auto"}
         className="absolute inset-0 w-full h-full object-cover"
       />
 
@@ -220,8 +220,8 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
       >
         <video
           ref={lensRef}
-          src="/videos/hero-preview.mp4"
-          muted playsInline preload={isMobile ? "metadata" : "auto"}
+          src={isMobile ? "/videos/hero-preview-mobile.mp4" : "/videos/hero-preview.mp4"}
+          muted playsInline preload="auto"
           className="absolute inset-0 w-full h-full object-cover"
         />
         {/* LENS watermark — orange, visible on right side only */}
