@@ -273,24 +273,6 @@ export default function ProRefuelPage() {
 
   if (!mounted) return <div className="min-h-screen bg-[#050505]" />;
 
-  // ── Mobile gate ───────────────────────────────────────────────────────
-  if (isMobileDevice) {
-    return (
-      <main className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center px-6 text-center">
-        <p className="text-4xl font-black mb-4">LENS</p>
-        <p className="text-zinc-400 text-sm mb-6 max-w-xs leading-relaxed">
-          Open LENS on your desktop browser for the full experience. GoPro MP4 requires Chrome on a computer.
-        </p>
-        <a
-          href="https://lens.prorefuel.app"
-          className="px-6 py-3 rounded-2xl bg-amber-500 text-black font-black text-sm uppercase tracking-widest"
-        >
-          lens.prorefuel.app
-        </a>
-      </main>
-    );
-  }
-
   // ── Video upload ──────────────────────────────────────────────────────
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -680,7 +662,18 @@ export default function ProRefuelPage() {
               </div>
 
               <div className="bg-[#0f0f0f] rounded-[2.8rem] border border-zinc-800/80 p-7 md:p-9 shadow-2xl relative ring-1 ring-white/4">
-                {step !== "EXPERIENCE" ? (
+                {isMobileDevice ? (
+                  <div className="flex flex-col items-center gap-4 py-8 text-center">
+                    <div className="w-14 h-14 rounded-2xl bg-zinc-800 flex items-center justify-center text-2xl">🖥️</div>
+                    <p className="font-black text-white text-base uppercase tracking-wide">Desktop only</p>
+                    <p className="text-zinc-400 text-sm leading-relaxed max-w-xs">
+                      LENS requires Chrome on a desktop computer to process your GoPro video.
+                    </p>
+                    <a href="https://lens.prorefuel.app" className="px-5 py-3 rounded-xl bg-amber-500 text-black font-black text-sm uppercase tracking-widest">
+                      lens.prorefuel.app
+                    </a>
+                  </div>
+                ) : step !== "EXPERIENCE" ? (
                   <div className="space-y-5 relative z-10">
 
                     <div className="flex p-1.5 bg-black rounded-2xl border border-zinc-800 shadow-inner">
