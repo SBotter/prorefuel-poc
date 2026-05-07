@@ -714,7 +714,8 @@ export default function ProRefuelPage() {
         {/* RIGHT: Before/After slider */}
         <div className="w-full lg:w-[48%] flex items-center justify-center px-4 py-10 lg:px-8 lg:py-12">
           <div className="w-full max-w-[340px] md:max-w-[400px] lg:max-w-[460px] xl:max-w-[520px]">
-            <BeforeAfterSlider isMobile={isMobileDevice} />
+            {/* TEST: slider hidden on mobile to isolate performance issue */}
+            {!isMobileDevice && <BeforeAfterSlider isMobile={false} />}
           </div>
         </div>
       </section>
