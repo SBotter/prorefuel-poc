@@ -74,14 +74,25 @@ export default function MobileSlider() {
     };
   }, [applySlider, getXPct]);
 
-  // Muted autoplay — iOS WebKit requires the attribute, not just the JS property
+  // Deferred load + muted autoplay.
+  // preload="none" is set in the JSX so the browser does NOT download the video
+  // while the JS bundle is still loading (otherwise the video saturates the mobile
+  // network and delays hydration, which prevents muted from being set, which
+  // blocks iOS autoplay). After mount we flip preload → auto and call load().
   useEffect(() => {
     const raw  = rawRef.current;
     const lens = lensRef.current;
     if (!raw || !lens) return;
 
+    // iOS WebKit checks the HTML attribute, not the JS property, for muted autoplay.
     raw.muted  = true;
     lens.muted = true;
+
+    // Now it's safe to start downloading.
+    raw.preload  = "auto";
+    lens.preload = "auto";
+    raw.load();
+    lens.load();
 
     let played = false;
     const attempt = () => {
@@ -108,7 +119,7 @@ export default function MobileSlider() {
         <video
           ref={rawRef}
           src="/videos/hero-preview-raw-mobile.mp4"
-          muted playsInline loop preload="auto"
+          muted playsInline loop preload="none"
           className="absolute inset-0 w-full h-full object-cover"
         />
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
@@ -124,7 +135,7 @@ export default function MobileSlider() {
         <video
           ref={lensRef}
           src="/videos/hero-preview-mobile.mp4"
-          muted playsInline loop preload="auto"
+          muted playsInline loop preload="none"
           className="absolute inset-0 w-full h-full object-cover"
         />
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
