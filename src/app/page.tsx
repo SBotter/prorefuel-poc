@@ -78,7 +78,7 @@ const CLIP_START = 8;   // seconds — skip intro
 const CLIP_END   = 40;  // seconds — loop back
 
 // ── Before/After drag comparison component ────────────────────────────────
-function BeforeAfterSlider() {
+function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
   const [sliderX, setSliderX]       = useState(50);
   const [hasDragged, setHasDragged] = useState(false);
   const draggingRef  = useRef(false);
@@ -87,49 +87,75 @@ function BeforeAfterSlider() {
   const rawRef       = useRef<HTMLVideoElement>(null);
   const lensRef      = useRef<HTMLVideoElement>(null);
 
+  // seekTo with 2s timeout so it never hangs on mobile where seeked may not fire
   const seekTo = (v: HTMLVideoElement, t: number) =>
     new Promise<void>(resolve => {
-      v.addEventListener("seeked", () => resolve(), { once: true });
+      const timer = setTimeout(resolve, 2000);
+      v.addEventListener("seeked", () => { clearTimeout(timer); resolve(); }, { once: true });
       v.currentTime = t;
     });
 
-  // On mount: seek both to CLIP_START, then start simultaneously
   useEffect(() => {
     const raw  = rawRef.current;
     const lens = lensRef.current;
     if (!raw || !lens) return;
 
-    const start = () => {
-      Promise.all([seekTo(raw, CLIP_START), seekTo(lens, CLIP_START)]).then(() => {
+    if (isMobile) {
+      // Mobile: skip seek entirely — wait for canplay (data available) then play from 0
+      let rawReady  = raw.readyState  >= 3;
+      let lensReady = lens.readyState >= 3;
+      const tryPlay = () => {
+        if (!rawReady || !lensReady) return;
         raw.play().catch(() => {});
         lens.play().catch(() => {});
-      });
-    };
+      };
+      if (!rawReady)  raw.addEventListener("canplay",  () => { rawReady  = true; tryPlay(); }, { once: true });
+      if (!lensReady) lens.addEventListener("canplay", () => { lensReady = true; tryPlay(); }, { once: true });
+      tryPlay();
+    } else {
+      // Desktop: seek both to CLIP_START, then start simultaneously
+      const start = () => {
+        Promise.all([seekTo(raw, CLIP_START), seekTo(lens, CLIP_START)]).then(() => {
+          raw.play().catch(() => {});
+          lens.play().catch(() => {});
+        });
+      };
+      let rawMeta  = raw.readyState  >= 1;
+      let lensMeta = lens.readyState >= 1;
+      const tryStart = () => { if (rawMeta && lensMeta) start(); };
+      if (!rawMeta)  raw.addEventListener("loadedmetadata",  () => { rawMeta  = true; tryStart(); }, { once: true });
+      if (!lensMeta) lens.addEventListener("loadedmetadata", () => { lensMeta = true; tryStart(); }, { once: true });
+      tryStart();
+    }
+  }, [isMobile]);
 
-    let rawMeta  = raw.readyState  >= 1;
-    let lensMeta = lens.readyState >= 1;
-    const tryStart = () => { if (rawMeta && lensMeta) start(); };
-    if (!rawMeta)  raw.addEventListener("loadedmetadata",  () => { rawMeta  = true; tryStart(); }, { once: true });
-    if (!lensMeta) lens.addEventListener("loadedmetadata", () => { lensMeta = true; tryStart(); }, { once: true });
-    tryStart();
-  }, []);
-
-  // Loop CLIP_START↔CLIP_END + keep lens in perfect sync with raw (raw = master)
+  // Loop + keep lens in sync with raw (raw = master)
   useEffect(() => {
     const raw  = rawRef.current;
     const lens = lensRef.current;
     if (!raw || !lens) return;
+
+    const loopStart = isMobile ? 0 : CLIP_START;
 
     const onTimeUpdate = () => {
       if (loopGuardRef.current) return;
       const t = raw.currentTime;
       if (t >= CLIP_END) {
         loopGuardRef.current = true;
-        Promise.all([seekTo(raw, CLIP_START), seekTo(lens, CLIP_START)]).then(() => {
+        if (isMobile) {
+          // Synchronous reset — position 0 is always buffered, no seek wait needed
+          raw.currentTime  = loopStart;
+          lens.currentTime = loopStart;
           raw.play().catch(() => {});
           lens.play().catch(() => {});
           loopGuardRef.current = false;
-        });
+        } else {
+          Promise.all([seekTo(raw, loopStart), seekTo(lens, loopStart)]).then(() => {
+            raw.play().catch(() => {});
+            lens.play().catch(() => {});
+            loopGuardRef.current = false;
+          });
+        }
       } else if (Math.abs(lens.currentTime - t) > 0.12) {
         lens.currentTime = t;
       }
@@ -137,7 +163,7 @@ function BeforeAfterSlider() {
 
     raw.addEventListener("timeupdate", onTimeUpdate);
     return () => raw.removeEventListener("timeupdate", onTimeUpdate);
-  }, []);
+  }, [isMobile]);
 
   const getX = (clientX: number) => {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -172,7 +198,7 @@ function BeforeAfterSlider() {
       <video
         ref={rawRef}
         src="/videos/hero-preview-raw.mp4"
-        muted playsInline preload="auto"
+        muted playsInline preload={isMobile ? "metadata" : "auto"}
         className="absolute inset-0 w-full h-full object-cover"
       />
 
@@ -195,7 +221,7 @@ function BeforeAfterSlider() {
         <video
           ref={lensRef}
           src="/videos/hero-preview.mp4"
-          muted playsInline preload="auto"
+          muted playsInline preload={isMobile ? "metadata" : "auto"}
           className="absolute inset-0 w-full h-full object-cover"
         />
         {/* LENS watermark — orange, visible on right side only */}
@@ -613,7 +639,7 @@ export default function ProRefuelPage() {
         {/* RIGHT: Before/After slider */}
         <div className="w-full lg:w-[48%] flex items-center justify-center px-4 py-10 lg:px-8 lg:py-12">
           <div className="w-full max-w-[340px] md:max-w-[400px] lg:max-w-[460px] xl:max-w-[520px]">
-            <BeforeAfterSlider />
+            <BeforeAfterSlider isMobile={isMobileDevice} />
           </div>
         </div>
       </section>
