@@ -173,76 +173,61 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
       v.currentTime = t;
     }), []);
 
-  // Video playback — IntersectionObserver so we only load+play when visible
+  // Video playback
   useEffect(() => {
     const raw  = rawRef.current;
     const lens = lensRef.current;
     if (!raw || !lens) return;
 
-    // iOS fix: React doesn't propagate the `muted` HTML attribute correctly;
-    // set it as a JS property so WebKit allows muted autoplay.
+    // iOS fix: React doesn't set the HTML `muted` attribute correctly;
+    // WebKit checks the attribute (not the JS property) to allow muted autoplay.
     raw.muted  = true;
     lens.muted = true;
 
-    let started = false;
-    const startPlayback = () => {
-      if (started) return;
-      started = true;
+    if (isMobile) {
+      let rawReady  = false;
+      let lensReady = false;
+      let played    = false;
 
-      if (isMobile) {
-        // Trigger loading now (videos have preload="none" so nothing fetched yet)
-        raw.load();
-        lens.load();
-
-        let rawReady  = false;
-        let lensReady = false;
-        let played    = false; // guard against double-fire from canplay + loadeddata
-
-        const tryPlay = () => {
-          if (!rawReady || !lensReady || played) return;
-          played = true;
-          // Play both simultaneously — if autoplay is blocked, resume on next touch
-          Promise.all([raw.play(), lens.play()]).catch(() => {
-            played = false; // allow retry
-            const resume = () => {
-              played = true;
-              raw.play().catch(() => {});
-              lens.play().catch(() => {});
-            };
-            document.addEventListener("touchstart", resume, { once: true, passive: true });
-          });
-        };
-
-        // canplay = enough data to start; loadeddata = first frame decoded.
-        // Both are needed because iOS versions differ on which one fires first.
-        raw.addEventListener("canplay",    () => { rawReady  = true; tryPlay(); }, { once: true });
-        lens.addEventListener("canplay",   () => { lensReady = true; tryPlay(); }, { once: true });
-        raw.addEventListener("loadeddata", () => { rawReady  = true; tryPlay(); }, { once: true });
-        lens.addEventListener("loadeddata",() => { lensReady = true; tryPlay(); }, { once: true });
-      } else {
-        // Desktop: seek to CLIP_START then play
-        const start = () => {
-          Promise.all([seekTo(raw, CLIP_START), seekTo(lens, CLIP_START)]).then(() => {
+      const tryPlay = () => {
+        if (!rawReady || !lensReady || played) return;
+        played = true;
+        Promise.all([raw.play(), lens.play()]).catch(() => {
+          played = false;
+          // Autoplay blocked (Low Power Mode etc.) — resume on next user touch
+          document.addEventListener("touchstart", () => {
+            played = true;
             raw.play().catch(() => {});
             lens.play().catch(() => {});
-          });
-        };
-        let rawMeta  = raw.readyState  >= 1;
-        let lensMeta = lens.readyState >= 1;
-        const tryStart = () => { if (rawMeta && lensMeta) start(); };
-        if (!rawMeta)  raw.addEventListener("loadedmetadata", () => { rawMeta  = true; tryStart(); }, { once: true });
-        if (!lensMeta) lens.addEventListener("loadedmetadata", () => { lensMeta = true; tryStart(); }, { once: true });
-        tryStart();
-      }
-    };
+          }, { once: true, passive: true });
+        });
+      };
 
-    // Only start loading+playing when the slider enters the viewport
-    const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) startPlayback(); },
-      { threshold: 0.25 }
-    );
-    if (containerRef.current) observer.observe(containerRef.current);
-    return () => observer.disconnect();
+      // Listen to both events — iOS versions differ on which fires first
+      raw.addEventListener("canplay",    () => { rawReady  = true; tryPlay(); }, { once: true });
+      lens.addEventListener("canplay",   () => { lensReady = true; tryPlay(); }, { once: true });
+      raw.addEventListener("loadeddata", () => { rawReady  = true; tryPlay(); }, { once: true });
+      lens.addEventListener("loadeddata",() => { lensReady = true; tryPlay(); }, { once: true });
+
+      // If already buffered (e.g. revisit / cached)
+      if (raw.readyState  >= 3) { rawReady  = true; }
+      if (lens.readyState >= 3) { lensReady = true; }
+      tryPlay();
+    } else {
+      // Desktop: seek to CLIP_START then play both simultaneously
+      const start = () => {
+        Promise.all([seekTo(raw, CLIP_START), seekTo(lens, CLIP_START)]).then(() => {
+          raw.play().catch(() => {});
+          lens.play().catch(() => {});
+        });
+      };
+      let rawMeta  = raw.readyState  >= 1;
+      let lensMeta = lens.readyState >= 1;
+      const tryStart = () => { if (rawMeta && lensMeta) start(); };
+      if (!rawMeta)  raw.addEventListener("loadedmetadata", () => { rawMeta  = true; tryStart(); }, { once: true });
+      if (!lensMeta) lens.addEventListener("loadedmetadata", () => { lensMeta = true; tryStart(); }, { once: true });
+      tryStart();
+    }
   }, [isMobile, seekTo]);
 
   // Loop + keep lens in sync with raw (raw = master)
@@ -289,7 +274,7 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
       <video
         ref={rawRef}
         src={isMobile ? "/videos/hero-preview-raw-mobile.mp4" : "/videos/hero-preview-raw.mp4"}
-        muted playsInline preload={isMobile ? "none" : "auto"}
+        muted playsInline preload="auto"
         className="absolute inset-0 w-full h-full object-cover"
       />
 
@@ -314,7 +299,7 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
         <video
           ref={lensRef}
           src={isMobile ? "/videos/hero-preview-mobile.mp4" : "/videos/hero-preview.mp4"}
-          muted playsInline preload={isMobile ? "none" : "auto"}
+          muted playsInline preload="auto"
           className="absolute inset-0 w-full h-full object-cover"
         />
         {/* LENS watermark — orange, visible on right side only */}
