@@ -27,17 +27,21 @@ const jobs = [
 function ffmpeg(input, output) {
   const cmd = [
     "ffmpeg",
-    "-y",                          // overwrite without asking
+    "-y",                              // overwrite without asking
     "-i", `"${input}"`,
-    "-t", TRIM_END,                // trim: only first 42s
-    "-vf", '"scale=360:-2"',       // 360px wide → 360×640 (9:16). Target ~3MB for 42s.
+    "-t", TRIM_END,                    // trim: only first 42s (slider uses 0–40s)
+    "-vf", '"scale=360:-2"',           // 360×640 — fine on any mobile screen
     "-c:v", "libx264",
-    "-crf", "32",                  // quality — 32 gives ~3-4MB at 360p (28 was too large at 12MB)
+    "-crf", "36",                      // high compression — targets ~2-3MB for 42s
+    "-maxrate", "600k",                // cap bitrate spikes so file stays small
+    "-bufsize", "1200k",
     "-preset", "fast",
-    "-profile:v", "baseline",      // widest mobile compatibility (iOS 9+, Android 4+)
+    "-tune", "fastdecode",             // optimise for mobile hardware decoder
+    "-profile:v", "baseline",         // widest compatibility: iOS 9+, Android 4+
     "-level", "3.0",
-    "-an",                         // strip audio — videos are muted
-    "-movflags", "+faststart",     // moov atom at start → browser can play before full download
+    "-g", "30",                        // keyframe every ~1s → browser can start playing sooner
+    "-an",                             // strip audio — videos are muted
+    "-movflags", "+faststart",         // moov atom at start → plays before full download
     `"${output}"`,
   ].join(" ");
 
