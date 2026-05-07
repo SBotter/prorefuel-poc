@@ -12,29 +12,17 @@ import {
   Lock,
   PlayCircle,
 } from "lucide-react";
-import MapEngine from "@/components/MapEngine";
+import dynamic from "next/dynamic";
 import { trackProcessingSession, trackGpxSession, computeGpxMetrics, trackVideoExport, trackVideoUpload } from "@/lib/supabase/tracking";
 import type { RenderResult } from "@/components/MapEngine";
 import type { VideoUploadInsert } from "@/lib/supabase/types";
-import {
-  ActionSegment,
-  TelemetryCrossRef,
-} from "@/lib/engine/TelemetryCrossRef";
-import { GoProEngineClient } from "@/lib/media/GoProEngineClient";
-import {
-  StorytellingProcessor,
-  StoryPlan,
-} from "@/lib/engine/StorytellingProcessor";
-import { UnitSystem } from "@/lib/utils/units";
-import { GPXAnalyzer, GPXProfile } from "@/lib/engine/GPXAnalyzer";
-import {
-  VideoGPSAnalyzer,
-  VideoGPSProfile,
-} from "@/lib/engine/VideoGPSAnalyzer";
-import { SyncStrategySelector } from "@/lib/engine/SyncStrategySelector";
-import { CameraDetector } from "@/lib/media/CameraDetector";
-import { iPhoneEngineClient } from "@/lib/media/iPhoneEngineClient";
-import { iPhoneVideoGPSAnalyzer } from "@/lib/engine/iphone/iPhoneVideoGPSAnalyzer";
+import type { ActionSegment }   from "@/lib/engine/TelemetryCrossRef";
+import type { StoryPlan }       from "@/lib/engine/StorytellingProcessor";
+import type { UnitSystem }      from "@/lib/utils/units";
+import type { GPXProfile }      from "@/lib/engine/GPXAnalyzer";
+import type { VideoGPSProfile } from "@/lib/engine/VideoGPSAnalyzer";
+const MapEngine = dynamic(() => import("@/components/MapEngine"), { ssr: false });
+// Engine modules loaded on-demand inside upload handlers only
 
 // ── Instagram icon (inline SVG — lucide-react may not export it) ─────────
 function IgIcon({ size = 24, className = "" }: { size?: number; className?: string }) {
@@ -315,6 +303,26 @@ export default function LensV2Page() {
     const interval = setInterval(() => setProgress((p) => (p >= 98 ? 98 : p + 1)), 150);
 
     try {
+      const [
+        { CameraDetector },
+        { GoProEngineClient },
+        { iPhoneEngineClient },
+        { iPhoneVideoGPSAnalyzer },
+        { VideoGPSAnalyzer },
+        { SyncStrategySelector },
+        { TelemetryCrossRef },
+        { StorytellingProcessor },
+      ] = await Promise.all([
+        import("@/lib/media/CameraDetector"),
+        import("@/lib/media/GoProEngineClient"),
+        import("@/lib/media/iPhoneEngineClient"),
+        import("@/lib/engine/iphone/iPhoneVideoGPSAnalyzer"),
+        import("@/lib/engine/VideoGPSAnalyzer"),
+        import("@/lib/engine/SyncStrategySelector"),
+        import("@/lib/engine/TelemetryCrossRef"),
+        import("@/lib/engine/StorytellingProcessor"),
+      ]);
+
       setStatusMsg("Identifying camera...");
       const cameraDetection = await CameraDetector.detect(file);
       const isIPhone = cameraDetection.type === "iphone";
@@ -507,6 +515,7 @@ export default function LensV2Page() {
     if (!file.name.toLowerCase().endsWith(".gpx")) { setGpxError("Only .gpx files are accepted."); e.target.value = ""; return; }
     setGpxError(null);
     const text = await file.text();
+    const { GPXAnalyzer } = await import("@/lib/engine/GPXAnalyzer");
     const profile = GPXAnalyzer.analyze(text);
     setGpxProfile(profile);
     const xml = new DOMParser().parseFromString(text, "text/xml");

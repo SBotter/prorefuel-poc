@@ -17,15 +17,11 @@
 
 import { useState, useRef, useEffect } from "react";
 import { CheckCircle2, Loader2, Gauge, Upload, Download, Zap } from "lucide-react";
-import MapEngine from "@/components/MapEngine";
+import dynamic from "next/dynamic";
 import type { RenderResult } from "@/components/MapEngine";
-import { ActionSegment, TelemetryCrossRef } from "@/lib/engine/TelemetryCrossRef";
-import { StorytellingProcessor, StoryPlan } from "@/lib/engine/StorytellingProcessor";
-import { GPXAnalyzer } from "@/lib/engine/GPXAnalyzer";
-import { VideoGPSAnalyzer } from "@/lib/engine/VideoGPSAnalyzer";
-import { SyncStrategySelector } from "@/lib/engine/SyncStrategySelector";
-import { GoProEngineClient } from "@/lib/media/GoProEngineClient";
-import { CameraDetector } from "@/lib/media/CameraDetector";
+import type { ActionSegment } from "@/lib/engine/TelemetryCrossRef";
+import type { StoryPlan }     from "@/lib/engine/StorytellingProcessor";
+const MapEngine = dynamic(() => import("@/components/MapEngine"), { ssr: false });
 
 type Phase =
   | "idle"        // waiting for uploads
@@ -112,6 +108,22 @@ export default function RenderHeroPage() {
     const interval = setInterval(() => setProgress(p => p >= 95 ? 95 : p + 1), 180);
 
     try {
+      const [
+        { CameraDetector },
+        { GoProEngineClient },
+        { GPXAnalyzer },
+        { VideoGPSAnalyzer },
+        { TelemetryCrossRef },
+        { StorytellingProcessor },
+      ] = await Promise.all([
+        import("@/lib/media/CameraDetector"),
+        import("@/lib/media/GoProEngineClient"),
+        import("@/lib/engine/GPXAnalyzer"),
+        import("@/lib/engine/VideoGPSAnalyzer"),
+        import("@/lib/engine/TelemetryCrossRef"),
+        import("@/lib/engine/StorytellingProcessor"),
+      ]);
+
       setStatusMsg("Detecting camera...");
       const cam = await CameraDetector.detect(videoFile);
       if (cam.type !== "gopro") throw new Error("Only GoPro MP4 supported in render-hero.");

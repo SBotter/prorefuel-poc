@@ -346,11 +346,8 @@ export default function ProRefuelPage() {
 
   useEffect(() => {
     setMounted(true);
-    const ua = navigator.userAgent;
-    setIsMobileDevice(/iPhone|iPad|iPod|Android/i.test(ua));
+    setIsMobileDevice(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
   }, []);
-
-  if (!mounted) return <div className="min-h-screen bg-[#050505]" />;
 
   // ── Video upload ──────────────────────────────────────────────────────
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -715,7 +712,7 @@ export default function ProRefuelPage() {
         <div className="w-full lg:w-[48%] flex items-center justify-center px-4 py-10 lg:px-8 lg:py-12">
           <div className="w-full max-w-[340px] md:max-w-[400px] lg:max-w-[460px] xl:max-w-[520px]">
             {/* TEST: slider hidden on mobile to isolate performance issue */}
-            {!isMobileDevice && <BeforeAfterSlider isMobile={false} />}
+            {!(mounted && isMobileDevice) && <BeforeAfterSlider isMobile={false} />}
           </div>
         </div>
       </section>
@@ -764,7 +761,7 @@ export default function ProRefuelPage() {
               </div>
 
               <div className="bg-[#0f0f0f] rounded-[2.8rem] border border-zinc-800/80 p-7 md:p-9 shadow-2xl relative ring-1 ring-white/4">
-                {isMobileDevice ? (
+                {(mounted && isMobileDevice) ? (
                   <div className="flex flex-col items-center gap-4 py-8 text-center">
                     <div className="w-14 h-14 rounded-2xl bg-zinc-800 flex items-center justify-center text-2xl">🖥️</div>
                     <p className="font-black text-white text-base uppercase tracking-wide">Desktop only</p>
