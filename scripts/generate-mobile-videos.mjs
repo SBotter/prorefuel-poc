@@ -30,12 +30,12 @@ function ffmpeg(input, output) {
     "-y",                          // overwrite without asking
     "-i", `"${input}"`,
     "-t", TRIM_END,                // trim: only first 42s
-    "-vf", '"scale=480:-2"',       // 480px wide, keep aspect (must be divisible by 2)
+    "-vf", '"scale=360:-2"',       // 360px wide → 360×640 (9:16). Target ~3MB for 42s.
     "-c:v", "libx264",
-    "-crf", "28",                  // quality — lower = bigger file; 28 is a good mobile balance
+    "-crf", "32",                  // quality — 32 gives ~3-4MB at 360p (28 was too large at 12MB)
     "-preset", "fast",
-    "-profile:v", "baseline",      // widest mobile compatibility
-    "-level", "3.1",
+    "-profile:v", "baseline",      // widest mobile compatibility (iOS 9+, Android 4+)
+    "-level", "3.0",
     "-an",                         // strip audio — videos are muted
     "-movflags", "+faststart",     // moov atom at start → browser can play before full download
     `"${output}"`,

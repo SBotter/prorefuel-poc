@@ -12,29 +12,21 @@ import {
   Lock,
   PlayCircle,
 } from "lucide-react";
-import MapEngine from "@/components/MapEngine";
+import dynamic from "next/dynamic";
 import { trackProcessingSession, trackGpxSession, computeGpxMetrics, trackVideoExport, trackVideoUpload } from "@/lib/supabase/tracking";
 import type { RenderResult } from "@/components/MapEngine";
+
+// Dynamic import — keeps mapbox-gl, Tone.js and ffmpeg out of the initial bundle.
+// MapEngine is only needed when the user clicks Generate, never on landing page load.
+const MapEngine = dynamic(() => import("@/components/MapEngine"), { ssr: false });
 import type { VideoUploadInsert } from "@/lib/supabase/types";
-import {
-  ActionSegment,
-  TelemetryCrossRef,
-} from "@/lib/engine/TelemetryCrossRef";
-import { GoProEngineClient } from "@/lib/media/GoProEngineClient";
-import {
-  StorytellingProcessor,
-  StoryPlan,
-} from "@/lib/engine/StorytellingProcessor";
-import { UnitSystem } from "@/lib/utils/units";
-import { GPXAnalyzer, GPXProfile } from "@/lib/engine/GPXAnalyzer";
-import {
-  VideoGPSAnalyzer,
-  VideoGPSProfile,
-} from "@/lib/engine/VideoGPSAnalyzer";
-import { SyncStrategySelector } from "@/lib/engine/SyncStrategySelector";
-import { CameraDetector } from "@/lib/media/CameraDetector";
-import { iPhoneEngineClient } from "@/lib/media/iPhoneEngineClient";
-import { iPhoneVideoGPSAnalyzer } from "@/lib/engine/iphone/iPhoneVideoGPSAnalyzer";
+// Type-only imports — zero runtime cost, erased by TypeScript compiler
+import type { ActionSegment }   from "@/lib/engine/TelemetryCrossRef";
+import type { StoryPlan }       from "@/lib/engine/StorytellingProcessor";
+import type { UnitSystem }      from "@/lib/utils/units";
+import type { GPXProfile }      from "@/lib/engine/GPXAnalyzer";
+import type { VideoGPSProfile } from "@/lib/engine/VideoGPSAnalyzer";
+// Engine modules are loaded on-demand inside the upload handlers (never on mobile)
 
 // ── Instagram icon (inline SVG — lucide-react may not export it) ─────────
 function IgIcon({ size = 24, className = "" }: { size?: number; className?: string }) {
@@ -179,42 +171,31 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
     const lens = lensRef.current;
     if (!raw || !lens) return;
 
-    // iOS fix: React doesn't set the HTML `muted` attribute correctly;
+    // iOS fix: React does not correctly set the HTML `muted` attribute.
     // WebKit checks the attribute (not the JS property) to allow muted autoplay.
     raw.muted  = true;
     lens.muted = true;
 
     if (isMobile) {
-      let rawReady  = false;
-      let lensReady = false;
-      let played    = false;
-
-      const tryPlay = () => {
-        if (!rawReady || !lensReady || played) return;
+      // Mobile: simplest reliable path — play both as soon as any data is ready.
+      // The `loop` attribute on the video elements handles looping natively (no JS needed).
+      let played = false;
+      const attempt = () => {
+        if (played) return;
         played = true;
         Promise.all([raw.play(), lens.play()]).catch(() => {
           played = false;
-          // Autoplay blocked (Low Power Mode etc.) — resume on next user touch
-          document.addEventListener("touchstart", () => {
-            played = true;
-            raw.play().catch(() => {});
-            lens.play().catch(() => {});
-          }, { once: true, passive: true });
+          // Autoplay blocked (Low Power Mode, etc.) — retry on next user touch
+          document.addEventListener("touchstart", attempt, { once: true, passive: true });
         });
       };
-
-      // Listen to both events — iOS versions differ on which fires first
-      raw.addEventListener("canplay",    () => { rawReady  = true; tryPlay(); }, { once: true });
-      lens.addEventListener("canplay",   () => { lensReady = true; tryPlay(); }, { once: true });
-      raw.addEventListener("loadeddata", () => { rawReady  = true; tryPlay(); }, { once: true });
-      lens.addEventListener("loadeddata",() => { lensReady = true; tryPlay(); }, { once: true });
-
-      // If already buffered (e.g. revisit / cached)
-      if (raw.readyState  >= 3) { rawReady  = true; }
-      if (lens.readyState >= 3) { lensReady = true; }
-      tryPlay();
+      // canplay fires when the browser has enough data; loadeddata fires when the first
+      // frame is decoded. We listen to both because iOS versions differ on which fires first.
+      raw.addEventListener("canplay",    attempt, { once: true });
+      raw.addEventListener("loadeddata", attempt, { once: true });
+      if (raw.readyState >= 3) attempt(); // already buffered (cached page revisit)
     } else {
-      // Desktop: seek to CLIP_START then play both simultaneously
+      // Desktop: seek both to CLIP_START then play simultaneously
       const start = () => {
         Promise.all([seekTo(raw, CLIP_START), seekTo(lens, CLIP_START)]).then(() => {
           raw.play().catch(() => {});
@@ -230,31 +211,23 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
     }
   }, [isMobile, seekTo]);
 
-  // Loop + keep lens in sync with raw (raw = master)
+  // Desktop-only: custom loop (CLIP_START↔CLIP_END) + drift correction
   useEffect(() => {
+    if (isMobile) return; // mobile uses native loop attribute
     const raw  = rawRef.current;
     const lens = lensRef.current;
     if (!raw || !lens) return;
-    const loopStart = isMobile ? 0 : CLIP_START;
 
     const onTimeUpdate = () => {
       if (loopGuardRef.current) return;
       const t = raw.currentTime;
       if (t >= CLIP_END) {
         loopGuardRef.current = true;
-        if (isMobile) {
-          raw.currentTime  = loopStart;
-          lens.currentTime = loopStart;
+        Promise.all([seekTo(raw, CLIP_START), seekTo(lens, CLIP_START)]).then(() => {
           raw.play().catch(() => {});
           lens.play().catch(() => {});
           loopGuardRef.current = false;
-        } else {
-          Promise.all([seekTo(raw, loopStart), seekTo(lens, loopStart)]).then(() => {
-            raw.play().catch(() => {});
-            lens.play().catch(() => {});
-            loopGuardRef.current = false;
-          });
-        }
+        });
       } else if (Math.abs(lens.currentTime - t) > 0.12) {
         lens.currentTime = t;
       }
@@ -274,7 +247,7 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
       <video
         ref={rawRef}
         src={isMobile ? "/videos/hero-preview-raw-mobile.mp4" : "/videos/hero-preview-raw.mp4"}
-        muted playsInline preload="auto"
+        muted playsInline preload="auto" loop={isMobile}
         className="absolute inset-0 w-full h-full object-cover"
       />
 
@@ -299,7 +272,7 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
         <video
           ref={lensRef}
           src={isMobile ? "/videos/hero-preview-mobile.mp4" : "/videos/hero-preview.mp4"}
-          muted playsInline preload="auto"
+          muted playsInline preload="auto" loop={isMobile}
           className="absolute inset-0 w-full h-full object-cover"
         />
         {/* LENS watermark — orange, visible on right side only */}
@@ -400,6 +373,27 @@ export default function ProRefuelPage() {
     const interval = setInterval(() => setProgress((p) => (p >= 98 ? 98 : p + 1)), 150);
 
     try {
+      // Lazy-load engine modules — never imported on mobile, only when user actually uploads
+      const [
+        { CameraDetector },
+        { GoProEngineClient },
+        { iPhoneEngineClient },
+        { iPhoneVideoGPSAnalyzer },
+        { VideoGPSAnalyzer },
+        { SyncStrategySelector },
+        { TelemetryCrossRef },
+        { StorytellingProcessor },
+      ] = await Promise.all([
+        import("@/lib/media/CameraDetector"),
+        import("@/lib/media/GoProEngineClient"),
+        import("@/lib/media/iPhoneEngineClient"),
+        import("@/lib/engine/iphone/iPhoneVideoGPSAnalyzer"),
+        import("@/lib/engine/VideoGPSAnalyzer"),
+        import("@/lib/engine/SyncStrategySelector"),
+        import("@/lib/engine/TelemetryCrossRef"),
+        import("@/lib/engine/StorytellingProcessor"),
+      ]);
+
       setStatusMsg("Identifying camera...");
       const cameraDetection = await CameraDetector.detect(file);
       const isIPhone = cameraDetection.type === "iphone";
@@ -592,6 +586,7 @@ export default function ProRefuelPage() {
     if (!file.name.toLowerCase().endsWith(".gpx")) { setGpxError("Only .gpx files are accepted."); e.target.value = ""; return; }
     setGpxError(null);
     const text = await file.text();
+    const { GPXAnalyzer } = await import("@/lib/engine/GPXAnalyzer");
     const profile = GPXAnalyzer.analyze(text);
     setGpxProfile(profile);
     const xml = new DOMParser().parseFromString(text, "text/xml");
