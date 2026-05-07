@@ -1193,6 +1193,19 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         ctx.fillRect(0, 0, barW, 6);
       }
 
+      // Watermark — top-right, above the mini-map widget (right: 3%, matching widget margin)
+      ctx.save();
+      ctx.globalAlpha = 0.30;
+      ctx.font = `600 ${Math.round(W * 0.033)}px sans-serif`;
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "right";
+      ctx.letterSpacing = "0.04em";
+      ctx.shadowColor = "rgba(0,0,0,0.9)";
+      ctx.shadowBlur = 8;
+      ctx.fillText("LENS.prorefuel.app", W - Math.round(W * 0.03), Math.round(H * 0.022));
+      ctx.letterSpacing = "0em";
+      ctx.restore();
+
       ctx.restore();
     };
 
@@ -1438,15 +1451,44 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
       ctx.fillRect(0, barH - 4, W, 4);
       ctx.fillRect(0, H - barH, W, 4);
 
-      // ── 3. Logo — fades in at 500ms ────────────────────────────────────────
+      // ── 3. LENS + "developed by" + logo — fades in at 500ms ─────────────────
       const logoAlpha = easeOut(clamp01((elapsed - 500) / 400));
-      if (logoAlpha > 0.01 && logoImg.complete && logoImg.naturalWidth > 0) {
-        const lH = Math.round(H * 0.06);
-        const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
-        const logoY = H * 0.14 + (1 - logoAlpha) * 20;
-        ctx.globalAlpha = logoAlpha * 0.85;
-        shadow("rgba(0,0,0,0.8)", 20);
-        ctx.drawImage(logoImg, (W - lW) / 2, logoY, lW, lH);
+      if (logoAlpha > 0.01) {
+        const slideUp = (1 - logoAlpha) * 14;
+
+        // "LENS" — large, matching brand screen style
+        ctx.globalAlpha = logoAlpha;
+        shadow("rgba(0,0,0,0.9)", 25);
+        ctx.font = `900 ${Math.round(W * 0.18)}px sans-serif`;
+        ctx.fillStyle = "rgba(255,255,255,0.97)";
+        ctx.textAlign = "center";
+        ctx.letterSpacing = "-0.02em";
+        ctx.fillText("LENS", W / 2, H * 0.16 + slideUp);
+        ctx.letterSpacing = "0em";
+
+        // Amber accent line below LENS
+        ctx.globalAlpha = logoAlpha * 0.6;
+        ctx.fillStyle = "#f59e0b";
+        const accentW = Math.round(W * 0.12);
+        ctx.fillRect((W - accentW) / 2, H * 0.185, accentW, Math.round(H * 0.0025));
+
+        // "DEVELOPED BY"
+        ctx.globalAlpha = logoAlpha * 0.60;
+        noShadow();
+        ctx.font = `300 ${Math.round(W * 0.028)}px sans-serif`;
+        ctx.fillStyle = "rgba(160,160,160,0.9)";
+        ctx.letterSpacing = "0.25em";
+        ctx.fillText("DEVELOPED BY", W / 2, H * 0.228 + slideUp);
+        ctx.letterSpacing = "0em";
+
+        // ProRefuel logo — small, secondary
+        if (logoImg.complete && logoImg.naturalWidth > 0) {
+          const lH = Math.round(H * 0.042);
+          const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
+          ctx.globalAlpha = logoAlpha * 0.65;
+          ctx.drawImage(logoImg, (W - lW) / 2, H * 0.248 + slideUp, lW, lH);
+        }
+
         ctx.globalAlpha = 1;
         noShadow();
       }
@@ -1686,6 +1728,59 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         ctx.restore();
       }
 
+      // ── 9. Instagram handle — fades in with equipment logos ──────────────────
+      const igIntroAlpha = easeOut(clamp01((elapsed - 2550) / 450));
+      if (igIntroAlpha > 0.01) {
+        ctx.save();
+        ctx.globalAlpha = igIntroAlpha * 0.58;
+
+        const igFont  = Math.round(W * 0.032);
+        ctx.font      = `400 ${igFont}px sans-serif`;
+        ctx.textAlign = "center";
+        const handle  = "@LENS.video";
+        const textW   = ctx.measureText(handle).width;
+        const iconSz  = igFont * 1.05;
+        const gap     = igFont * 0.38;
+        const totalW  = iconSz + gap + textW;
+        const baseY   = H * 0.912;
+        const iconX   = W / 2 - totalW / 2;
+        const iy      = baseY - iconSz * 0.82;
+
+        const col = "rgba(210,210,210,0.88)";
+        ctx.strokeStyle = col;
+        ctx.lineWidth   = iconSz * 0.09;
+        ctx.lineCap     = "round";
+        const r2 = iconSz * 0.27;
+        ctx.beginPath();
+        ctx.moveTo(iconX + r2, iy);
+        ctx.lineTo(iconX + iconSz - r2, iy);
+        ctx.quadraticCurveTo(iconX + iconSz, iy, iconX + iconSz, iy + r2);
+        ctx.lineTo(iconX + iconSz, iy + iconSz - r2);
+        ctx.quadraticCurveTo(iconX + iconSz, iy + iconSz, iconX + iconSz - r2, iy + iconSz);
+        ctx.lineTo(iconX + r2, iy + iconSz);
+        ctx.quadraticCurveTo(iconX, iy + iconSz, iconX, iy + iconSz - r2);
+        ctx.lineTo(iconX, iy + r2);
+        ctx.quadraticCurveTo(iconX, iy, iconX + r2, iy);
+        ctx.closePath();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(iconX + iconSz / 2, iy + iconSz / 2, iconSz * 0.27, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(iconX + iconSz * 0.73, iy + iconSz * 0.24, iconSz * 0.08, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = col;
+        ctx.font      = `400 ${igFont}px sans-serif`;
+        ctx.textAlign = "left";
+        ctx.fillText(handle, iconX + iconSz + gap, baseY);
+
+        ctx.restore();
+      }
+
       ctx.restore();
     };
 
@@ -1752,13 +1847,67 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           noShadow();
         }
 
+        // Instagram handle — below ProRefuel logo
+        if (progress > 0.65) {
+          const igAlpha = Math.min((progress - 0.65) / 0.2, 1);
+          ctx.globalAlpha = fadeIn * igAlpha * 0.62;
+
+          const igFont = Math.round(W * 0.034);
+          ctx.font = `400 ${igFont}px sans-serif`;
+          ctx.textAlign = "center";
+          const handle  = "@LENS.video";
+          const textW   = ctx.measureText(handle).width;
+          const iconSz  = igFont * 1.05;
+          const gap     = igFont * 0.38;
+          const totalW  = iconSz + gap + textW;
+          const baseY   = H * 0.566;
+          const iconX   = W / 2 - totalW / 2;
+          const iy      = baseY - iconSz * 0.82;
+
+          // Instagram icon — rounded square + inner circle + dot
+          const col = "rgba(210,210,210,0.88)";
+          ctx.strokeStyle = col;
+          ctx.lineWidth   = iconSz * 0.09;
+          ctx.lineCap     = "round";
+          const r2 = iconSz * 0.27;
+          ctx.beginPath();
+          ctx.moveTo(iconX + r2, iy);
+          ctx.lineTo(iconX + iconSz - r2, iy);
+          ctx.quadraticCurveTo(iconX + iconSz, iy, iconX + iconSz, iy + r2);
+          ctx.lineTo(iconX + iconSz, iy + iconSz - r2);
+          ctx.quadraticCurveTo(iconX + iconSz, iy + iconSz, iconX + iconSz - r2, iy + iconSz);
+          ctx.lineTo(iconX + r2, iy + iconSz);
+          ctx.quadraticCurveTo(iconX, iy + iconSz, iconX, iy + iconSz - r2);
+          ctx.lineTo(iconX, iy + r2);
+          ctx.quadraticCurveTo(iconX, iy, iconX + r2, iy);
+          ctx.closePath();
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(iconX + iconSz / 2, iy + iconSz / 2, iconSz * 0.27, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.fillStyle = col;
+          ctx.beginPath();
+          ctx.arc(iconX + iconSz * 0.73, iy + iconSz * 0.24, iconSz * 0.08, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Handle text
+          ctx.fillStyle = col;
+          ctx.font = `400 ${igFont}px sans-serif`;
+          ctx.textAlign = "left";
+          noShadow();
+          ctx.fillText(handle, iconX + iconSz + gap, baseY);
+          ctx.textAlign = "center";
+        }
+
         // Tagline
         if (progress > 0.65) {
           const tagAlpha = Math.min((progress - 0.65) / 0.2, 1);
           ctx.globalAlpha = fadeIn * tagAlpha;
           ctx.font = `400 ${Math.round(W * 0.030)}px sans-serif`;
           ctx.fillStyle = "rgba(245,158,11,0.75)";
-          ctx.fillText("lens.prorefuel.app", W / 2, H * 0.575);
+          ctx.fillText("lens.prorefuel.app", W / 2, H * 0.606);
         }
 
         // Amber bottom accent line
