@@ -79,62 +79,153 @@ const CLIP_END   = 40;  // seconds — loop back
 
 // ── Before/After drag comparison component ────────────────────────────────
 function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
-  const [sliderX, setSliderX]       = useState(50);
+  // hasDragged is the ONLY React state — controls the hint badge visibility
   const [hasDragged, setHasDragged] = useState(false);
-  const draggingRef  = useRef(false);
-  const loopGuardRef = useRef(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const rawRef       = useRef<HTMLVideoElement>(null);
-  const lensRef      = useRef<HTMLVideoElement>(null);
 
-  // seekTo with 2s timeout so it never hangs on mobile where seeked may not fire
-  const seekTo = (v: HTMLVideoElement, t: number) =>
+  const containerRef    = useRef<HTMLDivElement>(null);
+  const rawRef          = useRef<HTMLVideoElement>(null);
+  const lensRef         = useRef<HTMLVideoElement>(null);
+  const rawWatermarkRef = useRef<HTMLDivElement>(null);
+  const lensClipRef     = useRef<HTMLDivElement>(null);
+  const dividerRef      = useRef<HTMLDivElement>(null);
+  const handleElRef     = useRef<HTMLDivElement>(null);
+  const loopGuardRef    = useRef(false);
+  const draggingRef     = useRef(false);
+  const hasDraggedRef   = useRef(false);
+
+  // Update all slider visuals directly in the DOM — zero React re-renders
+  const applySlider = useCallback((pct: number) => {
+    const x = Math.min(95, Math.max(5, pct));
+    if (rawWatermarkRef.current)
+      rawWatermarkRef.current.style.clipPath = `polygon(0 0,${x}% 0,${x}% 100%,0 100%)`;
+    if (lensClipRef.current)
+      lensClipRef.current.style.clipPath = `polygon(${x}% 0,100% 0,100% 100%,${x}% 100%)`;
+    if (dividerRef.current)
+      dividerRef.current.style.left = `${x}%`;
+    if (handleElRef.current)
+      handleElRef.current.style.left = `${x}%`;
+  }, []);
+
+  const getXPct = useCallback((clientX: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return 50;
+    return ((clientX - rect.left) / rect.width) * 100;
+  }, []);
+
+  // Mouse drag — window-level so it works outside the element
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return;
+      applySlider(getXPct(e.clientX));
+    };
+    const onUp = () => { draggingRef.current = false; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [applySlider, getXPct]);
+
+  // Touch drag — native listener with { passive: false } so preventDefault actually works
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let startX = 0, startY = 0;
+    let isHorizontal: boolean | null = null;
+
+    const onTouchStart = (e: TouchEvent) => {
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      isHorizontal = null;
+      draggingRef.current = true;
+      applySlider(getXPct(e.touches[0].clientX));
+      if (!hasDraggedRef.current) { hasDraggedRef.current = true; setHasDragged(true); }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!draggingRef.current) return;
+      const dx = Math.abs(e.touches[0].clientX - startX);
+      const dy = Math.abs(e.touches[0].clientY - startY);
+      if (isHorizontal === null && (dx > 4 || dy > 4)) isHorizontal = dx >= dy;
+      if (isHorizontal) {
+        e.preventDefault(); // block page scroll only during horizontal drag
+        applySlider(getXPct(e.touches[0].clientX));
+      } else {
+        draggingRef.current = false; // vertical swipe — hand back to scroll
+      }
+    };
+
+    const onTouchEnd = () => { draggingRef.current = false; isHorizontal = null; };
+
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove",  onTouchMove,  { passive: false });
+    el.addEventListener("touchend",   onTouchEnd,   { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove",  onTouchMove);
+      el.removeEventListener("touchend",   onTouchEnd);
+    };
+  }, [applySlider, getXPct]);
+
+  // seekTo with 2s timeout fallback — desktop only
+  const seekTo = useCallback((v: HTMLVideoElement, t: number) =>
     new Promise<void>(resolve => {
       const timer = setTimeout(resolve, 2000);
       v.addEventListener("seeked", () => { clearTimeout(timer); resolve(); }, { once: true });
       v.currentTime = t;
-    });
+    }), []);
 
+  // Video playback — IntersectionObserver so we only play when visible
   useEffect(() => {
     const raw  = rawRef.current;
     const lens = lensRef.current;
     if (!raw || !lens) return;
 
-    if (isMobile) {
-      // Mobile: skip seek entirely — wait for canplay (data available) then play from 0
-      let rawReady  = raw.readyState  >= 3;
-      let lensReady = lens.readyState >= 3;
-      const tryPlay = () => {
-        if (!rawReady || !lensReady) return;
-        raw.play().catch(() => {});
-        lens.play().catch(() => {});
-      };
-      if (!rawReady)  raw.addEventListener("canplay",  () => { rawReady  = true; tryPlay(); }, { once: true });
-      if (!lensReady) lens.addEventListener("canplay", () => { lensReady = true; tryPlay(); }, { once: true });
-      tryPlay();
-    } else {
-      // Desktop: seek both to CLIP_START, then start simultaneously
-      const start = () => {
-        Promise.all([seekTo(raw, CLIP_START), seekTo(lens, CLIP_START)]).then(() => {
+    let started = false;
+    const startPlayback = () => {
+      if (started) return;
+      started = true;
+      if (isMobile) {
+        // Mobile: no seek — just play from 0 once data is available
+        let rawReady  = raw.readyState  >= 3;
+        let lensReady = lens.readyState >= 3;
+        const tryPlay = () => {
+          if (!rawReady || !lensReady) return;
           raw.play().catch(() => {});
           lens.play().catch(() => {});
-        });
-      };
-      let rawMeta  = raw.readyState  >= 1;
-      let lensMeta = lens.readyState >= 1;
-      const tryStart = () => { if (rawMeta && lensMeta) start(); };
-      if (!rawMeta)  raw.addEventListener("loadedmetadata",  () => { rawMeta  = true; tryStart(); }, { once: true });
-      if (!lensMeta) lens.addEventListener("loadedmetadata", () => { lensMeta = true; tryStart(); }, { once: true });
-      tryStart();
-    }
-  }, [isMobile]);
+        };
+        if (!rawReady)  raw.addEventListener("canplay",  () => { rawReady  = true; tryPlay(); }, { once: true });
+        if (!lensReady) lens.addEventListener("canplay", () => { lensReady = true; tryPlay(); }, { once: true });
+        tryPlay();
+      } else {
+        // Desktop: seek to CLIP_START then play
+        const start = () => {
+          Promise.all([seekTo(raw, CLIP_START), seekTo(lens, CLIP_START)]).then(() => {
+            raw.play().catch(() => {});
+            lens.play().catch(() => {});
+          });
+        };
+        let rawMeta  = raw.readyState  >= 1;
+        let lensMeta = lens.readyState >= 1;
+        const tryStart = () => { if (rawMeta && lensMeta) start(); };
+        if (!rawMeta)  raw.addEventListener("loadedmetadata", () => { rawMeta  = true; tryStart(); }, { once: true });
+        if (!lensMeta) lens.addEventListener("loadedmetadata", () => { lensMeta = true; tryStart(); }, { once: true });
+        tryStart();
+      }
+    };
+
+    // Only play when the slider is actually visible on screen
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) startPlayback(); },
+      { threshold: 0.25 }
+    );
+    if (containerRef.current) observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [isMobile, seekTo]);
 
   // Loop + keep lens in sync with raw (raw = master)
   useEffect(() => {
     const raw  = rawRef.current;
     const lens = lensRef.current;
     if (!raw || !lens) return;
-
     const loopStart = isMobile ? 0 : CLIP_START;
 
     const onTimeUpdate = () => {
@@ -143,7 +234,6 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
       if (t >= CLIP_END) {
         loopGuardRef.current = true;
         if (isMobile) {
-          // Synchronous reset — position 0 is always buffered, no seek wait needed
           raw.currentTime  = loopStart;
           lens.currentTime = loopStart;
           raw.play().catch(() => {});
@@ -163,49 +253,27 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
 
     raw.addEventListener("timeupdate", onTimeUpdate);
     return () => raw.removeEventListener("timeupdate", onTimeUpdate);
-  }, [isMobile]);
-
-  const getX = (clientX: number) => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return 50;
-    return Math.min(95, Math.max(5, ((clientX - rect.left) / rect.width) * 100));
-  };
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => { if (draggingRef.current) setSliderX(getX(e.clientX)); };
-    const onUp   = () => { draggingRef.current = false; };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-  }, []);
-
-  const onMouseDown = (e: React.MouseEvent) => {
-    draggingRef.current = true;
-    setHasDragged(true);
-    setSliderX(getX(e.clientX));
-  };
+  }, [isMobile, seekTo]);
 
   return (
     <div
       ref={containerRef}
       className="relative w-full aspect-[9/16] rounded-[2rem] overflow-hidden select-none cursor-col-resize shadow-[0_0_100px_rgba(0,0,0,0.9)] ring-1 ring-white/8"
-      onMouseDown={onMouseDown}
-      onTouchStart={e => { draggingRef.current = true; setHasDragged(true); setSliderX(getX(e.touches[0].clientX)); }}
-      onTouchMove={e => { e.preventDefault(); setHasDragged(true); setSliderX(getX(e.touches[0].clientX)); }}
-      onTouchEnd={() => { draggingRef.current = false; }}
+      onMouseDown={e => { draggingRef.current = true; if (!hasDraggedRef.current) { hasDraggedRef.current = true; setHasDragged(true); } applySlider(getXPct(e.clientX)); }}
     >
       {/* RAW video — base layer */}
       <video
         ref={rawRef}
         src={isMobile ? "/videos/hero-preview-raw-mobile.mp4" : "/videos/hero-preview-raw.mp4"}
-        muted playsInline preload={isMobile ? "auto" : "auto"}
+        muted playsInline preload="auto"
         className="absolute inset-0 w-full h-full object-cover"
       />
 
-      {/* RAW watermark — clipped to LEFT side only */}
+      {/* RAW watermark — clipped to LEFT side only (initial inline style, then direct DOM) */}
       <div
+        ref={rawWatermarkRef}
         className="absolute inset-0 flex items-center justify-center pointer-events-none z-10"
-        style={{ clipPath: `polygon(0 0, ${sliderX}% 0, ${sliderX}% 100%, 0 100%)` }}
+        style={{ clipPath: "polygon(0 0,50% 0,50% 100%,0 100%)" }}
       >
         <span
           className="font-black text-white uppercase tracking-[0.15em] select-none"
@@ -215,8 +283,9 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
 
       {/* LENS video — clipped to right of slider */}
       <div
+        ref={lensClipRef}
         className="absolute inset-0"
-        style={{ clipPath: `polygon(${sliderX}% 0, 100% 0, 100% 100%, ${sliderX}% 100%)` }}
+        style={{ clipPath: "polygon(50% 0,100% 0,100% 100%,50% 100%)", willChange: "clip-path" }}
       >
         <video
           ref={lensRef}
@@ -235,14 +304,16 @@ function BeforeAfterSlider({ isMobile = false }: { isMobile?: boolean }) {
 
       {/* Divider line */}
       <div
+        ref={dividerRef}
         className="absolute top-0 bottom-0 w-[3px] bg-white shadow-[0_0_14px_rgba(255,255,255,0.9)] z-20 pointer-events-none"
-        style={{ left: `${sliderX}%`, transform: "translateX(-50%)" }}
+        style={{ left: "50%", transform: "translateX(-50%)" }}
       />
 
       {/* Drag handle */}
       <div
+        ref={handleElRef}
         className="absolute top-1/2 z-20 pointer-events-none"
-        style={{ left: `${sliderX}%`, transform: "translate(-50%, -50%)" }}
+        style={{ left: "50%", transform: "translate(-50%, -50%)" }}
       >
         <div className="w-11 h-11 rounded-full bg-white shadow-[0_0_24px_rgba(0,0,0,0.8)] flex items-center justify-center">
           <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="black" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
