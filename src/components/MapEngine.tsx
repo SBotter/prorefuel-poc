@@ -43,6 +43,8 @@ interface MapEngineProps {
   onRenderComplete?: (result: RenderResult) => void;
   /** Mobile: called with the output blob instead of triggering a browser download */
   onDownloadReady?: (blob: Blob, filename: string) => void;
+  /** When true, renders only raw video cuts — no telemetry, no map widget, no branding. Default false. */
+  hideOverlay?: boolean;
 }
 
 function calculateBearing(start: GPSPoint, end: GPSPoint) {
@@ -61,7 +63,7 @@ function getDistance(p1: GPSPoint, p2: GPSPoint) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, activityMeta, autoRecord = false, unit = 'metric', onRenderComplete, onDownloadReady }: MapEngineProps, ref) => {
+const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile, activityMeta, autoRecord = false, unit = 'metric', onRenderComplete, onDownloadReady, hideOverlay = false }: MapEngineProps, ref) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -70,6 +72,7 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
   const recordingRef = useRef<{ recorder: MediaRecorder; compositeLoop: number } | null>(null);
   const autoRecordRef = useRef(autoRecord);
   const startRecordingRef = useRef<(() => Promise<void>) | null>(null);
+  const hideOverlayRef = useRef(hideOverlay);
 
   // Lightweight Canvas 2D mini-map (replaces Mapbox in ACTION mode)
   const miniMapCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -172,6 +175,8 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
   useEffect(() => {
     activityMetaRef.current = activityMeta;
   }, [activityMeta]);
+
+  useEffect(() => { hideOverlayRef.current = hideOverlay; }, [hideOverlay]);
 
   // Pre-compute mini-map route cache once — draws the full polyline to an offscreen canvas
   // so ACTION mode only needs drawImage + a dot each frame (no per-frame GPS iteration)
@@ -2004,9 +2009,11 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         if (brandStartTime === 0) brandStartTime = performance.now();
         const elapsed = performance.now() - brandStartTime;
         const progress = Math.min(elapsed / BRAND_DURATION, 1);
-        // Draw map base then overlay brand wipe
-        try { ctx.drawImage(mapCanvas, 0, 0, W, H); } catch {}
-        drawBrand(progress);
+        if (!hideOverlayRef.current) {
+          // Draw map base then overlay brand wipe
+          try { ctx.drawImage(mapCanvas, 0, 0, W, H); } catch {}
+          drawBrand(progress);
+        }
         
         // Stop recording only after full brand animation completes
         if (progress >= 1 && !brandStopScheduled && recordingRef.current) {
@@ -2069,39 +2076,45 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
           } catch { /* cross-origin or not-ready — skip frame */ }
         }
 
-        // --- NEW PREMIUM HUD LAYOUT for 1080p ---
-        // (W=1080, H=1920)
-        
-        // 1. Map Broad View Widget (Top-Right) — pipX/pipY/pipW/pipH pre-computed above startRecording
-        drawBroadMap(idx, pipX, pipY, pipW, pipH);
+        if (!hideOverlayRef.current) {
+          // --- NEW PREMIUM HUD LAYOUT for 1080p ---
+          // (W=1080, H=1920)
 
-        // 2. Altimetry (Bottom-Left / Bottom)
-        drawAltimetry(idx);
+          // 1. Map Broad View Widget (Top-Right) — pipX/pipY/pipW/pipH pre-computed above startRecording
+          drawBroadMap(idx, pipX, pipY, pipW, pipH);
 
-        // 3. Telemetry HUD (Top-Left)
-        drawTelemetry(idx);
+          // 2. Altimetry (Bottom-Left / Bottom)
+          drawAltimetry(idx);
 
-        // Pre-brand fade overlay — drawn last so it covers everything
-        const fade = preBrandFadeRef.current;
-        if (fade > 0) {
-          ctx.globalAlpha = fade;
-          ctx.fillStyle = "#050505";
-          ctx.fillRect(0, 0, W, H);
-          ctx.globalAlpha = 1;
+          // 3. Telemetry HUD (Top-Left)
+          drawTelemetry(idx);
+
+          // Pre-brand fade overlay — drawn last so it covers everything
+          const fade = preBrandFadeRef.current;
+          if (fade > 0) {
+            ctx.globalAlpha = fade;
+            ctx.fillStyle = "#050505";
+            ctx.fillRect(0, 0, W, H);
+            ctx.globalAlpha = 1;
+          }
         }
 
       } else {
 
         // Scenario A: Short Activity or INTRO — Map layout
-        try { ctx.drawImage(mapCanvas, 0, 0, W, H); } catch {}
-
-        if (vm === "INTRO") {
-          if (introStartTime === 0) introStartTime = performance.now();
-          drawIntro(performance.now() - introStartTime);
-        } else if (vm === "MAP") {
-          drawTelemetry(idx);
-          drawMarker(idx);
-          drawAltimetry(idx);
+        if (!hideOverlayRef.current) {
+          try { ctx.drawImage(mapCanvas, 0, 0, W, H); } catch {}
+          if (vm === "INTRO") {
+            if (introStartTime === 0) introStartTime = performance.now();
+            drawIntro(performance.now() - introStartTime);
+          } else if (vm === "MAP") {
+            drawTelemetry(idx);
+            drawMarker(idx);
+            drawAltimetry(idx);
+          }
+        } else {
+          // hideOverlay: still advance introStartTime so timing/duration is preserved
+          if (vm === "INTRO" && introStartTime === 0) introStartTime = performance.now();
         }
       }
 
