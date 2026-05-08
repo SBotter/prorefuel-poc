@@ -10,23 +10,23 @@ function IgIcon({ size = 24 }: { size?: number }) {
   );
 }
 
-export default function Mobile2Page() {
+export default function MobilePage() {
   return (
     <main className="min-h-screen bg-[#050505] text-white font-sans overflow-x-hidden">
 
       <div className="fixed inset-0 z-0 pointer-events-none">
-        <div className="absolute top-[-20%] left-[-10%] w-[80%] h-[60%] bg-amber-500/6 blur-[160px] rounded-full" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[50%] bg-amber-600/4 blur-[140px] rounded-full" />
+        <div className="absolute top-[-20%] left-[-10%] w-[80%] h-[60%] bg-amber-500/6 blur-[80px] rounded-full" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[50%] bg-amber-600/4 blur-[80px] rounded-full" />
       </div>
 
       {/* NAVBAR */}
-      <nav className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-5 py-4 backdrop-blur-xl bg-black/40 border-b border-white/5">
+      <nav className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-5 py-4 backdrop-blur-md bg-black/40 border-b border-white/5">
         <div className="flex items-center gap-2">
           <span className="text-xl font-black tracking-tight text-white">LENS</span>
           <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-0.5">by ProRefuel</span>
         </div>
         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/15 border border-amber-500/30">
-          <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
           <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Beta v1.0.30</span>
         </div>
       </nav>
@@ -34,8 +34,8 @@ export default function Mobile2Page() {
       {/* HERO */}
       <section className="relative z-10 pt-24 px-5">
 
-        <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-900/80 border border-amber-500/25 mb-7 w-fit backdrop-blur">
-          <svg viewBox="0 0 24 24" className="w-3 h-3 fill-amber-500 animate-pulse" stroke="none">
+        <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-900/80 border border-amber-500/25 mb-7 w-fit backdrop-blur-sm">
+          <svg viewBox="0 0 24 24" className="w-3 h-3 fill-amber-500" stroke="none">
             <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
           </svg>
           <span className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-200">Beta v1.0.30 · 100% Free</span>
@@ -43,7 +43,7 @@ export default function Mobile2Page() {
 
         <h1 className="text-5xl font-black tracking-tight leading-[0.88] mb-5">
           STOP SHARING<br />RAW FOOTAGE.<br />
-          <span className="text-amber-500 drop-shadow-[0_0_30px_rgba(245,158,11,0.4)]">
+          <span className="text-amber-500">
             START SHARING<br />STORIES.
           </span>
         </h1>
@@ -56,10 +56,9 @@ export default function Mobile2Page() {
         </p>
 
         {/* Render time hero stat */}
-        <div className="relative mb-4 rounded-2xl overflow-hidden border border-amber-500/40 bg-gradient-to-br from-amber-500/15 to-amber-600/5 px-5 py-5 flex items-center gap-4">
-          <div className="absolute inset-0 bg-amber-500/5 blur-xl pointer-events-none" />
+        <div className="relative mb-4 rounded-2xl overflow-hidden border border-amber-500/40 bg-amber-500/10 px-5 py-5 flex items-center gap-4">
           <div className="relative flex flex-col items-center justify-center shrink-0 w-24">
-            <span className="text-5xl font-black text-amber-400 leading-none drop-shadow-[0_0_20px_rgba(245,158,11,0.7)]">&lt;60s</span>
+            <span className="text-5xl font-black text-amber-400 leading-none">&lt;60s</span>
             <span className="text-[9px] font-black uppercase tracking-widest text-amber-500/70 mt-1">render time</span>
           </div>
           <div className="relative flex flex-col gap-0.5">
@@ -83,12 +82,11 @@ export default function Mobile2Page() {
           ))}
         </div>
 
-        {/* Phone mockup with LENS edit video */}
+        {/* Phone mockup */}
         <div className="mb-12">
           <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500/70 mb-6 text-center">
             Your edit, ready to post
           </p>
-          {/* 5mm padding ≈ 19px each side */}
           <div style={{ margin: "0 19px" }}>
             <PhoneMockup />
           </div>
@@ -96,7 +94,7 @@ export default function Mobile2Page() {
 
         {/* Instagram */}
         <div className="flex items-center justify-center gap-2 mb-10">
-          <div className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-gradient-to-r from-purple-600/20 to-pink-600/20 border border-purple-500/30">
+          <div className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-purple-600/15 border border-purple-500/30">
             <IgIcon size={15} />
             <span className="text-[13px] font-black text-white tracking-wide">@LENS.video</span>
           </div>
@@ -105,7 +103,7 @@ export default function Mobile2Page() {
 
       {/* DESKTOP CTA */}
       <section className="relative z-10 px-5 py-10 border-t border-zinc-800/40">
-        <div className="bg-gradient-to-br from-amber-500/10 to-amber-600/5 border border-amber-500/25 rounded-[2rem] p-7 text-center">
+        <div className="bg-amber-500/10 border border-amber-500/25 rounded-[2rem] p-7 text-center">
           <div className="w-14 h-14 rounded-2xl bg-zinc-800 flex items-center justify-center text-2xl mx-auto mb-4">🖥️</div>
           <p className="text-[10px] font-black uppercase tracking-[0.35em] text-amber-500/70 mb-2">Create Your Video</p>
           <h2 className="text-2xl font-black tracking-tight mb-3">
@@ -156,7 +154,7 @@ export default function Mobile2Page() {
           Share your LENS edit on Instagram and tag <strong className="text-white">@LENS.video</strong>.
         </p>
         <div className="flex flex-wrap gap-2 justify-center">
-          <span className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-purple-600/15 to-pink-600/15 border border-purple-500/25 text-[12px] font-black text-white">📸 Share your ride</span>
+          <span className="px-4 py-2.5 rounded-xl bg-purple-600/15 border border-purple-500/25 text-[12px] font-black text-white">📸 Share your ride</span>
           <span className="px-4 py-2.5 rounded-xl bg-zinc-900/60 border border-zinc-700/50 text-[12px] font-black text-zinc-300">🏆 Get featured</span>
         </div>
       </section>
