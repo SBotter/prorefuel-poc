@@ -1,4 +1,4 @@
-import VideoReveal from "./VideoReveal";
+import PhoneMockup from "./PhoneMockup";
 
 function IgIcon({ size = 24 }: { size?: number }) {
   return (
@@ -10,7 +10,7 @@ function IgIcon({ size = 24 }: { size?: number }) {
   );
 }
 
-export default function Mobile4Page() {
+export default function Mobile2Page() {
   return (
     <main className="min-h-screen bg-[#050505] text-white font-sans overflow-x-hidden">
 
@@ -27,7 +27,7 @@ export default function Mobile4Page() {
         </div>
         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/15 border border-amber-500/30">
           <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-          <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Free Beta</span>
+          <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Beta v1.0.30</span>
         </div>
       </nav>
 
@@ -83,9 +83,15 @@ export default function Mobile4Page() {
           ))}
         </div>
 
-        {/* Video comparison */}
-        <div className="w-full max-w-[300px] mx-auto mb-10">
-          <VideoReveal />
+        {/* Phone mockup with LENS edit video */}
+        <div className="mb-12">
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500/70 mb-6 text-center">
+            Your edit, ready to post
+          </p>
+          {/* 5mm padding ≈ 19px each side */}
+          <div style={{ margin: "0 19px" }}>
+            <PhoneMockup />
+          </div>
         </div>
 
         {/* Instagram */}
