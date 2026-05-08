@@ -685,10 +685,24 @@ export default function ProRefuelPage() {
             Import your GPX activity and GoPro video. LENS reads your GPS data, detects the best moments, and generates a cinematic 9:16 edit — synced, scored, and ready to post. In seconds.
           </p>
 
+          {/* Render time hero stat */}
+          <div className="relative mb-5 rounded-2xl overflow-hidden border border-amber-500/40 bg-gradient-to-br from-amber-500/15 to-amber-600/5 px-6 py-5 flex items-center gap-5 w-fit">
+            <div className="absolute inset-0 bg-amber-500/5 blur-xl pointer-events-none" />
+            <div className="relative flex flex-col items-center justify-center shrink-0">
+              <span className="text-6xl font-black text-amber-400 leading-none drop-shadow-[0_0_24px_rgba(245,158,11,0.7)]">&lt;60s</span>
+              <span className="text-[9px] font-black uppercase tracking-widest text-amber-500/70 mt-1">render time</span>
+            </div>
+            <div className="relative flex flex-col gap-0.5 max-w-[220px]">
+              <span className="text-[10px] font-black uppercase tracking-widest text-amber-500">Lightning Fast</span>
+              <p className="text-white text-sm font-bold leading-snug">Your cinematic edit,<br />ready in under a minute.</p>
+              <p className="text-zinc-500 text-[11px] mt-1">From raw footage to shareable story — no waiting, no cloud.</p>
+            </div>
+          </div>
+
+          {/* Secondary stats */}
           <div className="flex flex-wrap gap-6 mb-10">
             {[
               { value: "18Hz", label: "GPS Precision" },
-              { value: "< 60s", label: "Generate Time" },
               { value: "9:16", label: "Insta Ready" },
               { value: "0 Upload", label: "100% Private" },
             ].map(s => (

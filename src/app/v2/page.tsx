@@ -601,7 +601,7 @@ export default function LensV2Page() {
           {/* Eyebrow */}
           <div className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-zinc-900/80 border border-amber-500/25 mb-8 w-fit shadow-xl backdrop-blur">
             <Zap size={13} className="text-amber-500 fill-amber-500 animate-pulse" />
-            <span className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-200">Beta v1.0 &nbsp;·&nbsp; 100% Free</span>
+            <span className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-200">Beta v1.0.30 &nbsp;·&nbsp; 100% Free</span>
           </div>
 
           {/* Headline */}
