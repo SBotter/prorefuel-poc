@@ -8,8 +8,7 @@ import React, {
   useImperativeHandle,
   forwardRef,
 } from "react";
-import mapboxgl from "mapbox-gl";
-import "mapbox-gl/dist/mapbox-gl.css";
+
 import { GPSPoint } from "@/lib/media/GoProEngineClient";
 import { ActionSegment } from "@/lib/engine/TelemetryCrossRef";
 import { StoryPlan } from "@/lib/engine/StorytellingProcessor";
@@ -106,10 +105,7 @@ const MapEngine = forwardRef(
     }: MapEngineProps,
     ref,
   ) => {
-    const mapContainerRef = useRef<HTMLDivElement>(null);
-    const mapRef = useRef<mapboxgl.Map | null>(null);
     const videoRef = useRef<HTMLVideoElement>(null);
-    const markerRef = useRef<mapboxgl.Marker | null>(null);
     const requestRef = useRef<number>(0);
     const recordingRef = useRef<{
       recorder: MediaRecorder;
@@ -318,84 +314,12 @@ const MapEngine = forwardRef(
     }, [activityPoints]);
 
     useEffect(() => {
-      if (!mapContainerRef.current || !activityPoints.length || mapRef.current)
-        return;
-
-      mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
-      mapContainerRef.current.innerHTML = "";
-
-      const map = new mapboxgl.Map({
-        container: mapContainerRef.current,
-        style: "mapbox://styles/mapbox/satellite-v9",
-        center: [activityPoints[0].lon, activityPoints[0].lat],
-        zoom: 18,
-        pitch: 60,
-        bearing: calculateBearing(
-          activityPoints[0],
-          activityPoints[Math.min(10, activityPoints.length - 1)],
-        ),
-        attributionControl: false,
-        logoPosition: "top-left",
-      });
-
-      map.on("error", (e) => {
-        // Tile load errors and style errors are non-fatal — log and continue
-        console.warn("[MapEngine] Mapbox error:", e.error?.message ?? e);
-      });
-
-      map.on("load", () => {
-        map.addSource("mapbox-dem", {
-          type: "raster-dem",
-          url: "mapbox://mapbox.mapbox-terrain-dem-v1",
-          tileSize: 512,
-          maxzoom: 14,
-        });
-        map.setTerrain({ source: "mapbox-dem", exaggeration: 1.5 });
-
-        map.addSource("route", {
-          type: "geojson",
-          data: {
-            type: "Feature",
-            properties: {},
-            geometry: {
-              type: "LineString",
-              coordinates: activityPoints.map((pt: any) => [pt.lon, pt.lat]),
-            },
-          },
-        });
-
-        map.addLayer({
-          id: "route-line",
-          type: "line",
-          source: "route",
-          paint: {
-            "line-color": "#f59e0b",
-            "line-width": 8,
-            "line-opacity": 0.8,
-          },
-        });
-
-        const el = document.createElement("div");
-        el.className =
-          "w-6 h-6 rounded-full bg-amber-500 border-4 border-white shadow-[0_0_20px_rgba(245,158,11,1)] transition-all duration-300";
-
-        markerRef.current = new mapboxgl.Marker(el)
-          .setLngLat([activityPoints[0].lon, activityPoints[0].lat])
-          .addTo(map);
-
-        mapRef.current = map;
-
-        if (autoRecordRef.current && startRecordingRef.current) {
-          setTimeout(() => startRecordingRef.current!(), 100);
-        }
-      });
-
+      if (!activityPoints.length) return;
+      if (autoRecordRef.current && startRecordingRef.current) {
+        setTimeout(() => startRecordingRef.current!(), 100);
+      }
       return () => {
         if (requestRef.current) cancelAnimationFrame(requestRef.current);
-        if (mapRef.current) {
-          mapRef.current.remove();
-          mapRef.current = null;
-        }
       };
     }, [activityPoints]);
 
@@ -437,7 +361,7 @@ const MapEngine = forwardRef(
       let prevActionSegIdx = -1; // closure: tracks last ACTION segIdx for crossfade detection
 
       const animate = (now: number) => {
-        if (!state.current.isStarted || !mapRef.current || !storyPlan) return;
+        if (!state.current.isStarted || !storyPlan) return;
 
         const elapsedTotal = (now - state.current.startTime) / 1000;
         let runningTime = 0;
@@ -636,7 +560,6 @@ const MapEngine = forwardRef(
           const fraction = state.current.virtualIndex - idx;
           const interpLon = pt1.lon + (pt2.lon - pt1.lon) * fraction;
           const interpLat = pt1.lat + (pt2.lat - pt1.lat) * fraction;
-          markerRef.current?.setLngLat([interpLon, interpLat]);
 
           const target =
             activityPoints[Math.min(idx + 15, activityPoints.length - 1)];
@@ -649,20 +572,6 @@ const MapEngine = forwardRef(
 
             // MUDANÇA 2+3: zoom and pitch respond to editingRhythm
             const _rhythm = storyPlan?.narrativePlan?.editingRhythm ?? "MEDIUM";
-            const baseMapZoom =
-              _rhythm === "FAST" ? 17 : _rhythm === "SLOW" ? 19 : 18;
-            const basePitch =
-              _rhythm === "FAST" ? 70 : _rhythm === "SLOW" ? 45 : 60;
-            const tZoom = currentSeg.type === "ACTION" ? 14 : baseMapZoom;
-            const tPitch =
-              currentSeg.type === "ACTION"
-                ? currentSeg.title?.includes("DOWNHILL")
-                  ? 85
-                  : basePitch - 10
-                : basePitch;
-            state.current.pitch += (tPitch - state.current.pitch) * 0.1;
-            state.current.zoom += (tZoom - state.current.zoom) * 0.1;
-
             if (currentSeg.type === "ACTION") {
               // ACTION mode: Mapbox goes completely idle — canvas 2D mini-map handles the widget
               // Redraw mini-map at ~5fps (no need for 60fps on a small position indicator)
@@ -722,20 +631,6 @@ const MapEngine = forwardRef(
                   }
                 }
               }
-            } else {
-              // MAP / INTRO / BRAND: Mapbox runs normally
-              let shakeX = 0,
-                shakeY = 0;
-              if (currentSeg.title?.includes("TECHNICAL")) {
-                shakeX = (Math.random() - 0.5) * 0.0005;
-                shakeY = (Math.random() - 0.5) * 0.0005;
-              }
-              mapRef.current!.jumpTo({
-                center: [interpLon + shakeX, interpLat + shakeY],
-                bearing: state.current.currentBearing,
-                pitch: state.current.pitch,
-                zoom: state.current.zoom,
-              });
             }
           }
         }
@@ -745,11 +640,8 @@ const MapEngine = forwardRef(
     };
 
     const startRecording = async () => {
-      const mapCanvas = mapContainerRef.current?.querySelector(
-        "canvas",
-      ) as HTMLCanvasElement | null;
       const videoEl = videoRef.current;
-      if (!mapCanvas) return;
+      if (!videoEl) return;
 
       // FORCE 1080p Portrait (Cinematic High-Res)
       const W = 1080;
@@ -1572,27 +1464,12 @@ const MapEngine = forwardRef(
         ctx.restore();
       };
 
-      // ── Draw GPS marker dot at current map position ───────────────────────────
+      // ── Draw GPS marker dot (no-op without Mapbox projection) ───────────────
       const drawMarker = (
-        idx: number,
-        pip?: { x: number; y: number; w: number; h: number },
+        _idx: number,
+        _pip?: { x: number; y: number; w: number; h: number },
       ) => {
-        if (!mapRef.current) return;
-        const pt1 = activityPoints[idx];
-        const pt2 =
-          activityPoints[Math.min(idx + 1, activityPoints.length - 1)];
-        const frac = state.current.virtualIndex - idx;
-        const lon = pt1.lon + (pt2.lon - pt1.lon) * frac;
-        const lat = pt1.lat + (pt2.lat - pt1.lat) * frac;
-
-        // Project GPS → CSS px on Mapbox canvas
-        const containerRect = mapContainerRef.current!.getBoundingClientRect();
-        const projected = mapRef.current.project([lon, lat]);
-        const nx = projected.x / containerRect.width;
-        const ny = projected.y / containerRect.height;
-
-        const cx = pip ? pip.x + nx * pip.w : nx * W;
-        const cy = pip ? pip.y + ny * pip.h : ny * H;
+        return;
         const dotR = pip ? pip.w * 0.05 : W * 0.015;
         const glowR = dotR * 3;
 
@@ -1813,9 +1690,16 @@ const MapEngine = forwardRef(
 
         ctx.save();
 
-        // ── 1. Cinematic vignette — reuse pre-created gradient (no allocation per frame) ──
+        // ── 1. Cinematic vignette + bottom contrast overlay ──────────────────────
         ctx.fillStyle = introVignette;
         ctx.fillRect(0, 0, W, H);
+        // Extra bottom-heavy gradient so lower text pops against B&W background
+        const _contrastGrad = ctx.createLinearGradient(0, H * 0.30, 0, H);
+        _contrastGrad.addColorStop(0,   "rgba(0,0,0,0)");
+        _contrastGrad.addColorStop(0.25, "rgba(0,0,0,0.55)");
+        _contrastGrad.addColorStop(1,   "rgba(0,0,0,0.82)");
+        ctx.fillStyle = _contrastGrad;
+        ctx.fillRect(0, H * 0.30, W, H * 0.70);
 
         // ── 2. Letterbox bars — retract from 30% → 5px over 700ms ─────────────
         const barProg = easeOut(elapsed / 700);
@@ -1918,12 +1802,12 @@ const MapEngine = forwardRef(
             const locY =
               blockBottom + Math.round(W * 0.055) + (1 - locAlpha) * 10;
             ctx.save();
-            ctx.globalAlpha = locAlpha * 0.62;
-            shadow("rgba(0,0,0,0.9)", 10);
-            ctx.font = `400 ${Math.round(W * 0.032)}px sans-serif`;
-            ctx.fillStyle = "#d0d0d0";
+            ctx.globalAlpha = locAlpha * 0.92;
+            shadow("rgba(0,0,0,0.9)", 14);
+            ctx.font = `700 ${Math.round(W * 0.034)}px sans-serif`;
+            ctx.fillStyle = "#f59e0b";
             ctx.textAlign = "center";
-            ctx.letterSpacing = "0.18em";
+            ctx.letterSpacing = "0.12em";
             ctx.fillText(actLocation.toUpperCase(), W / 2, locY);
             ctx.letterSpacing = "0em";
             ctx.restore();
@@ -2001,9 +1885,9 @@ const MapEngine = forwardRef(
 
         const listTop = H * 0.6;
         const rowH = Math.round(H * 0.068);
-        const padL = Math.round(W * 0.08);
-        const padR = Math.round(W * 0.08);
-        const lblFont = `500 ${Math.round(W * 0.024)}px sans-serif`;
+        const padL = Math.round(W * 0.15);
+        const padR = Math.round(W * 0.15);
+        const lblFont = `700 ${Math.round(W * 0.026)}px sans-serif`;
         const valFont = `900 ${Math.round(W * 0.068)}px sans-serif`;
 
         statRows.forEach((s, i) => {
@@ -2023,10 +1907,10 @@ const MapEngine = forwardRef(
           ctx.lineTo(W - padR, rowY);
           ctx.stroke();
 
-          // Label — left, dim small caps
-          shadow("rgba(0,0,0,0.8)", 6);
+          // Label — left, amber
+          shadow("rgba(0,0,0,0.9)", 8);
           ctx.font = lblFont;
-          ctx.fillStyle = "rgba(255,255,255,0.38)";
+          ctx.fillStyle = "#f59e0b";
           ctx.textAlign = "left";
           ctx.fillText(s.label, padL, rowY + rowH * 0.7);
 
@@ -2053,8 +1937,23 @@ const MapEngine = forwardRef(
           noShadow();
         });
 
-        // ── 8. Equipment logos footer — logos only, frosted pill background ──────
-        // Rule: show logo if available, nothing if not. No text labels.
+        // ── 8. @LENS.video — delicate, above device card ─────────────────────────
+        const igAlpha = easeOut(clamp01((elapsed - 2200) / 450));
+        if (igAlpha > 0.01) {
+          ctx.save();
+          ctx.globalAlpha = igAlpha * 0.82;
+          shadow("rgba(0,0,0,0.9)", 14);
+          ctx.font = `900 italic ${Math.round(W * 0.040)}px sans-serif`;
+          ctx.fillStyle = "#f59e0b";
+          ctx.textAlign = "center";
+          ctx.letterSpacing = "-0.01em";
+          ctx.fillText("@LENS.video", W / 2, H * 0.832);
+          ctx.letterSpacing = "0em";
+          ctx.restore();
+          noShadow();
+        }
+
+        // ── 9. Equipment logos footer — logos only, frosted pill ──────────────
         const equipAlpha = easeOut(clamp01((elapsed - 2400) / 500));
         const equipDevices = (
           [
@@ -2066,165 +1965,53 @@ const MapEngine = forwardRef(
         if (equipAlpha > 0.01 && equipDevices.length > 0) {
           ctx.save();
 
-          const iconH = Math.round(H * 0.03);
-          const padH = Math.round(W * 0.04); // horizontal padding inside pill
-          const padV = Math.round(H * 0.009); // vertical padding
-          const dotGap = Math.round(W * 0.055); // space around separator dot
+          const iconH = Math.round(H * 0.024);
+          const padH  = Math.round(W * 0.055);
+          const padV  = Math.round(H * 0.010);
+          const sepGap = Math.round(W * 0.045);
 
-          // Measure each logo width
           const imgs = equipDevices.map((d) => getLogoImg(d.logoFile));
-          const widths = imgs.map(
-            (img) =>
-              img.complete && img.naturalWidth > 0
-                ? (img.naturalWidth / img.naturalHeight) * iconH
-                : iconH, // fallback square until loaded
+          const widths = imgs.map((img) =>
+            img.complete && img.naturalWidth > 0
+              ? (img.naturalWidth / img.naturalHeight) * iconH
+              : iconH,
           );
+
           const totalLogoW =
             widths.reduce((a, b) => a + b, 0) +
-            (equipDevices.length === 2 ? dotGap : 0);
+            (equipDevices.length - 1) * sepGap;
           const pillW = totalLogoW + padH * 2;
           const pillH = iconH + padV * 2;
           const pillX = (W - pillW) / 2;
-          const pillY = Math.round(H * 0.862) - pillH;
+          const pillY = Math.round(H * 0.895) - pillH;
+          const pr = pillH / 2;
 
-          // Frosted glass pill
-          ctx.globalAlpha = equipAlpha * 0.9;
-          ctx.fillStyle = "rgba(255,255,255,0.18)";
-          const r = pillH / 2;
+          // Single pill — light frosted, no amber border
+          ctx.globalAlpha = equipAlpha * 0.80;
+          ctx.fillStyle = "rgba(255,255,255,0.20)";
           ctx.beginPath();
-          if ((ctx as any).roundRect) {
-            (ctx as any).roundRect(pillX, pillY, pillW, pillH, r);
-          } else {
-            ctx.moveTo(pillX + r, pillY);
-            ctx.lineTo(pillX + pillW - r, pillY);
-            ctx.arcTo(pillX + pillW, pillY, pillX + pillW, pillY + r, r);
-            ctx.lineTo(pillX + pillW, pillY + pillH - r);
-            ctx.arcTo(
-              pillX + pillW,
-              pillY + pillH,
-              pillX + pillW - r,
-              pillY + pillH,
-              r,
-            );
-            ctx.lineTo(pillX + r, pillY + pillH);
-            ctx.arcTo(pillX, pillY + pillH, pillX, pillY + pillH - r, r);
-            ctx.lineTo(pillX, pillY + r);
-            ctx.arcTo(pillX, pillY, pillX + r, pillY, r);
-            ctx.closePath();
-          }
+          (ctx as any).roundRect
+            ? (ctx as any).roundRect(pillX, pillY, pillW, pillH, pr)
+            : ctx.rect(pillX, pillY, pillW, pillH);
           ctx.fill();
-          ctx.strokeStyle = "rgba(255,255,255,0.30)";
+          ctx.strokeStyle = "rgba(255,255,255,0.20)";
           ctx.lineWidth = 1;
           ctx.stroke();
 
-          // Draw logos
-          ctx.globalAlpha = equipAlpha;
-          const logoY = pillY + padV;
-
-          if (equipDevices.length === 2) {
-            const cx = W / 2;
-            // Left logo (right-aligned to center gap)
-            if (widths[0] > 0)
-              ctx.drawImage(
-                imgs[0],
-                cx - dotGap / 2 - widths[0],
-                logoY,
-                widths[0],
-                iconH,
-              );
-            // Amber separator dot
-            ctx.globalAlpha = equipAlpha * 0.55;
-            ctx.fillStyle = "#f59e0b";
-            ctx.beginPath();
-            ctx.arc(cx, pillY + pillH / 2, 2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.globalAlpha = equipAlpha;
-            // Right logo
-            if (widths[1] > 0)
-              ctx.drawImage(imgs[1], cx + dotGap / 2, logoY, widths[1], iconH);
-          } else {
-            if (widths[0] > 0)
-              ctx.drawImage(
-                imgs[0],
-                (W - widths[0]) / 2,
-                logoY,
-                widths[0],
-                iconH,
-              );
-          }
+          // Logos side by side
+          let lx = pillX + padH;
+          equipDevices.forEach((_, i) => {
+            if (widths[i] > 0) {
+              ctx.globalAlpha = equipAlpha * 0.90;
+              ctx.drawImage(imgs[i], lx, pillY + padV, widths[i], iconH);
+            }
+            lx += widths[i] + sepGap;
+          });
 
           ctx.restore();
         }
 
-        // ── 9. Instagram handle — fades in with equipment logos ──────────────────
-        const igIntroAlpha = easeOut(clamp01((elapsed - 2550) / 450));
-        if (igIntroAlpha > 0.01) {
-          ctx.save();
-          ctx.globalAlpha = igIntroAlpha * 0.58;
 
-          const igFont = Math.round(W * 0.032);
-          ctx.font = `400 ${igFont}px sans-serif`;
-          ctx.textAlign = "center";
-          const handle = "@LENS.video";
-          const textW = ctx.measureText(handle).width;
-          const iconSz = igFont * 1.05;
-          const gap = igFont * 0.38;
-          const totalW = iconSz + gap + textW;
-          const baseY = H * 0.912;
-          const iconX = W / 2 - totalW / 2;
-          const iy = baseY - iconSz * 0.82;
-
-          const col = "rgba(210,210,210,0.88)";
-          ctx.strokeStyle = col;
-          ctx.lineWidth = iconSz * 0.09;
-          ctx.lineCap = "round";
-          const r2 = iconSz * 0.27;
-          ctx.beginPath();
-          ctx.moveTo(iconX + r2, iy);
-          ctx.lineTo(iconX + iconSz - r2, iy);
-          ctx.quadraticCurveTo(iconX + iconSz, iy, iconX + iconSz, iy + r2);
-          ctx.lineTo(iconX + iconSz, iy + iconSz - r2);
-          ctx.quadraticCurveTo(
-            iconX + iconSz,
-            iy + iconSz,
-            iconX + iconSz - r2,
-            iy + iconSz,
-          );
-          ctx.lineTo(iconX + r2, iy + iconSz);
-          ctx.quadraticCurveTo(iconX, iy + iconSz, iconX, iy + iconSz - r2);
-          ctx.lineTo(iconX, iy + r2);
-          ctx.quadraticCurveTo(iconX, iy, iconX + r2, iy);
-          ctx.closePath();
-          ctx.stroke();
-
-          ctx.beginPath();
-          ctx.arc(
-            iconX + iconSz / 2,
-            iy + iconSz / 2,
-            iconSz * 0.27,
-            0,
-            Math.PI * 2,
-          );
-          ctx.stroke();
-
-          ctx.fillStyle = col;
-          ctx.beginPath();
-          ctx.arc(
-            iconX + iconSz * 0.73,
-            iy + iconSz * 0.24,
-            iconSz * 0.08,
-            0,
-            Math.PI * 2,
-          );
-          ctx.fill();
-
-          ctx.fillStyle = col;
-          ctx.font = `400 ${igFont}px sans-serif`;
-          ctx.textAlign = "left";
-          ctx.fillText(handle, iconX + iconSz + gap, baseY);
-
-          ctx.restore();
-        }
 
         ctx.restore();
       };
@@ -2432,6 +2219,28 @@ const MapEngine = forwardRef(
       const clipSnapCanvas = new OffscreenCanvas(W, H);
       const clipSnapCtx = clipSnapCanvas.getContext("2d")!;
 
+      // Capture the frozen intro frame ONCE at the exact first ACTION frame.
+      // Seek first so the frame is correct, then capture — avoids per-frame drawImage(videoEl)
+      // during INTRO/BRAND which would stress the decoder and cause ACTION lag.
+      const frozenFrameCanvas = document.createElement("canvas");
+      frozenFrameCanvas.width = W;
+      frozenFrameCanvas.height = H;
+      const frozenCtx = frozenFrameCanvas.getContext("2d")!;
+      const firstAction = storyPlan?.segments?.find(
+        (s: any) => s.type === "ACTION" && typeof s.videoStartTime === "number"
+      );
+      if (firstAction?.videoStartTime !== undefined) {
+        videoEl.currentTime = firstAction.videoStartTime;
+        await new Promise<void>(resolve => {
+          videoEl.addEventListener("seeked", resolve as EventListener, { once: true });
+        });
+      }
+      try {
+        frozenCtx.filter = "grayscale(1)";
+        frozenCtx.drawImage(videoEl, 0, 0, W, H);
+        frozenCtx.filter = "none";
+      } catch {}
+
       const compositeLoop = (now: DOMHighResTimeStamp) => {
         if (!recordingRef.current) return;
 
@@ -2483,10 +2292,7 @@ const MapEngine = forwardRef(
           const elapsed = performance.now() - brandStartTime;
           const progress = Math.min(elapsed / BRAND_DURATION, 1);
           if (!hideOverlayRef.current) {
-            // Draw map base then overlay brand wipe
-            try {
-              ctx.drawImage(mapCanvas, 0, 0, W, H);
-            } catch {}
+            ctx.drawImage(frozenFrameCanvas, 0, 0, W, H);
             drawBrand(progress);
           }
 
@@ -2600,11 +2406,9 @@ const MapEngine = forwardRef(
             }
           }
         } else {
-          // Scenario A: Short Activity or INTRO — Map layout
+          // Scenario A: Short Activity or INTRO — frozen video frame as background
           if (!hideOverlayRef.current) {
-            try {
-              ctx.drawImage(mapCanvas, 0, 0, W, H);
-            } catch {}
+            ctx.drawImage(frozenFrameCanvas, 0, 0, W, H);
             if (vm === "INTRO") {
               if (introStartTime === 0) introStartTime = performance.now();
               drawIntro(performance.now() - introStartTime);
@@ -2735,10 +2539,7 @@ const MapEngine = forwardRef(
         <style
           dangerouslySetInnerHTML={{
             __html: `
-        .mapbox-wrapper-hack .mapboxgl-canvas { width: 100% !important; height: 100% !important; }
-        .mapbox-wrapper-hack { outline: none; }
-
-        @keyframes introBarTop    { from { height: 30% } to { height: 5px } }
+@keyframes introBarTop    { from { height: 30% } to { height: 5px } }
         @keyframes introBarBot    { from { height: 30% } to { height: 5px } }
         @keyframes introFadeSlide { from { opacity: 0; transform: translateY(14px) } to { opacity: 1; transform: translateY(0) } }
         @keyframes introScaleIn   { from { opacity: 0; transform: scale(1.14) } to { opacity: 1; transform: scale(1) } }
@@ -2775,22 +2576,6 @@ const MapEngine = forwardRef(
           }}
         />
 
-        {/* 1. MAPA DYNAMIC LAYER — Mapbox fullscreen (MAP/INTRO/BRAND only; idle in ACTION) */}
-        <div
-          ref={mapContainerRef}
-          style={{
-            width: "100%",
-            height: "100%",
-            transition: "opacity 800ms ease",
-          }}
-          className={`absolute z-30 bg-zinc-900 overflow-hidden
-          ${
-            viewMode === "ACTION"
-              ? "opacity-0 pointer-events-none"
-              : "opacity-100"
-          }
-        `}
-        />
 
         {/* 1b. MINI-MAP Canvas 2D (ACTION mode only) — polyline + dot, Mapbox-free, low CPU */}
         <canvas
@@ -2935,7 +2720,7 @@ const MapEngine = forwardRef(
           className={`absolute inset-0 z-50 flex flex-col items-center justify-center transition-opacity duration-700 ${viewMode === "INTRO" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
           style={{
             background:
-              "radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.85) 100%)",
+              "radial-gradient(ellipse at 50% 35%, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.88) 100%)",
           }}
         >
           {/* Cinematic letterbox — bars retract from 30% → 5px */}
@@ -3008,12 +2793,12 @@ const MapEngine = forwardRef(
                     className="select-none text-center block"
                     style={{
                       marginTop: "0.30em",
-                      fontSize: `${Math.round(fontPx * 0.3)}px`,
-                      fontWeight: 300,
+                      fontSize: `${Math.round(fontPx * 0.32)}px`,
+                      fontWeight: 700,
                       fontStyle: "normal",
-                      letterSpacing: "0.22em",
-                      color: "rgba(210,210,210,0.72)",
-                      textShadow: "0 2px 12px rgba(0,0,0,0.95)",
+                      letterSpacing: "0.12em",
+                      color: "#f59e0b",
+                      textShadow: "0 2px 14px rgba(0,0,0,0.95)",
                       textTransform: "uppercase",
                     }}
                   >
@@ -3035,7 +2820,7 @@ const MapEngine = forwardRef(
           />
 
           {/* Stats — horizontal info rows */}
-          <div className="w-[88%] flex flex-col">
+          <div className="w-[70%] flex flex-col">
             {[
               {
                 label: "DISTANCE",
@@ -3065,11 +2850,11 @@ const MapEngine = forwardRef(
                 }}
               >
                 <span
-                  className="font-medium uppercase"
+                  className="font-bold uppercase"
                   style={{
                     fontSize: "9px",
-                    letterSpacing: "0.10em",
-                    color: "rgba(255,255,255,0.38)",
+                    letterSpacing: "0.16em",
+                    color: "#f59e0b",
                   }}
                 >
                   {s.label}
@@ -3101,60 +2886,58 @@ const MapEngine = forwardRef(
             ))}
           </div>
 
-          {/* Equipment logos — frosted glass pill, logos only, no text labels */}
+          {/* @LENS.video — delicate, above device card */}
+          <div
+            className="absolute flex justify-center"
+            style={{
+              bottom: "calc(8% + 52px)",
+              left: 0, right: 0,
+              animation: "introStatUp 450ms ease-out 2200ms both",
+            }}
+          >
+            <span style={{
+              fontStyle: "italic",
+              fontWeight: 900,
+              fontSize: "clamp(13px, 3.8vw, 16px)",
+              color: "#f59e0b",
+              letterSpacing: "-0.01em",
+              textShadow: "0 2px 14px rgba(0,0,0,0.95)",
+            }}>
+              @LENS.video
+            </span>
+          </div>
+
+          {/* Equipment — single subtle pill, logos only */}
           {(() => {
             const gpsDev = activityMeta?.gpsDevice;
             const cam = activityMeta?.camera;
-            const showGPS = gpsDev?.logoFile;
-            const showCam = cam?.logoFile;
-            if (!showGPS && !showCam) return null;
+            const srcs = [
+              gpsDev?.logoFile || null,
+              cam?.logoFile    || null,
+            ].filter(Boolean) as string[];
+            if (!srcs.length) return null;
             return (
               <div
                 className="absolute flex justify-center"
                 style={{
-                  bottom: "11%",
+                  bottom: "8%",
                   left: 0,
                   right: 0,
                   animation: "introStatUp 450ms ease-out 2400ms both",
                 }}
               >
                 <div
-                  className="flex items-center gap-4 px-5 py-[9px] rounded-full"
+                  className="flex items-center gap-5 px-5 py-2 rounded-full"
                   style={{
-                    background: "rgba(255,255,255,0.16)",
-                    backdropFilter: "blur(16px) saturate(1.6)",
-                    WebkitBackdropFilter: "blur(16px) saturate(1.6)",
-                    border: "1px solid rgba(255,255,255,0.28)",
-                    boxShadow:
-                      "0 2px 20px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.15)",
+                    background: "rgba(255,255,255,0.18)",
+                    border: "1px solid rgba(255,255,255,0.20)",
+                    backdropFilter: "blur(10px)",
+                    WebkitBackdropFilter: "blur(10px)",
                   }}
                 >
-                  {showGPS && (
-                    <img
-                      src={gpsDev!.logoFile}
-                      alt=""
-                      className="object-contain"
-                      style={{ height: "18px", width: "auto" }}
-                    />
-                  )}
-                  {showGPS && showCam && (
-                    <div
-                      className="rounded-full"
-                      style={{
-                        width: "1px",
-                        height: "16px",
-                        background: "rgba(255,255,255,0.22)",
-                      }}
-                    />
-                  )}
-                  {showCam && (
-                    <img
-                      src={cam!.logoFile}
-                      alt=""
-                      className="object-contain"
-                      style={{ height: "18px", width: "auto" }}
-                    />
-                  )}
+                  {srcs.map((src, i) => (
+                    <img key={i} src={src} alt="" className="object-contain" style={{ height: "16px", width: "auto", opacity: 0.88 }} />
+                  ))}
                 </div>
               </div>
             );
