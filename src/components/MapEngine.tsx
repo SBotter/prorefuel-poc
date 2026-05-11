@@ -1202,14 +1202,14 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
 
       // Watermark — top-right, above the mini-map widget (right: 3%, matching widget margin)
       ctx.save();
-      ctx.globalAlpha = 0.30;
+      ctx.globalAlpha = 0.60;
       ctx.font = `600 ${Math.round(W * 0.033)}px sans-serif`;
       ctx.fillStyle = "#ffffff";
       ctx.textAlign = "right";
       ctx.letterSpacing = "0.04em";
       ctx.shadowColor = "rgba(0,0,0,0.9)";
       ctx.shadowBlur = 8;
-      ctx.fillText("LENS.prorefuel.app", W - Math.round(W * 0.03), Math.round(H * 0.022));
+      ctx.fillText("LENS.prorefuel.app", W - Math.round(W * 0.05), Math.round(H * 0.05));
       ctx.letterSpacing = "0em";
       ctx.restore();
 
