@@ -1468,35 +1468,7 @@ const MapEngine = forwardRef(
       const drawMarker = (
         _idx: number,
         _pip?: { x: number; y: number; w: number; h: number },
-      ) => {
-        return;
-        const dotR = pip ? pip.w * 0.05 : W * 0.015;
-        const glowR = dotR * 3;
-
-        ctx.save();
-        // Glow — two concentric alpha circles (no gradient object allocation per frame)
-        const pulse = 1 + Math.sin(performance.now() / 200) * 0.2;
-        ctx.fillStyle = `rgba(245,158,11,${(0.28 * pulse).toFixed(2)})`;
-        ctx.beginPath();
-        ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "rgba(245,158,11,0.18)";
-        ctx.beginPath();
-        ctx.arc(cx, cy, glowR * 0.55, 0, Math.PI * 2);
-        ctx.fill();
-        // White ring
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(cx, cy, dotR * 1.2, 0, Math.PI * 2);
-        ctx.stroke();
-        // Amber fill
-        ctx.fillStyle = "#f59e0b";
-        ctx.beginPath();
-        ctx.arc(cx, cy, dotR, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      };
+      ) => { _idx; _pip; };
 
       const drawBroadMap = (
         idx: number,
@@ -2232,7 +2204,7 @@ const MapEngine = forwardRef(
       if (firstAction?.videoStartTime !== undefined) {
         videoEl.currentTime = firstAction.videoStartTime;
         await new Promise<void>(resolve => {
-          videoEl.addEventListener("seeked", resolve as EventListener, { once: true });
+          videoEl.addEventListener("seeked", () => resolve(), { once: true });
         });
       }
       try {
