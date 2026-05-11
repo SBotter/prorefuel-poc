@@ -766,7 +766,9 @@ const MapEngine = forwardRef(({ activityPoints, highlights, storyPlan, videoFile
         if (data.byteLength === 0) throw new Error("FFmpeg produced an empty MP4.");
 
         const mp4Blob = new Blob([data], { type: "video/mp4" });
-        const filename = `ProRefuel_Cinematic_${Date.now()}.mp4`;
+        const _now = new Date();
+        const _ts = `${_now.getFullYear()}${String(_now.getMonth()+1).padStart(2,'0')}${String(_now.getDate()).padStart(2,'0')}${String(_now.getHours()).padStart(2,'0')}${String(_now.getMinutes()).padStart(2,'0')}${String(_now.getSeconds()).padStart(2,'0')}`;
+        const filename = `LENS_video_${_ts}.mp4`;
         if (onDownloadReady) {
           // Mobile path: hand blob to parent (Web Share API)
           onDownloadReady(mp4Blob, filename);

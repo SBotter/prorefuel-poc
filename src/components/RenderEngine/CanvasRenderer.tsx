@@ -154,7 +154,9 @@ export function CanvasRenderer({ activityPoints, highlights, videoFile, onComple
           // BUG FIX 3: Forçar download appendando ao DOM antes de clicar
           const a = document.createElement('a');
           a.href = url;
-          a.download = `ProRefuel_Cinematic_${Date.now()}.webm`;
+          const _now = new Date();
+          const _ts = `${_now.getFullYear()}${String(_now.getMonth()+1).padStart(2,'0')}${String(_now.getDate()).padStart(2,'0')}${String(_now.getHours()).padStart(2,'0')}${String(_now.getMinutes()).padStart(2,'0')}${String(_now.getSeconds()).padStart(2,'0')}`;
+          a.download = `LENS_video_${_ts}.webm`;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
