@@ -378,22 +378,27 @@ const MapEngine = forwardRef(
           runningTime += s.durationSec;
         }
 
-        // Pre-trigger: disparar áudio da brand 2s antes para fade-in suave
-        if (!brandAudioFiredRef.current && elapsedTotal >= brandStartSec - 2) {
-          brandAudioFiredRef.current = true;
-          playBrandExit(2).catch(() => {});
-        }
-
-        // Pre-brand fade overlay — escurece o vídeo nos 2s antes do BRAND
-        // Sincronizado com o preroll de áudio: ambos começam em brandStartSec-2
-        if (elapsedTotal >= brandStartSec - 2 && elapsedTotal < brandStartSec) {
-          const t = (elapsedTotal - (brandStartSec - 2)) / 2; // 0→1 em 2s
-          // easeInCubic: começa lento, acelera — cinematográfico
-          const eased = t * t * t;
-          const fade = eased * 0.88; // máximo 88% → logo emerge do escuro
-          if (fade !== preBrandFadeRef.current) {
-            preBrandFadeRef.current = fade;
-            setPreBrandFade(fade);
+        // Pre-brand: last 3s — B&W + telemetry out + brand in, all synchronized
+        if (currentSeg && currentSeg.type === "ACTION") {
+          const noMoreAction = storyPlan.segments
+            .slice(segIdx + 1)
+            .every((s: any) => s.type !== "ACTION");
+          if (noMoreAction) {
+            const segRemaining = currentSeg.durationSec - (elapsedTotal - runningTime);
+            const t = segRemaining <= 3
+              ? Math.min(1 - segRemaining / 3, 1)
+              : 0;
+            if (t > 0 && Math.abs(t - preBrandFadeRef.current) > 0.003) {
+              preBrandFadeRef.current = t;
+              setPreBrandFade(t);
+              // B&W: 0→100% over first 60% (1.8s)
+              const grayPct = Math.min(Math.round(Math.min(t / 0.60, 1) * 100), 100);
+              const vid = videoRef.current;
+              if (vid) {
+                vid.style.filter = `grayscale(${grayPct}%)`;
+                vid.style.transition = "filter 100ms linear";
+              }
+            }
           }
         }
 
@@ -401,6 +406,8 @@ const MapEngine = forwardRef(
           if (state.current.viewMode !== "BRAND") {
             state.current.viewMode = "BRAND";
             setViewMode("BRAND");
+            // Clear direct filter (brand screen takes over)
+            if (videoRef.current) videoRef.current.style.filter = "";
           }
           return;
         }
@@ -2001,155 +2008,81 @@ const MapEngine = forwardRef(
       brandGlowGrad.addColorStop(1, "rgba(245,158,11,0)");
 
       // ── Draw BRAND finale screen (cinematic) ─────────────────────────────────
+      // drawBrand: draws brand elements only (NO background).
+      // progress 0→1: 0=invisible, 1=all elements fully visible.
+      // Timing stretched to use full range so animation completes exactly at progress=1.
       const drawBrand = (progress: number) => {
-        // progress: 0 → 1 mapped over BRAND_DURATION ms
         ctx.save();
+        const eo = (x: number) => 1 - Math.pow(1 - Math.min(Math.max(x, 0), 1), 3);
+        const cl = (x: number) => Math.min(Math.max(x, 0), 1);
 
-        // Phase 1 (0→0.35): expanding dark circle wipes the screen
-        const wipeP = Math.min(progress / 0.35, 1);
-        const r = wipeP * W * 1.8;
-        ctx.fillStyle = "#060606";
-        ctx.beginPath();
-        ctx.arc(W / 2, H / 2, r, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Phase 2 (0.3→1): fade in amber radial glow + content
-        if (progress > 0.3) {
-          const fadeIn = Math.min((progress - 0.3) / 0.3, 1);
-
-          // Amber radial glow — reuse pre-created gradient, scale via globalAlpha
-          ctx.globalAlpha = fadeIn;
-          ctx.fillStyle = brandGlowGrad;
-          ctx.fillRect(0, 0, W, H);
-
-          ctx.globalAlpha = fadeIn;
-          shadow("rgba(0,0,0,0.9)", 30);
-
-          // "LENS" — large, bold, matching landing page font-black tracking-tight
+        // ── LENS: scales 0.55→1.0 + fade, 0.22→0.55 ─────────────────────────
+        const lensProg = eo(cl((progress - 0.22) / 0.33));
+        if (lensProg > 0.01) {
+          const scale = 0.55 + 0.45 * lensProg;
+          ctx.save();
+          ctx.globalAlpha = lensProg;
+          shadow("rgba(0,0,0,0.9)", 22);
           ctx.font = `900 ${Math.round(W * 0.26)}px sans-serif`;
           ctx.fillStyle = "rgba(255,255,255,0.97)";
           ctx.textAlign = "center";
           ctx.letterSpacing = "-0.02em";
-          ctx.fillText("LENS", W / 2, H * 0.35);
+          ctx.translate(W / 2, H * 0.38);
+          ctx.scale(scale, scale);
+          ctx.fillText("LENS", 0, 0);
           ctx.letterSpacing = "0em";
-
-          // Amber accent line below LENS
-          ctx.globalAlpha = fadeIn * 0.7;
-          ctx.fillStyle = "#f59e0b";
-          const accentW = Math.round(W * 0.18);
-          ctx.fillRect(
-            (W - accentW) / 2,
-            H * 0.375,
-            accentW,
-            Math.round(H * 0.003),
-          );
-
-          ctx.globalAlpha = fadeIn;
-
-          // "DEVELOPED BY"
-          ctx.font = `300 ${Math.round(W * 0.038)}px sans-serif`;
-          ctx.fillStyle = "rgba(160,160,160,0.7)";
-          ctx.letterSpacing = "0.3em";
-          ctx.fillText("DEVELOPED BY", W / 2, H * 0.44);
-          ctx.letterSpacing = "0em";
-
-          // ProRefuel logo large + glow
-          if (logoImg.complete && logoImg.naturalWidth > 0) {
-            const lH = Math.round(H * 0.075);
-            const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
-            ctx.shadowColor = "rgba(245,158,11,0.6)";
-            ctx.shadowBlur = 60;
-            ctx.drawImage(logoImg, (W - lW) / 2, H * 0.465, lW, lH);
-            noShadow();
-          }
-
-          // Instagram handle — below ProRefuel logo
-          if (progress > 0.65) {
-            const igAlpha = Math.min((progress - 0.65) / 0.2, 1);
-            ctx.globalAlpha = fadeIn * igAlpha * 0.62;
-
-            const igFont = Math.round(W * 0.034);
-            ctx.font = `400 ${igFont}px sans-serif`;
-            ctx.textAlign = "center";
-            const handle = "@LENS.video";
-            const textW = ctx.measureText(handle).width;
-            const iconSz = igFont * 1.05;
-            const gap = igFont * 0.38;
-            const totalW = iconSz + gap + textW;
-            const baseY = H * 0.566;
-            const iconX = W / 2 - totalW / 2;
-            const iy = baseY - iconSz * 0.82;
-
-            // Instagram icon — rounded square + inner circle + dot
-            const col = "rgba(210,210,210,0.88)";
-            ctx.strokeStyle = col;
-            ctx.lineWidth = iconSz * 0.09;
-            ctx.lineCap = "round";
-            const r2 = iconSz * 0.27;
-            ctx.beginPath();
-            ctx.moveTo(iconX + r2, iy);
-            ctx.lineTo(iconX + iconSz - r2, iy);
-            ctx.quadraticCurveTo(iconX + iconSz, iy, iconX + iconSz, iy + r2);
-            ctx.lineTo(iconX + iconSz, iy + iconSz - r2);
-            ctx.quadraticCurveTo(
-              iconX + iconSz,
-              iy + iconSz,
-              iconX + iconSz - r2,
-              iy + iconSz,
-            );
-            ctx.lineTo(iconX + r2, iy + iconSz);
-            ctx.quadraticCurveTo(iconX, iy + iconSz, iconX, iy + iconSz - r2);
-            ctx.lineTo(iconX, iy + r2);
-            ctx.quadraticCurveTo(iconX, iy, iconX + r2, iy);
-            ctx.closePath();
-            ctx.stroke();
-
-            ctx.beginPath();
-            ctx.arc(
-              iconX + iconSz / 2,
-              iy + iconSz / 2,
-              iconSz * 0.27,
-              0,
-              Math.PI * 2,
-            );
-            ctx.stroke();
-
-            ctx.fillStyle = col;
-            ctx.beginPath();
-            ctx.arc(
-              iconX + iconSz * 0.73,
-              iy + iconSz * 0.24,
-              iconSz * 0.08,
-              0,
-              Math.PI * 2,
-            );
-            ctx.fill();
-
-            // Handle text
-            ctx.fillStyle = col;
-            ctx.font = `400 ${igFont}px sans-serif`;
-            ctx.textAlign = "left";
-            noShadow();
-            ctx.fillText(handle, iconX + iconSz + gap, baseY);
-            ctx.textAlign = "center";
-          }
-
-          // Tagline
-          if (progress > 0.65) {
-            const tagAlpha = Math.min((progress - 0.65) / 0.2, 1);
-            ctx.globalAlpha = fadeIn * tagAlpha;
-            ctx.font = `400 ${Math.round(W * 0.03)}px sans-serif`;
-            ctx.fillStyle = "rgba(245,158,11,0.75)";
-            ctx.fillText("lens.prorefuel.app", W / 2, H * 0.606);
-          }
-
-          // Amber bottom accent line
-          ctx.globalAlpha = fadeIn;
-          ctx.fillStyle = "#f59e0b";
-          ctx.fillRect(0, H - 4, W, 4);
-
-          ctx.globalAlpha = 1;
+          ctx.restore();
+          noShadow();
         }
+
+        // ── Amber line, 0.33→0.60 ─────────────────────────────────────────────
+        const lineProg = eo(cl((progress - 0.33) / 0.27));
+        if (lineProg > 0.01) {
+          const maxW = Math.round(W * 0.18);
+          ctx.globalAlpha = eo(cl(progress / 0.40));
+          ctx.fillStyle = "#f59e0b";
+          const lw = maxW * lineProg;
+          ctx.fillRect((W - lw) / 2, H * 0.425, lw, Math.round(H * 0.003));
+        }
+
+        // ── "DEVELOPED BY" + ProRefuel logo, 0.42→0.70 ───────────────────────
+        const logoProg = eo(cl((progress - 0.42) / 0.28));
+        if (logoProg > 0.01) {
+          const slideY = (1 - logoProg) * 14;
+          ctx.globalAlpha = logoProg;
+          shadow("rgba(0,0,0,0.8)", 12);
+          ctx.font = `300 ${Math.round(W * 0.032)}px sans-serif`;
+          ctx.fillStyle = "rgba(170,170,170,0.80)";
+          ctx.textAlign = "center";
+          ctx.letterSpacing = "0.28em";
+          ctx.fillText("DEVELOPED BY", W / 2, H * 0.462 + slideY);
+          ctx.letterSpacing = "0em";
+          if (logoImg.complete && logoImg.naturalWidth > 0) {
+            const lH = Math.round(H * 0.065);
+            const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
+            ctx.shadowColor = "rgba(245,158,11,0.35)";
+            ctx.shadowBlur = 30;
+            ctx.drawImage(logoImg, (W - lW) / 2, H * 0.484 + slideY, lW, lH);
+            noShadow();
+          }
+        }
+
+        // ── @LENS.video, 0.60→0.85 ────────────────────────────────────────────
+        const igProg = eo(cl((progress - 0.60) / 0.25));
+        if (igProg > 0.01) {
+          const slideY = (1 - igProg) * 10;
+          ctx.globalAlpha = igProg * 0.90;
+          shadow("rgba(0,0,0,0.95)", 16);
+          ctx.font = `900 italic ${Math.round(W * 0.048)}px sans-serif`;
+          ctx.fillStyle = "#f59e0b";
+          ctx.textAlign = "center";
+          ctx.letterSpacing = "-0.01em";
+          ctx.fillText("@LENS.video", W / 2, H * 0.590 + slideY);
+          ctx.letterSpacing = "0em";
+          noShadow();
+        }
+
+        ctx.globalAlpha = 1;
         ctx.restore();
       };
       const BRAND_DURATION = 3500; // ms — recording stays alive 3.5s for full brand reveal
@@ -2264,8 +2197,10 @@ const MapEngine = forwardRef(
           const elapsed = performance.now() - brandStartTime;
           const progress = Math.min(elapsed / BRAND_DURATION, 1);
           if (!hideOverlayRef.current) {
-            ctx.drawImage(frozenFrameCanvas, 0, 0, W, H);
-            drawBrand(progress);
+            // Elements already fully revealed during pre-brand — just hold on black
+            ctx.fillStyle = "#050505";
+            ctx.fillRect(0, 0, W, H);
+            drawBrand(1);
           }
 
           // Stop recording only after full brand animation completes
@@ -2320,6 +2255,11 @@ const MapEngine = forwardRef(
               }
 
               if (videoEl.readyState >= 2) {
+                // Grayscale 0→100% over first 60% (0→1.8s of 3s window)
+                const _t = preBrandFadeRef.current;
+                const grayPct = Math.min(Math.round(Math.min(_t / 0.60, 1) * 100), 100);
+                if (grayPct > 0) ctx.filter = `grayscale(${grayPct}%)`;
+
                 // Incoming clip B animation
                 let bAlpha = 1,
                   bScl = 1;
@@ -2349,6 +2289,7 @@ const MapEngine = forwardRef(
                   dh,
                 );
                 ctx.restore();
+                ctx.filter = "none";
               }
             } catch {
               /* cross-origin or not-ready — skip frame */
@@ -2356,26 +2297,30 @@ const MapEngine = forwardRef(
           }
 
           if (!hideOverlayRef.current) {
-            // --- NEW PREMIUM HUD LAYOUT for 1080p ---
-            // (W=1080, H=1920)
+            const _t = preBrandFadeRef.current;
 
-            // 1. Map Broad View Widget (Top-Right) — pipX/pipY/pipW/pipH pre-computed above startRecording
-            drawBroadMap(idx, pipX, pipY, pipW, pipH);
+            // Telemetry fades out in first 28% (0→0.84s) — synchronized exit
+            const telAlpha = Math.max(1 - _t / 0.28, 0);
+            if (telAlpha > 0) {
+              ctx.save();
+              ctx.globalAlpha = telAlpha;
+              drawBroadMap(idx, pipX, pipY, pipW, pipH);
+              drawAltimetry(idx);
+              drawTelemetry(idx);
+              ctx.restore();
+            }
 
-            // 2. Altimetry (Bottom-Left / Bottom)
-            drawAltimetry(idx);
-
-            // 3. Telemetry HUD (Top-Left)
-            drawTelemetry(idx);
-
-            // Pre-brand fade overlay — drawn last so it covers everything
-            const fade = preBrandFadeRef.current;
-            if (fade > 0) {
-              ctx.globalAlpha = fade;
+            // Darkness: starts at 55% (1.65s), reaches 100% at end (3s)
+            const darkness = Math.max((_t - 0.55) / 0.45, 0);
+            if (darkness > 0) {
+              ctx.globalAlpha = darkness;
               ctx.fillStyle = "#050505";
               ctx.fillRect(0, 0, W, H);
               ctx.globalAlpha = 1;
             }
+
+            // Brand elements enter after telemetry exits
+            if (_t > 0) drawBrand(_t);
           }
         } else {
           // Scenario A: Short Activity or INTRO — frozen video frame as background
@@ -2511,7 +2456,9 @@ const MapEngine = forwardRef(
         <style
           dangerouslySetInnerHTML={{
             __html: `
-@keyframes introBarTop    { from { height: 30% } to { height: 5px } }
+@keyframes brandLens   { from { opacity:0; transform:scale(0.55) } to { opacity:1; transform:scale(1) } }
+        @keyframes brandSlideUp { from { opacity:0; transform:translateY(14px) } to { opacity:1; transform:translateY(0) } }
+        @keyframes introBarTop    { from { height: 30% } to { height: 5px } }
         @keyframes introBarBot    { from { height: 30% } to { height: 5px } }
         @keyframes introFadeSlide { from { opacity: 0; transform: translateY(14px) } to { opacity: 1; transform: translateY(0) } }
         @keyframes introScaleIn   { from { opacity: 0; transform: scale(1.14) } to { opacity: 1; transform: scale(1) } }
@@ -2570,7 +2517,7 @@ const MapEngine = forwardRef(
         <div
           className={`absolute inset-0 z-20 bg-black overflow-hidden transition-opacity ease-out pointer-events-none ${viewMode === "ACTION" ? "opacity-100 duration-300" : viewMode === "BRAND" ? "opacity-0 duration-[1800ms]" : "opacity-0 duration-1000"}`}
         >
-          {/* Outgoing clip snapshot — z-index 0 (below video) — animates out while new clip fades in */}
+          {/* Outgoing clip snapshot — grayscale mirrors video during pre-brand */}
           <canvas
             ref={clipTransCanvasRef}
             className="absolute inset-0 pointer-events-none"
@@ -2579,6 +2526,8 @@ const MapEngine = forwardRef(
               height: "100%",
               transformOrigin: "center center",
               zIndex: 0,
+              filter: preBrandFade > 0 ? `grayscale(${Math.min(Math.round(Math.min(preBrandFade / 0.65, 1) * 100), 100)}%)` : undefined,
+              transition: "filter 200ms linear",
             }}
           />
 
@@ -2588,17 +2537,20 @@ const MapEngine = forwardRef(
               src={videoUrl}
               preload={videoPreload}
               className="absolute inset-0 w-full h-full object-cover"
-              style={{ zIndex: 1 }}
+              style={{
+                zIndex: 1,
+                filter: preBrandFade > 0 ? `grayscale(${Math.min(Math.round(Math.min(preBrandFade / 0.65, 1) * 100), 100)}%)` : undefined,
+                transition: "filter 200ms linear",
+              }}
               playsInline
             />
           )}
         </div>
 
-        {/* 2.1 PRE-BRAND FADE — escurece o vídeo nos 2s antes do logo */}
-        {/* Synced with audio preroll: starts together, covers everything above the video */}
+        {/* 2.1 PRE-BRAND darkness — starts at t=0.5 (1s in), reaches 100% at t=1 */}
         <div
           className="absolute inset-0 z-[45] pointer-events-none bg-[#050505]"
-          style={{ opacity: preBrandFade }}
+          style={{ opacity: Math.max((preBrandFade - 0.55) / 0.45, 0) }}
         />
 
         {/* 2.5 GRÁFICO DE ALTIMETRIA — full width, bottom, always */}
@@ -2610,7 +2562,8 @@ const MapEngine = forwardRef(
             height: "15vh",
             transition: "opacity 800ms ease",
             opacity:
-              viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0 : 1,
+              viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
+              : Math.max(1 - preBrandFade / 0.28, 0),
           }}
           className="absolute z-40 pointer-events-none"
         >
@@ -2625,10 +2578,12 @@ const MapEngine = forwardRef(
         <div
           style={{
             opacity:
-              viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0 : 1,
+              viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
+              : Math.max(1 - preBrandFade / 0.28, 0),
             transition:
               viewMode === "INTRO" || viewMode === "BRAND" || isEnding
                 ? "opacity 500ms ease-in"
+                : preBrandFade > 0 ? "opacity 100ms linear"
                 : "opacity 1500ms ease-out 1500ms",
           }}
           className="absolute inset-0 z-50 pointer-events-none"
@@ -2642,40 +2597,48 @@ const MapEngine = forwardRef(
           />
         </div>
 
-        {/* 4. BRANDING FINAL — fundo preto full-screen */}
-        {/* Fade-in rápido (300ms) para cobrir o mapa antes que o vídeo acabe de desaparecer */}
-        <div
-          className={`absolute inset-0 z-50 bg-[#050505] pointer-events-none transition-opacity duration-[300ms] ease-in ${
-            viewMode === "BRAND" ? "opacity-100" : "opacity-0"
-          }`}
-        />
-        <div
-          className={`absolute inset-0 z-50 flex flex-col items-center justify-center gap-0 transition-opacity duration-1000 delay-[600ms] ${viewMode === "BRAND" ? "opacity-100" : "opacity-0 pointer-events-none"}`}
-        >
-          {/* LENS — font-black tracking-tight matching landing page */}
-          <p
-            className="text-white font-black tracking-tight leading-none mb-2"
-            style={{
-              fontSize: "clamp(3.5rem, 22vw, 7rem)",
-              letterSpacing: "-0.02em",
-            }}
-          >
-            LENS
-          </p>
-          {/* Amber accent line */}
-          <div className="w-16 h-[2px] bg-amber-500 mb-5 rounded-full opacity-80" />
-          <p className="text-zinc-500 text-[9px] uppercase font-bold tracking-[0.4em] mb-3">
-            Developed by
-          </p>
-          <img
-            src="/prorefuel_logo.png"
-            alt="ProRefuel"
-            className="w-1/2 max-w-[180px] drop-shadow-[0_0_30px_rgba(245,158,11,0.25)] animate-pulse"
-          />
-          <p className="text-amber-500/70 text-[9px] font-bold tracking-widest uppercase mt-4">
-            lens.prorefuel.app
-          </p>
-        </div>
+        {/* 4. BRANDING FINAL */}
+        <div className={`absolute inset-0 z-50 bg-[#050505] pointer-events-none transition-opacity duration-[400ms] ease-in ${viewMode === "BRAND" ? "opacity-100" : "opacity-0"}`} />
+        {(viewMode === "BRAND" || preBrandFade > 0) && (() => {
+          // t: 0→1 during pre-brand (3s), held at 1 in BRAND mode
+          // Synced: telemetry out by t=0.28, brand in after t=0.22
+          const t = viewMode === "BRAND" ? 1 : preBrandFade;
+          const eo = (x: number) => 1 - Math.pow(1 - Math.min(Math.max(x, 0), 1), 3);
+          const lensP  = eo(Math.min(Math.max(t - 0.22, 0) / 0.33, 1));
+          const lineP  = eo(Math.min(Math.max(t - 0.33, 0) / 0.27, 1));
+          const logoP  = eo(Math.min(Math.max(t - 0.42, 0) / 0.28, 1));
+          const igP    = eo(Math.min(Math.max(t - 0.60, 0) / 0.25, 1));
+          return (
+            <div className="absolute inset-0 z-50 flex flex-col items-center justify-center pointer-events-none">
+              <p
+                className="text-white font-black leading-none"
+                style={{
+                  fontSize: "clamp(3.5rem, 22vw, 7rem)",
+                  letterSpacing: "-0.02em",
+                  marginBottom: "0.18em",
+                  opacity: lensP,
+                  transform: `scale(${0.55 + 0.45 * lensP})`,
+                  textShadow: "0 4px 30px rgba(0,0,0,0.9)",
+                }}
+              >LENS</p>
+              <div className="bg-amber-500 rounded-full" style={{ height: "2px", width: `${lineP * 4}rem`, marginBottom: "1.4em", opacity: lensP }} />
+              <p className="text-zinc-500 uppercase font-bold tracking-[0.28em]"
+                style={{ fontSize: "9px", marginBottom: "0.7em", opacity: logoP, transform: `translateY(${(1 - logoP) * 10}px)` }}>
+                Developed by
+              </p>
+              <img src="/prorefuel_logo.png" alt="ProRefuel"
+                className="w-1/2 max-w-[180px] drop-shadow-[0_0_24px_rgba(245,158,11,0.30)]"
+                style={{ opacity: logoP, transform: `translateY(${(1 - logoP) * 10}px)` }}
+              />
+              <p style={{
+                marginTop: "1.6em", fontStyle: "italic", fontWeight: 900,
+                fontSize: "clamp(14px, 4.5vw, 20px)", letterSpacing: "-0.01em",
+                color: "#f59e0b", textShadow: "0 2px 16px rgba(0,0,0,0.9)",
+                opacity: igP, transform: `translateY(${(1 - igP) * 10}px)`,
+              }}>@LENS.video</p>
+            </div>
+          );
+        })()}
 
         {/* Cut flash — mode transitions + within-ACTION clip changes (BRAND has its own fade) */}
         {viewMode !== "BRAND" && (
