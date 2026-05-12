@@ -79,8 +79,29 @@ export default function PrivacyPage() {
           />
         </div>
 
+        {/* Contact */}
+        <div className="mt-10 p-8 rounded-3xl bg-pink-500/5 border border-pink-500/20 text-center">
+          <p className="text-[10px] font-black uppercase tracking-widest text-pink-400 mb-2">Contact</p>
+          <p className="text-white font-black text-base mb-1">Questions about your data?</p>
+          <p className="text-zinc-400 text-sm leading-relaxed mb-5">
+            Send us a direct message on Instagram. We respond to all data requests, deletion requests, and privacy questions.
+          </p>
+          <a
+            href="https://instagram.com/LENS.video"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-pink-500/15 border border-pink-500/30 text-pink-400 font-black uppercase tracking-widest text-[11px] hover:bg-pink-500/25 transition-colors"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>
+              <circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/>
+            </svg>
+            DM us · @LENS.video
+          </a>
+        </div>
+
         {/* Bottom CTA */}
-        <div className="mt-16 p-8 rounded-3xl bg-zinc-900/60 border border-zinc-800 text-center">
+        <div className="mt-6 p-8 rounded-3xl bg-zinc-900/60 border border-zinc-800 text-center">
           <p className="text-zinc-400 text-sm leading-relaxed mb-6">
             Curious about how LENS works technically?
           </p>
@@ -101,9 +122,16 @@ export default function PrivacyPage() {
             <span className="text-sm font-black tracking-tight text-white group-hover:text-amber-400 transition-colors">LENS</span>
             <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">by ProRefuel.app</span>
           </a>
-          <div className="flex items-center gap-5">
+          <div className="flex flex-wrap items-center justify-center gap-4">
+            <a href="https://instagram.com/LENS.video" target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-pink-500/30 bg-pink-500/5 text-pink-400 hover:bg-pink-500/15 transition-colors">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>
+                <circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/>
+              </svg>
+              <span className="text-[11px] font-black uppercase tracking-widest">Contact · @LENS.video</span>
+            </a>
             <a href="/how-it-works" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
-            <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
           </div>
           <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">© {new Date().getFullYear()} ProRefuel.app</p>
         </div>

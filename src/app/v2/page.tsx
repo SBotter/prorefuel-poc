@@ -55,10 +55,11 @@ function detectGPSDevice(creatorRaw: string): DeviceInfo {
 
 function detectCamera(cameraModel: string): DeviceInfo {
   const c = cameraModel.toLowerCase();
-  if (c.includes("gopro"))    return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
-  if (c.includes("dji"))      return { label: cameraModel, logoFile: "" };
-  if (c.includes("insta360")) return { label: cameraModel, logoFile: "" };
-  if (cameraModel)            return { label: cameraModel, logoFile: "" };
+  if (c.includes("gopro"))                         return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
+  if (c.includes("apple") || c.includes("iphone")) return { label: cameraModel, logoFile: `${LOGO_BASE}/iphone_logo.svg` };
+  if (c.includes("dji"))                           return { label: cameraModel, logoFile: "" };
+  if (c.includes("insta360"))                      return { label: cameraModel, logoFile: "" };
+  if (cameraModel)                                 return { label: cameraModel, logoFile: "" };
   return { label: "", logoFile: "" };
 }
 
