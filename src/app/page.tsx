@@ -59,10 +59,11 @@ function detectGPSDevice(creatorRaw: string): DeviceInfo {
 
 function detectCamera(cameraModel: string): DeviceInfo {
   const c = cameraModel.toLowerCase();
-  if (c.includes("gopro"))    return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
-  if (c.includes("dji"))      return { label: cameraModel, logoFile: "" };
-  if (c.includes("insta360")) return { label: cameraModel, logoFile: "" };
-  if (cameraModel)            return { label: cameraModel, logoFile: "" };
+  if (c.includes("gopro"))                         return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
+  if (c.includes("apple") || c.includes("iphone")) return { label: cameraModel, logoFile: `${LOGO_BASE}/iphone_logo.svg` };
+  if (c.includes("dji"))                           return { label: cameraModel, logoFile: "" };
+  if (c.includes("insta360"))                      return { label: cameraModel, logoFile: "" };
+  if (cameraModel)                                 return { label: cameraModel, logoFile: "" };
   return { label: "", logoFile: "" };
 }
 
@@ -655,7 +656,96 @@ export default function ProRefuelPage() {
     gpxMetricsRef.current = computeGpxMetrics(pts, { creator: gpsDevice?.label ?? creatorRaw ?? undefined, activityType, activityName: trackName, activityLocation: resolvedLocation });
   };
 
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebApplication",
+        "@id": "https://lens.prorefuel.app/#app",
+        "name": "LENS by ProRefuel",
+        "url": "https://lens.prorefuel.app",
+        "description": "Automatic cinematic video editor for outdoor sports athletes. Sync GoPro and iPhone footage with GPX activity files and add GPS telemetry overlay showing speed, elevation, heart rate, and a live animated map.",
+        "applicationCategory": "MultimediaApplication",
+        "operatingSystem": "Chrome on Windows, macOS, Linux",
+        "browserRequirements": "Chrome 90+",
+        "inLanguage": "en",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "featureList": [
+          "Automatic GPS scene detection from GPX files",
+          "GoPro GPMF telemetry overlay at 18Hz precision",
+          "iPhone MOV video GPS sync via CreateDate",
+          "Cinematic 9:16 vertical format for Instagram Reels, TikTok, YouTube Shorts",
+          "Real-time speed, elevation, heart rate, cadence, and power overlay",
+          "Live animated map with GPS track",
+          "Compatible with Garmin, Suunto, Wahoo, Polar, Coros, Strava, Komoot GPX exports",
+          "On-device processing — 100% private, no cloud upload required",
+          "MP4 export in under 60 seconds"
+        ],
+        "screenshot": "https://lens.prorefuel.app/og-image.png",
+        "author": { "@type": "Organization", "name": "ProRefuel", "url": "https://prorefuel.app" },
+        "aggregateRating": { "@type": "AggregateRating", "ratingValue": "5", "ratingCount": "1", "bestRating": "5" },
+      },
+      {
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "How does LENS sync GoPro video with GPS activity data?",
+            "acceptedAnswer": { "@type": "Answer", "text": "LENS reads the embedded GPS timestamps in your GoPro video (GPMF telemetry at 18Hz) and matches them with your GPX activity file from Garmin, Suunto, Strava, Wahoo, Polar, Coros or any GPS device. The sync is automatic and accurate to milliseconds — no manual alignment needed." }
+          },
+          {
+            "@type": "Question",
+            "name": "What action cameras are supported by LENS?",
+            "acceptedAnswer": { "@type": "Answer", "text": "LENS supports all GoPro cameras (Hero 9, 10, 11, 12, 13 and newer) and iPhone (iOS via MOV files). GoPro files use embedded GPMF telemetry for precise GPS sync, while iPhone videos use GPS timestamps. DJI, Insta360 and other cameras are on the roadmap." }
+          },
+          {
+            "@type": "Question",
+            "name": "What GPS devices and apps can I export GPX from?",
+            "acceptedAnswer": { "@type": "Answer", "text": "LENS works with GPX files from any GPS device or app: Garmin (Connect), Suunto, Wahoo, Polar, Coros, Bryton, Lezyne, and apps like Strava, Komoot, and TrainingPeaks. Simply export your activity as a .gpx file from any of these platforms and import it into LENS." }
+          },
+          {
+            "@type": "Question",
+            "name": "What sports does LENS work with?",
+            "acceptedAnswer": { "@type": "Answer", "text": "LENS is designed for outdoor sports athletes: mountain biking (MTB), road cycling, trail running, triathlon, gravel riding, hiking, and adventure sports. The GPS scene detection algorithm automatically identifies climbs, sprints, technical descents, and peak moments from your GPS data." }
+          },
+          {
+            "@type": "Question",
+            "name": "Is LENS a free GoPro Quik alternative with GPS overlay?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. Unlike GoPro Quik, LENS focuses on deep GPS telemetry integration. LENS syncs your full activity GPS data to display live speed, elevation, heart rate, and an animated map — automatically, in cinematic 9:16 format. It is free and requires no account or subscription." }
+          },
+          {
+            "@type": "Question",
+            "name": "How long does it take to generate a video in LENS?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Most videos are ready in under 60 seconds. LENS processes everything on your device using WebAssembly — no cloud rendering. Render time depends on your GPU and video length, but the full pipeline from import to download typically takes under a minute." }
+          },
+          {
+            "@type": "Question",
+            "name": "Does LENS upload my video to the cloud?",
+            "acceptedAnswer": { "@type": "Answer", "text": "No. LENS runs entirely in your browser. Your GoPro video, GPX file, and generated output never leave your device. No account is required and no data is uploaded to any server." }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I use LENS with Strava GPX exports?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. Export your Strava activity as a GPX file (from the activity page, click the three dots menu and select Export GPX), then import it into LENS. LENS will automatically sync it with your GoPro or iPhone video." }
+          },
+        ],
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://prorefuel.app/#org",
+        "name": "ProRefuel",
+        "url": "https://prorefuel.app",
+        "sameAs": ["https://instagram.com/LENS.video"],
+      },
+    ],
+  };
+
   return (
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
     <main className="min-h-screen bg-[#050505] text-white font-sans selection:bg-amber-500/40 overflow-x-hidden">
 
       {/* AMBIENT BACKGROUND */}
@@ -953,6 +1043,58 @@ export default function ProRefuelPage() {
         </div>
       </section>
 
+      {/* ── FAQ SECTION ─────────────────────────────────────────────────── */}
+      <section className="relative z-10 border-t border-zinc-800/40" aria-label="Frequently Asked Questions">
+        <div className="max-w-[1600px] mx-auto px-6 md:px-12 py-20">
+          <div className="max-w-3xl mx-auto">
+            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-amber-500/70 mb-3 text-center">FAQ</p>
+            <h2 className="text-3xl sm:text-4xl font-black tracking-tight text-center mb-12">
+              Everything you need to know
+            </h2>
+            <div className="space-y-4">
+              {[
+                {
+                  q: "What action cameras are supported?",
+                  a: "LENS supports all GoPro cameras (Hero 9, 10, 11, 12, 13+) and iPhone. GoPro files use embedded GPMF telemetry at 18Hz for precise GPS sync. iPhone MOV files use GPS timestamps. DJI, Insta360 and other action cameras are on the roadmap.",
+                },
+                {
+                  q: "Which GPS devices and apps can I export GPX from?",
+                  a: "Any GPS device or app that exports .gpx files: Garmin Connect, Suunto, Wahoo, Polar, Coros, Bryton, Lezyne — and platforms like Strava, Komoot, and TrainingPeaks. Just go to your activity, export as GPX, and import into LENS.",
+                },
+                {
+                  q: "What sports does LENS work with?",
+                  a: "LENS is built for outdoor athletes: mountain biking (MTB), road cycling, gravel riding, trail running, triathlon, hiking, and adventure sports. The GPS scene detection automatically finds climbs, sprints, descents, and peak intensity moments.",
+                },
+                {
+                  q: "Is LENS a GoPro Quik alternative with GPS overlay?",
+                  a: "Yes. Unlike GoPro Quik, LENS does deep GPS telemetry integration — live speed, elevation, heart rate, cadence, power, and an animated map, automatically synced. No manual editing. Cinematic 9:16 format. Free and no account needed.",
+                },
+                {
+                  q: "Does LENS upload my footage to the cloud?",
+                  a: "Never. LENS runs entirely inside your browser using WebAssembly. Your GoPro video, GPX file, and the generated output never leave your device. No account is required. No upload. 100% private.",
+                },
+                {
+                  q: "How long does it take to generate a cinematic video?",
+                  a: "Under 60 seconds for most rides. LENS processes everything on-device — scene detection, GPS sync, telemetry overlay, and MP4 export — in a single pipeline running locally in Chrome.",
+                },
+                {
+                  q: "How do I sync GoPro video with Strava?",
+                  a: "Open your Strava activity, click the three-dot menu and select Export GPX. Then import that .gpx file into LENS alongside your GoPro video. LENS handles the timestamp sync automatically.",
+                },
+              ].map(({ q, a }) => (
+                <details key={q} className="group bg-zinc-900/50 border border-zinc-800/60 rounded-2xl overflow-hidden">
+                  <summary className="flex items-center justify-between px-6 py-4 cursor-pointer list-none select-none hover:bg-zinc-800/30 transition-colors">
+                    <span className="font-black text-white text-sm pr-4">{q}</span>
+                    <span className="text-amber-500 shrink-0 text-lg group-open:rotate-45 transition-transform duration-200">+</span>
+                  </summary>
+                  <p className="px-6 pb-5 text-zinc-400 text-sm leading-relaxed">{a}</p>
+                </details>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* ── FOOTER ──────────────────────────────────────────────────────── */}
       <footer className="relative z-10 border-t border-zinc-800/50 bg-black/30 backdrop-blur-sm">
         <div className="max-w-[1600px] mx-auto px-6 md:px-12 py-10 flex flex-col md:flex-row items-center justify-between gap-6">
@@ -963,10 +1105,11 @@ export default function ProRefuelPage() {
             </a>
             <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-bold">Elevate your adventure.</p>
           </div>
-          <div className="flex items-center gap-4">
-            <a href="https://instagram.com/LENS.video" target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-zinc-500 hover:text-pink-400 transition-colors">
-              <IgIcon size={14} />
-              <span className="text-[11px] font-black uppercase tracking-widest">@LENS.video</span>
+          <div className="flex flex-wrap items-center justify-center gap-4">
+            <a href="https://instagram.com/LENS.video" target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-pink-500/30 bg-pink-500/5 text-pink-400 hover:bg-pink-500/15 transition-colors">
+              <IgIcon size={13} />
+              <span className="text-[11px] font-black uppercase tracking-widest">Contact · @LENS.video</span>
             </a>
             <a href="/how-it-works" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
             <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
@@ -983,6 +1126,7 @@ export default function ProRefuelPage() {
         .animate-glow-pulse { animation: glow-pulse 2.2s ease-in-out infinite; }
       `}</style>
     </main>
+    </>
   );
 }
 
