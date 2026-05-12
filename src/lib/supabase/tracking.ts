@@ -1,4 +1,4 @@
-import type { GpxSessionInsert, ProcessingSessionInsert, VideoExportInsert, VideoUploadInsert } from "./types";
+import type { ErrorCode, ErrorEventInsert, GpxSessionInsert, ProcessingSessionInsert, VideoExportInsert, VideoUploadInsert } from "./types";
 
 const APP_VERSION = "1.0.29";
 const GPX_GAP_THRESHOLD_S = 30;
@@ -190,6 +190,31 @@ export async function trackVideoExport(
     if (!res.ok) console.warn("[track] track-export responded", res.status);
   } catch (err) {
     console.warn("[track] Failed to record video export:", err);
+  }
+}
+
+/**
+ * Logs a user-facing error event to Supabase via /api/track-error.
+ * Fire-and-forget — never throws. Call right before setXxxError / throw.
+ */
+export async function trackError(
+  code: ErrorCode,
+  message: string,
+  source: "gpx_upload" | "video_upload" | "render" | "worker" | "unknown" = "unknown"
+): Promise<void> {
+  try {
+    const payload: Omit<ErrorEventInsert, "app_version" | "user_agent"> = {
+      error_code: code,
+      error_message: message,
+      error_source: source,
+    };
+    await fetch("/api/track-error", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, app_version: APP_VERSION }),
+    });
+  } catch {
+    // Silently ignore — tracking must never break the user flow
   }
 }
 

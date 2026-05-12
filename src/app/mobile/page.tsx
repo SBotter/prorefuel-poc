@@ -171,7 +171,7 @@ export default function MobilePage() {
             <IgIcon size={13} />
             <span className="text-[11px] font-black uppercase tracking-widest">@LENS.video</span>
           </a>
-          <a href="/como-funciona" className="text-[11px] font-black uppercase tracking-widest text-zinc-500">How It Works</a>
+          <a href="/how-it-works" className="text-[11px] font-black uppercase tracking-widest text-zinc-500">How It Works</a>
           <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500">Privacy</a>
         </div>
         <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">© {new Date().getFullYear()} ProRefuel.app</p>

@@ -9,6 +9,7 @@ import React, {
   forwardRef,
 } from "react";
 
+import { trackError } from "@/lib/supabase/tracking";
 import { GPSPoint } from "@/lib/media/GoProEngineClient";
 import { ActionSegment } from "@/lib/engine/TelemetryCrossRef";
 import { StoryPlan } from "@/lib/engine/StorytellingProcessor";
@@ -906,10 +907,15 @@ const MapEngine = forwardRef(
 
           const fallbackBlob = new Blob(chunks, { type: mimeType });
 
+          void trackError(
+            isOOM ? "RENDER_OOM" : "RENDER_FAILED",
+            isOOM ? "Not enough memory to export." : "Export failed.",
+            "render"
+          );
           setRenderError({
             message: isOOM
-              ? "Not enough memory to render. Close other tabs and try again."
-              : "Render failed. Please try again.",
+              ? "Not enough memory to export. Close other browser tabs and try again."
+              : "Export failed. Please try again. If the issue persists, reload the page.",
             isOOM,
           });
           onRenderComplete?.({
@@ -2439,10 +2445,11 @@ const MapEngine = forwardRef(
             </div>
             <div>
               <p className="text-white font-black text-sm uppercase tracking-wide mb-2">
-                {renderError.isOOM ? "Out of Memory" : "Render Failed"}
+                {renderError.isOOM ? "Not Enough Memory" : "Export Failed"}
               </p>
               <p className="text-zinc-400 text-xs leading-relaxed">
-                {renderError.message}
+                {renderError.message}{" "}
+                <a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300">Learn more →</a>
               </p>
             </div>
             <button

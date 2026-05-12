@@ -25,7 +25,7 @@ export default function HowItWorksPage() {
           <span className="hidden sm:block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-0.5">by ProRefuel.app</span>
         </Link>
         <div className="flex items-center gap-1 sm:gap-2">
-          <Link href="/como-funciona" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-amber-400">
+          <Link href="/how-it-works" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-amber-400">
             How It Works
           </Link>
           <Link href="/privacidade" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">
@@ -144,7 +144,7 @@ export default function HowItWorksPage() {
           <Step
             number="01"
             title="Import your GPX activity file"
-            body="Export your activity in GPX format from Garmin Connect, Wahoo, Komoot, or any cycling or running app. This file contains your full GPS track — coordinates, elevation, timestamps, heart rate, cadence, and power."
+            body="Export your activity in GPX format from Strava, Garmin Connect, Wahoo, Komoot, or any cycling or running app. This file contains your full GPS track — coordinates, elevation, timestamps, heart rate, cadence, and power."
             tip="The GPX must cover the same time period during which the video was recorded. Start your GPS tracker before pressing record."
           />
           <Step
@@ -190,12 +190,79 @@ export default function HowItWorksPage() {
           <ProblemCard problem="GPS signal too weak">
             The camera started recording before GPS lock was acquired. Record a few seconds of stillness outdoors before moving. Avoid starting recordings inside or in areas with poor sky visibility.
           </ProblemCard>
-          <ProblemCard problem="Video doesn't match this activity">
+          <ProblemCard problem="Video and GPX don't match">
             The video and the GPX file are from different sessions — their timestamps don't overlap. Make sure you import the GPX from the same ride during which the video was recorded. Check that your GPS device clock is set correctly.
           </ProblemCard>
           <ProblemCard problem="No scenes detected">
             The activity window covered by the video is too short, or the activity data is too uniform (constant flat speed). Try a longer video, or check that your GPX contains speed, elevation, or heart rate data.
           </ProblemCard>
+        </div>
+
+        {/* ── HELP & TROUBLESHOOTING ──────────────────────────────────────── */}
+        <div id="help" className="scroll-mt-24">
+          <SectionTitle>Help &amp; troubleshooting</SectionTitle>
+          <p className="text-zinc-400 text-sm leading-relaxed mb-6">
+            Detailed explanations for every error message you may encounter. Click any item to expand.
+          </p>
+          <div className="space-y-3 mb-14">
+            <HelpItem error="Unsupported file format. Only GoPro MP4 files (.mp4) are accepted." title="Wrong video format">
+              LENS only reads GoPro MP4 files because they embed GPS, accelerometer, and gyroscope data directly in the video container. Files from other cameras do not include this telemetry.
+              <br /><br />
+              <strong className="text-white">How to fix:</strong> Use a GoPro camera and import the original <code className="text-amber-400">.mp4</code> file directly from your camera or SD card. Do not convert or re-encode the file — the telemetry is lost in conversion.
+            </HelpItem>
+            <HelpItem error="Unsupported camera. Only GoPro cameras are supported." title="Unsupported camera">
+              LENS detected a video file from a camera brand that does not embed GPS telemetry in the MP4 container in the format LENS can read.
+              <br /><br />
+              <strong className="text-white">How to fix:</strong> Use a GoPro camera (Hero 5 Black or newer). Make sure you are importing the original file — not a file edited or exported from another app.
+            </HelpItem>
+            <HelpItem error="No GPS data found in this video. Make sure GPS is enabled on your GoPro and that you waited for GPS lock before starting recording." title="No GPS in video">
+              The GoPro video contains zero GPS samples. This happens when GPS is disabled in the camera settings, or when the recording started before any GPS signal was acquired.
+              <br /><br />
+              <strong className="text-white">How to fix:</strong>
+              <br />① Go to <strong className="text-white">Settings → Preferences → GPS → On</strong> on your GoPro.
+              <br />② Power on outdoors with clear sky above.
+              <br />③ Wait for the solid GPS satellite icon on the camera display.
+              <br />④ Only then press record.
+            </HelpItem>
+            <HelpItem error="GPS signal too weak — no valid fix was recorded. Wait for the GPS lock icon on your GoPro before starting your activity." title="GPS signal too weak">
+              The GoPro started recording before a GPS lock was acquired. The samples in the file exist but have no valid satellite fix — LENS cannot use them for scene detection or sync.
+              <br /><br />
+              <strong className="text-white">How to fix:</strong> After powering on, wait until the GPS icon on the camera screen is <strong className="text-white">solid (not blinking)</strong>. This typically takes 10–30 seconds outdoors. Starting indoors or under dense cover significantly increases lock time.
+            </HelpItem>
+            <HelpItem error="This video and GPX file don't match. Make sure both files are from the same ride." title="Video and GPX don't match">
+              LENS compared the GPS coordinates in the video with the GPS coordinates in the GPX file and found no spatial overlap — they are more than 2 km apart. This means they are from different sessions or different locations.
+              <br /><br />
+              <strong className="text-white">How to fix:</strong>
+              <br />① Make sure the GPX was exported from the <strong className="text-white">same activity</strong> during which you were recording with the GoPro.
+              <br />② Check that your GPS watch or cycling computer clock is set to the correct time zone and synced correctly.
+            </HelpItem>
+            <HelpItem error="No highlight scenes detected. Your activity may be too short or lack speed and elevation variation." title="No scenes detected">
+              LENS analyzes speed, elevation, gradient, heart rate, and cadence to find highlight moments. If the activity window covered by the video is too short, too flat, or at constant speed, no scenes will score above the detection threshold.
+              <br /><br />
+              <strong className="text-white">How to fix:</strong>
+              <br />① Use a longer ride — at least 20–30 minutes of varied activity works best.
+              <br />② Make sure your GPX file includes speed or elevation data, not just coordinates.
+              <br />③ Rides with climbs, descents, or sprint segments produce the most scenes.
+            </HelpItem>
+            <HelpItem error="No GPS track found in this file. Make sure your .gpx file contains valid location data." title="Empty or invalid GPX file">
+              The .gpx file was parsed but contained no <code className="text-amber-400">&lt;trkpt&gt;</code> elements — the standard GPX tag for trackpoints with coordinates and timestamps. This happens with corrupted exports, route files (waypoints only), or files saved in an unsupported format.
+              <br /><br />
+              <strong className="text-white">How to fix:</strong>
+              <br />① Export your activity again from your GPS app — use <strong className="text-white">GPX</strong> format, not FIT or TCX.
+              <br />② In Strava: Activity → ••• → Export GPX.
+              <br />③ In Garmin Connect: Activity → Export → Export to GPX.
+              <br />④ In Wahoo: Activity → Share → GPX.
+              <br />⑤ In Komoot: Tour → Download GPX.
+            </HelpItem>
+            <HelpItem error="Export failed / Not enough memory to export." title="Export failed or out of memory">
+              The video export process uses your browser&apos;s WebAssembly memory to run FFmpeg. On longer recordings or lower-memory devices, this can exceed the available browser memory limit.
+              <br /><br />
+              <strong className="text-white">How to fix:</strong>
+              <br />① Close all other browser tabs and windows, then try again.
+              <br />② Use Chrome on a desktop or laptop — it has the highest WebAssembly memory limit.
+              <br />③ If the error persists, reload the page to clear memory before starting the export.
+            </HelpItem>
+          </div>
         </div>
 
         {/* ── CTA ─────────────────────────────────────────────────────────── */}
@@ -220,7 +287,7 @@ export default function HowItWorksPage() {
             <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">by ProRefuel.app</span>
           </a>
           <div className="flex items-center gap-5">
-            <a href="/como-funciona" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
+            <a href="/how-it-works" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
             <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
           </div>
           <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">© {new Date().getFullYear()} ProRefuel.app</p>
@@ -311,6 +378,23 @@ function InfoCard({ icon, children }: { icon: string; children: ReactNode }) {
       <span className="text-xl shrink-0">{icon}</span>
       <div className="text-zinc-400 text-sm leading-relaxed">{children}</div>
     </div>
+  );
+}
+
+function HelpItem({ error, title, children }: { error: string; title: string; children: ReactNode }) {
+  return (
+    <details className="group rounded-2xl bg-zinc-900/40 border border-zinc-800/50 overflow-hidden">
+      <summary className="flex items-start justify-between gap-4 p-5 cursor-pointer list-none select-none hover:bg-zinc-800/30 transition-colors">
+        <div className="flex-1 min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-widest text-amber-500/70 mb-1">{title}</p>
+          <p className="text-zinc-300 text-xs font-mono leading-relaxed">{error}</p>
+        </div>
+        <span className="shrink-0 text-zinc-500 group-open:rotate-180 transition-transform duration-200 mt-0.5">▼</span>
+      </summary>
+      <div className="px-5 pb-5 pt-1 text-zinc-400 text-sm leading-relaxed border-t border-zinc-800/60">
+        {children}
+      </div>
+    </details>
   );
 }
 

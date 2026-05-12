@@ -13,7 +13,7 @@ import {
   PlayCircle,
 } from "lucide-react";
 import dynamic from "next/dynamic";
-import { trackProcessingSession, trackGpxSession, computeGpxMetrics, trackVideoExport, trackVideoUpload } from "@/lib/supabase/tracking";
+import { trackProcessingSession, trackGpxSession, computeGpxMetrics, trackVideoExport, trackVideoUpload, trackError } from "@/lib/supabase/tracking";
 import type { RenderResult } from "@/components/MapEngine";
 
 // Dynamic import — keeps mapbox-gl, Tone.js and ffmpeg out of the initial bundle.
@@ -358,7 +358,8 @@ export default function ProRefuelPage() {
     const isMP4  = nameLc.endsWith(".mp4") || file.type === "video/mp4";
     const isMOV  = nameLc.endsWith(".mov") || file.type === "video/quicktime";
     if (!isMP4 && !isMOV) {
-      setUploadError("Unsupported format. Use .mp4 (GoPro).");
+      void trackError("WRONG_VIDEO_FORMAT", "Unsupported file format. Only GoPro MP4 files (.mp4) are accepted.", "video_upload");
+      setUploadError("Unsupported file format. Only GoPro MP4 files (.mp4) are accepted.");
       e.target.value = "";
       return;
     }
@@ -398,7 +399,9 @@ export default function ProRefuelPage() {
       if (!isIPhone) setVideoFile(file);
 
       if (cameraDetection.type === "unknown") {
-        throw new Error(`Camera not supported: ${cameraDetection.make || "unknown"}. Use GoPro (.mp4).`);
+        const detected = [cameraDetection.make, cameraDetection.model].filter(Boolean).join(" ") || "unknown";
+        void trackError("UNSUPPORTED_CAMERA", `Unsupported camera: "${detected}". File: "${file.name}".`, "video_upload");
+        throw new Error("Unsupported camera. Only GoPro cameras are supported.");
       }
 
       let vpts: any[], syncPoints: any[], cameraModel: string, gpsVideoOffsetMs: number;
@@ -463,14 +466,19 @@ export default function ProRefuelPage() {
         if (camera.label) setActivityMeta(prev => ({ ...prev, camera }));
       }
 
-      if (!isIPhone && vpts.length === 0) throw new Error("No GPS in this video. Enable GPS on your GoPro before recording.");
+      if (!isIPhone && vpts.length === 0) {
+        void trackError("NO_GPS_VIDEO", "No GPS data found in this video.", "video_upload");
+        throw new Error("No GPS data found in this video. Make sure GPS is enabled on your GoPro and that you waited for GPS lock before starting recording.");
+      }
 
       const videoProfile = isIPhone
         ? iPhoneVideoGPSAnalyzer.analyze(iPhoneVideoStartMs, iPhoneDurationMs, iPhoneHasStartGPS)
         : VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
 
-      if (!isIPhone && (!videoProfile.hasGPSLock || videoProfile.postLockPoints === 0))
-        throw new Error("GPS signal too weak — no valid fix during recording.");
+      if (!isIPhone && (!videoProfile.hasGPSLock || videoProfile.postLockPoints === 0)) {
+        void trackError("GPS_WEAK", "GPS signal too weak — no valid fix was recorded.", "video_upload");
+        throw new Error("GPS signal too weak — no valid fix was recorded. Wait for the GPS lock icon on your GoPro before starting your activity.");
+      }
 
       const totalPts = vpts.length;
       const fixDist  = videoProfile.fixDistribution;
@@ -512,7 +520,10 @@ export default function ProRefuelPage() {
             return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1-h));
           };
           const spatialOverlap = postLock.some((vp: any) => actSample.some(ap => hav(vp, ap) < 2_000));
-          if (!spatialOverlap) throw new Error("Video doesn't match this activity. Check both files are from the same ride.");
+          if (!spatialOverlap) {
+            void trackError("VIDEO_GPX_MISMATCH", "This video and GPX file don't match.", "video_upload");
+            throw new Error("This video and GPX file don't match. Make sure both files are from the same ride.");
+          }
         }
       }
 
@@ -524,7 +535,10 @@ export default function ProRefuelPage() {
 
       const clockOffsetMs = 0;
       const segments = TelemetryCrossRef.findHighlights(activityPoints, vpts as any, unit, clockOffsetMs, gpsVideoOffsetMs);
-      if (!segments || segments.length === 0) throw new Error("No scenes detected in this activity.");
+      if (!segments || segments.length === 0) {
+        void trackError("NO_SCENES", "No highlight scenes detected.", "video_upload");
+        throw new Error("No highlight scenes detected. Your activity may be too short or lack speed and elevation variation.");
+      }
 
       const VIDEO_SEEK_WORKAROUND_SEC = 0;
       segments.forEach((s) => { if (s.videoStartTime !== undefined) s.videoStartTime += VIDEO_SEEK_WORKAROUND_SEC; });
@@ -580,13 +594,18 @@ export default function ProRefuelPage() {
   const handleGPXUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".gpx")) { setGpxError("Only .gpx files are accepted."); e.target.value = ""; return; }
+    if (!file.name.toLowerCase().endsWith(".gpx")) {
+      const ext = file.name.split(".").pop() ?? file.type;
+      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}" (.${ext}). Only .gpx files are accepted.`, "gpx_upload");
+      setGpxError("Only .gpx files are accepted. Export your activity as GPX from Strava, Garmin Connect, Wahoo, or Komoot."); e.target.value = ""; return;
+    }
     setGpxError(null);
     const text = await file.text();
     const { GPXAnalyzer } = await import("@/lib/engine/GPXAnalyzer");
     const profile = GPXAnalyzer.analyze(text);
     setGpxProfile(profile);
     const xml = new DOMParser().parseFromString(text, "text/xml");
+    const creatorRaw  = xml.documentElement.getAttribute("creator") || "";
     const pts = Array.from(xml.querySelectorAll("trkpt")).map((pt: Element) => {
       const lat     = parseFloat(pt.getAttribute("lat") || "0");
       const lon     = parseFloat(pt.getAttribute("lon") || "0");
@@ -602,11 +621,14 @@ export default function ProRefuelPage() {
       const speed = speedEl ? parseFloat(speedEl.textContent || "0") * 3.6 || undefined : undefined;
       return { lat, lon, ele, time, ...(hr !== undefined && { hr }), ...(cad !== undefined && { cad }), ...(power !== undefined && { power }), ...(speed !== undefined && { speed }) };
     });
-    if (pts.length === 0) { setGpxError("No GPS track found in this file."); e.target.value = ""; return; }
+    if (pts.length === 0) {
+      const deviceHint = creatorRaw ? ` Device: "${creatorRaw}".` : "";
+      void trackError("NO_GPS_TRACK", `No GPS track found in this file.${deviceHint}`, "gpx_upload");
+      setGpxError("No GPS track found in this file. Make sure your .gpx file contains valid location data."); e.target.value = ""; return;
+    }
     setActivityPoints(pts);
     const allNameEls  = Array.from(xml.getElementsByTagName("name"));
     const trackName   = allNameEls.find(el => el.parentElement?.localName === "trk")?.textContent?.trim() || allNameEls.find(el => el.textContent?.trim())?.textContent?.trim() || "EPIC RIDE";
-    const creatorRaw  = xml.documentElement.getAttribute("creator") || "";
     const activityType = xml.querySelector("trk > type")?.textContent?.trim() ?? undefined;
     const gpsDevice   = creatorRaw ? detectGPSDevice(creatorRaw) : undefined;
     setActivityMeta({ name: trackName, ...(gpsDevice?.label ? { gpsDevice } : {}) });
@@ -650,7 +672,7 @@ export default function ProRefuelPage() {
           <span className="hidden sm:block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-0.5">by ProRefuel.app</span>
         </a>
         <div className="flex items-center gap-1 sm:gap-2">
-          <a href="/como-funciona" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">How It Works</a>
+          <a href="/how-it-works" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">How It Works</a>
           <a href="/privacidade" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">Privacy</a>
           <div className="ml-2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/15 border border-amber-500/30">
             <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
@@ -800,7 +822,7 @@ export default function ProRefuelPage() {
                       <div className="flex-1 min-w-0">
                         <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${gpxError ? "text-red-400" : activityPoints.length > 0 ? "text-green-500" : "text-amber-500"}`}>Step 01</span>
                         <p className="text-base font-black uppercase text-white leading-none">Import GPX</p>
-                        {gpxError && <p className="text-[11px] font-semibold mt-1 text-red-400">{gpxError}</p>}
+                        {gpxError && <p className="text-[11px] font-semibold mt-1 text-red-400">{gpxError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>}
                       </div>
                       <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
                     </label>
@@ -813,7 +835,7 @@ export default function ProRefuelPage() {
                         <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${uploadError ? "text-red-400" : activityPoints.length === 0 ? "text-zinc-600" : "text-amber-500"}`}>Step 02</span>
                         <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>Import Video</p>
                         <p className={`text-[11px] font-semibold mt-1 ${uploadError ? "text-red-400" : "text-zinc-500"}`}>
-                          {uploadError ? uploadError : loading ? statusMsg : activityPoints.length === 0 ? "Load GPX first" : "GoPro .mp4"}
+                          {uploadError ? <>{uploadError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></> : loading ? statusMsg : activityPoints.length === 0 ? "Load GPX first" : "GoPro .mp4"}
                         </p>
                       </div>
                       <input type="file" accept=".mp4,.mov,video/mp4,video/quicktime" disabled={activityPoints.length === 0} onChange={handleVideoUpload} className="hidden" />
@@ -946,7 +968,7 @@ export default function ProRefuelPage() {
               <IgIcon size={14} />
               <span className="text-[11px] font-black uppercase tracking-widest">@LENS.video</span>
             </a>
-            <a href="/como-funciona" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
+            <a href="/how-it-works" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
             <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
           </div>
           <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">© {new Date().getFullYear()} ProRefuel.app</p>

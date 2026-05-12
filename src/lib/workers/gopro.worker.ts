@@ -166,6 +166,20 @@ self.onmessage = async (e: MessageEvent) => {
 
     self.postMessage({ success: true, points: downsampled, syncPoints, cameraModel, gpsVideoOffsetMs });
   } catch (error: any) {
-    self.postMessage({ success: false, error: error.message || "Unknown worker error." });
+    const msg = (error?.message || error?.name || String(error) || "").toLowerCase();
+    console.error("[GoPro Worker] error:", error);
+
+    let userMsg: string;
+    if (msg.includes("track not found") || msg.includes("no tracks") || msg.includes("gpmf")) {
+      userMsg = "No GPS telemetry found in this file. Make sure you are using the original GoPro MP4 — do not re-encode or edit the file before importing.";
+    } else if (msg.includes("gpmf track is empty") || msg.includes("corrupted")) {
+      userMsg = "GPS telemetry track is empty or corrupted. Try a different recording.";
+    } else if (msg.includes("no gps") || msg.includes("gps5 missing")) {
+      userMsg = "No GPS data found in this video. Make sure GPS is enabled on your GoPro before recording.";
+    } else {
+      userMsg = msg || "Failed to read GoPro telemetry. Make sure the file is a valid, unmodified GoPro MP4.";
+    }
+
+    self.postMessage({ success: false, error: userMsg });
   }
 };
