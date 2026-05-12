@@ -39,6 +39,24 @@ export async function getSessionsOverTime() {
   return Object.entries(map).map(([day, count]) => ({ day, count }));
 }
 
+export async function getSessionSuccessOverTime() {
+  const { data } = await db()
+    .from("processing_sessions")
+    .select("created_at, status")
+    .gte("created_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+    .order("created_at");
+
+  const map: Record<string, { success: number; error: number }> = {};
+  (data ?? []).forEach((r) => {
+    const day = r.created_at.slice(0, 10);
+    if (!map[day]) map[day] = { success: 0, error: 0 };
+    if (r.status === "success") map[day].success++;
+    else map[day].error++;
+  });
+
+  return Object.entries(map).map(([day, v]) => ({ day, ...v }));
+}
+
 export async function getFunnel() {
   const client = db();
   const [uploads, reached, downloaded] = await Promise.all([
@@ -204,25 +222,152 @@ export async function getTimeOnReady() {
   return Object.entries(buckets).map(([name, value]) => ({ name, value }));
 }
 
+// ── Error Analytics ───────────────────────────────────────────────────────────
+
+export async function getErrorsByCode() {
+  const { data } = await db()
+    .from("error_events")
+    .select("error_code");
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => {
+    const k = r.error_code ?? "UNKNOWN";
+    map[k] = (map[k] ?? 0) + 1;
+  });
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value]) => ({ name, value }));
+}
+
+export async function getErrorsBySource() {
+  const { data } = await db()
+    .from("error_events")
+    .select("error_source");
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => {
+    const k = r.error_source ?? "unknown";
+    map[k] = (map[k] ?? 0) + 1;
+  });
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value]) => ({ name, value }));
+}
+
+export async function getErrorsByDevice() {
+  const { data } = await db()
+    .from("error_events")
+    .select("error_message, error_source");
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => {
+    const msg = r.error_message ?? "";
+
+    // GPX device: "Device: "Suunto app 2.0.51""
+    const deviceMatch = msg.match(/Device:\s*"([^"]+)"/);
+    // Unsupported camera: "DJI" or "Insta360"
+    const cameraMatch = msg.match(/Unsupported camera:\s*"([^"]+)"/);
+
+    let device: string | null = null;
+    if (deviceMatch) {
+      const parts = deviceMatch[1].trim().split(/\s+/);
+      // Normalize to max 3 tokens to group versions: "Suunto app 5.12.1" → "Suunto app"
+      device = parts.length > 2 ? parts.slice(0, 2).join(" ") : parts.join(" ");
+    } else if (cameraMatch) {
+      device = cameraMatch[1].trim();
+    }
+
+    if (device) map[device] = (map[device] ?? 0) + 1;
+  });
+
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([name, value]) => ({ name, value }));
+}
+
+export async function getErrorsOverTime() {
+  const { data } = await db()
+    .from("error_events")
+    .select("created_at")
+    .gte("created_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+    .order("created_at");
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => {
+    const day = r.created_at.slice(0, 10);
+    map[day] = (map[day] ?? 0) + 1;
+  });
+  return Object.entries(map).map(([day, count]) => ({ day, count }));
+}
+
+export async function getRecentErrors() {
+  const { data } = await db()
+    .from("error_events")
+    .select("created_at, error_code, error_message, error_source, app_version")
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  return (data ?? []).map((r) => ({
+    date:    r.created_at,
+    code:    r.error_code,
+    message: r.error_message ?? "",
+    source:  r.error_source ?? "",
+    version: r.app_version ?? "",
+  }));
+}
+
+export async function getErrorKPIs() {
+  const client = db();
+  const [total, last7d, last24h, allSessions, successSessions] = await Promise.all([
+    client.from("error_events").select("id", { count: "exact", head: true }),
+    client.from("error_events").select("id", { count: "exact", head: true })
+      .gte("created_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
+    client.from("error_events").select("id", { count: "exact", head: true })
+      .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
+    client.from("processing_sessions").select("id", { count: "exact", head: true }),
+    client.from("processing_sessions").select("id", { count: "exact", head: true }).eq("status", "success"),
+  ]);
+
+  const totalErrors      = total.count ?? 0;
+  const errorsLast7d     = last7d.count ?? 0;
+  const errorsLast24h    = last24h.count ?? 0;
+  const totalSessions    = allSessions.count ?? 0;
+  const successCount     = successSessions.count ?? 0;
+  const errorCount       = totalSessions - successCount;
+  const successRate      = totalSessions > 0 ? Math.round((successCount / totalSessions) * 100) : 0;
+  const errorSessionRate = totalSessions > 0 ? Math.round((errorCount / totalSessions) * 100) : 0;
+  const errorRate        = totalSessions > 0 ? Math.round((totalErrors / Math.max(1, totalSessions)) * 100) : 0;
+
+  return {
+    totalErrors, errorsLast7d, errorsLast24h, errorRate,
+    totalSessions, successCount, errorCount,
+    successRate, errorSessionRate,
+  };
+}
+
 export type DashboardData = Awaited<ReturnType<typeof getAllDashboardData>>;
 
 export async function getAllDashboardData() {
   const [
-    kpis, sessionsOverTime, funnel, renderStatus,
+    kpis, sessionsOverTime, sessionSuccessOverTime, funnel, renderStatus,
     renderDuration, cameraModels, gpsDevices, gpsLock,
     syncStrategies, gpxFields, activityTypes, unitSystem,
     topLocations, timeOnReady,
+    errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
   ] = await Promise.all([
-    getKPIs(), getSessionsOverTime(), getFunnel(), getRenderStatus(),
+    getKPIs(), getSessionsOverTime(), getSessionSuccessOverTime(), getFunnel(), getRenderStatus(),
     getRenderDurationBuckets(), getCameraModels(), getGpsDevices(), getGpsLockStats(),
     getSyncStrategies(), getGpxFieldsPresence(), getActivityTypes(), getUnitSystem(),
     getTopLocations(), getTimeOnReady(),
+    getErrorsByCode(), getErrorsBySource(), getErrorsByDevice(), getErrorsOverTime(), getRecentErrors(), getErrorKPIs(),
   ]);
 
   return {
-    kpis, sessionsOverTime, funnel, renderStatus,
+    kpis, sessionsOverTime, sessionSuccessOverTime, funnel, renderStatus,
     renderDuration, cameraModels, gpsDevices, gpsLock,
     syncStrategies, gpxFields, activityTypes, unitSystem,
     topLocations, timeOnReady,
+    errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
   };
 }

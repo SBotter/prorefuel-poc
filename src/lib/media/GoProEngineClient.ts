@@ -1,3 +1,5 @@
+import { trackError } from "@/lib/supabase/tracking";
+
 export interface GPSPoint {
   lat: number;
   lon: number;
@@ -19,7 +21,7 @@ export class GoProEngineClient {
    */
   static async extractTelemetry(file: File): Promise<TelemetryResult> {
     console.log(`[GoProEngineClient] Delegando ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB) para Web Worker...`);
-    
+
     return new Promise((resolve, reject) => {
       // Instancia o Worker gerenciado pelo Next.js (Turbopack suporta via import.meta.url)
       const worker = new Worker(new URL('../workers/gopro.worker.ts', import.meta.url));
@@ -51,16 +53,20 @@ export class GoProEngineClient {
           console.log(`[GoProEngineClient] Web Worker finalizou! ${downsampled.length} pts (1Hz) | ${syncPoints.length} pts (5Hz sync) | câmera: "${cameraModel}" | GPS offset: ${gpsVideoOffsetMs}ms`);
           resolve({ points: downsampled, syncPoints, cameraModel, gpsVideoOffsetMs });
         } else {
-          console.error("[GoProEngineClient] Erro no Worker:", e.data.error);
-          reject(new Error(e.data.error));
+          const errMsg: string = e.data.error ?? "Worker returned no data.";
+          console.warn("[GoProEngineClient] Worker error:", errMsg);
+          void trackError("WORKER_ERROR", `[${file.name}] ${errMsg}`, "worker");
+          reject(new Error(errMsg));
         }
-        
+
         worker.terminate(); // Limpa recursos silenciosamente
       };
 
       worker.onerror = (e) => {
-        console.error("[GoProEngineClient] Crash crítico no Worker:", e.message);
-        reject(new Error("Worker Crash: " + e.message));
+        const errMsg = e.message ?? "Unknown worker crash.";
+        console.error("[GoProEngineClient] Worker crash:", errMsg);
+        void trackError("WORKER_ERROR", `[${file.name}] Worker crash: ${errMsg}`, "worker");
+        reject(new Error("Failed to read GoPro telemetry. Make sure the file is a valid, unmodified GoPro MP4."));
         worker.terminate();
       };
 

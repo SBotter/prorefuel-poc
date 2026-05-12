@@ -12,6 +12,12 @@ export type Database = {
         Update: Partial<ProcessingSessionInsert>;
         Relationships: [];
       };
+      error_events: {
+        Row: ErrorEvent;
+        Insert: ErrorEventInsert;
+        Update: Partial<ErrorEventInsert>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
@@ -179,3 +185,41 @@ export interface VideoUpload {
 }
 
 export type VideoUploadInsert = Omit<VideoUpload, "id" | "created_at">;
+
+// ── Error Events ──────────────────────────────────────────────────────────────
+// SQL migration:
+// create table public.error_events (
+//   id uuid default gen_random_uuid() primary key,
+//   created_at timestamptz default now() not null,
+//   error_code text not null,
+//   error_message text,
+//   error_source text,
+//   app_version text,
+//   user_agent text
+// );
+
+export type ErrorCode =
+  | "WRONG_VIDEO_FORMAT"
+  | "UNSUPPORTED_CAMERA"
+  | "NO_GPS_VIDEO"
+  | "GPS_WEAK"
+  | "VIDEO_GPX_MISMATCH"
+  | "NO_SCENES"
+  | "WRONG_GPX_FORMAT"
+  | "NO_GPS_TRACK"
+  | "RENDER_OOM"
+  | "RENDER_FAILED"
+  | "WORKER_ERROR"
+  | "UNKNOWN";
+
+export interface ErrorEvent {
+  id: string;
+  created_at: string;
+  error_code: ErrorCode;
+  error_message: string | null;
+  error_source: string | null;
+  app_version: string | null;
+  user_agent: string | null;
+}
+
+export type ErrorEventInsert = Omit<ErrorEvent, "id" | "created_at">;

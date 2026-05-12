@@ -22,7 +22,7 @@ export default function PrivacyPage() {
           <span className="hidden sm:block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-0.5">by ProRefuel.app</span>
         </Link>
         <div className="flex items-center gap-1 sm:gap-2">
-          <Link href="/como-funciona" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">
+          <Link href="/how-it-works" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">
             How It Works
           </Link>
           <Link href="/privacidade" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-amber-400">
@@ -85,7 +85,7 @@ export default function PrivacyPage() {
             Curious about how LENS works technically?
           </p>
           <Link
-            href="/como-funciona"
+            href="/how-it-works"
             className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-widest text-[11px] hover:scale-105 transition-transform shadow-[0_10px_30px_rgba(245,158,11,0.3)]"
           >
             How It Works
@@ -102,7 +102,7 @@ export default function PrivacyPage() {
             <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">by ProRefuel.app</span>
           </a>
           <div className="flex items-center gap-5">
-            <a href="/como-funciona" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
+            <a href="/how-it-works" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
             <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
           </div>
           <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">© {new Date().getFullYear()} ProRefuel.app</p>
