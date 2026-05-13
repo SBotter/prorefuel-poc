@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
 import type { ActionSegment } from "@/lib/engine/TelemetryCrossRef";
+import { SocialAudioEngine } from "@/lib/audio/SocialAudioEngine";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Canvas + timing constants
@@ -250,25 +251,47 @@ export function SocialRenderer({
     const cursorY = AY + AH - ((dotPt.ele - minE) / eRange * AH * 0.85);
 
     // ── Dynamic phase timeline ──────────────────────────────────────────────
-    const FEAT_TOTAL = FEAT_OFFSET + FEATURES.length * FEAT_DUR; // includes breathing room
+    const FEAT_TOTAL = FEAT_OFFSET + FEATURES.length * FEAT_DUR;
+    const SLAM_S = 16.0, SLAM_E = 17.8;
     const P = {
-      hook:     { s: 0,    e: 10.0 },
-      before:   { s: 10.0, e: 16.0 },
-      slam:     { s: 10.0, e: 11.8 },
-      features: { s: 11.8, e: 11.8 + FEAT_TOTAL },
-      split:    { s: 11.8 + FEAT_TOTAL,        e: 11.8 + FEAT_TOTAL + 15.0 }, // +3s
-      outro:    { s: 11.8 + FEAT_TOTAL + 15.0, e: 11.8 + FEAT_TOTAL + 20.5 },
+      hook:     { s: 0,       e: 10.0 },
+      before:   { s: 10.0,    e: 16.0 },
+      slam:     { s: SLAM_S,  e: SLAM_E },
+      features: { s: SLAM_E,  e: SLAM_E + FEAT_TOTAL },
+      split:    { s: SLAM_E + FEAT_TOTAL,        e: SLAM_E + FEAT_TOTAL + 15.0 },
+      outro:    { s: SLAM_E + FEAT_TOTAL + 15.0, e: SLAM_E + FEAT_TOTAL + 20.5 },
     };
     const TOTAL_S = P.outro.e;
 
-    // ── MediaRecorder ───────────────────────────────────────────────────────
+    // Pre-compute exact times when each feature card enters (for audio sync)
+    const cardHitTimes = FEATURES.map((_, i) => SLAM_E + FEAT_OFFSET + i * FEAT_DUR);
+
+    // ── Audio engine ────────────────────────────────────────────────────────
+    const audioEngine = new SocialAudioEngine();
+    audioEngine.init({
+      hookEnd:      P.hook.e,
+      beforeEnd:    P.before.e,
+      slamStart:    P.slam.s,
+      slamEnd:      P.slam.e,
+      cardHitTimes,
+      featuresEnd:  P.features.e,
+      splitEnd:     P.split.e,
+      outroEnd:     P.outro.e,
+    });
+
+    // ── MediaRecorder — canvas video + Tone.js audio ─────────────────────
     const mimes  = ["video/webm;codecs=avc1,opus","video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"];
     const mime   = mimes.find(t => MediaRecorder.isTypeSupported(t)) || "video/webm";
     const chunks: Blob[] = [];
-    const stream = canvas.captureStream(FPS);
+    const videoStream = canvas.captureStream(FPS);
+    const audioStream = audioEngine.getOutputStream();
+    const combined = new MediaStream([
+      ...videoStream.getVideoTracks(),
+      ...audioStream.getAudioTracks(),
+    ]);
     let rec: MediaRecorder;
-    try { rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 15_000_000 }); }
-    catch { rec = new MediaRecorder(stream); }
+    try { rec = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: 15_000_000 }); }
+    catch { rec = new MediaRecorder(combined); }
 
     rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
     rec.onstop = async () => {
@@ -283,7 +306,7 @@ export function SocialRenderer({
           wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
         });
         await ff.writeFile("in.webm", await fetchFile(new Blob(chunks, { type: mime })));
-        await ff.exec(["-i","in.webm","-vf","scale=1080:1920","-r","30","-c:v","libx264","-preset","ultrafast","-crf","18","-pix_fmt","yuv420p","-an","-movflags","+faststart","out.mp4"]);
+        await ff.exec(["-i","in.webm","-vf","scale=1080:1920","-r","30","-c:v","libx264","-preset","ultrafast","-crf","18","-pix_fmt","yuv420p","-c:a","aac","-b:a","192k","-movflags","+faststart","out.mp4"]);
         const data = await ff.readFile("out.mp4") as Uint8Array<ArrayBuffer>;
         const blob = new Blob([data], { type: "video/mp4" });
         const n = new Date();
@@ -1106,6 +1129,8 @@ export function SocialRenderer({
         afterVideoEl.currentTime = (afterVideoEl.duration || 10) * 0.4;
         afterVideoEl.play().catch(() => {});
       }
+      // Start audio + video recording on the same tick for perfect sync
+      audioEngine.start();
       rec.start(250);
       setStatus("Recording…");
       rafId = requestAnimationFrame(drawLoop);
@@ -1120,6 +1145,7 @@ export function SocialRenderer({
     return () => {
       cancelAnimationFrame(rafId);
       if (rec.state === "recording") rec.stop();
+      audioEngine.dispose();
       URL.revokeObjectURL(videoUrl);
       videoEl.src = "";
       if (afterUrl) { URL.revokeObjectURL(afterUrl); }
