@@ -3,6 +3,12 @@ import React, { useEffect, useRef, useState } from "react";
 import type { ActionSegment } from "@/lib/engine/TelemetryCrossRef";
 import { SocialAudioEngine } from "@/lib/audio/SocialAudioEngine";
 
+// Module-level image cache — loads when module is imported
+const _wmImg: HTMLImageElement | null =
+  typeof window !== "undefined"
+    ? (() => { const i = new Image(); i.src = "/LENS_circle.png"; return i; })()
+    : null;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Canvas + timing constants
 // ─────────────────────────────────────────────────────────────────────────────
@@ -249,6 +255,8 @@ export function SocialRenderer({
     // Cursor X position at mid-ride
     const cursorX = AX0 + (cumDist[trailEnd] / totalDistM2) * (W - AX0*2);
     const cursorY = AY + AH - ((dotPt.ele - minE) / eRange * AH * 0.85);
+
+    // _wmImg loaded at module level — always ready by this point
 
     // ── Dynamic phase timeline ──────────────────────────────────────────────
     const FEAT_TOTAL = FEAT_OFFSET + FEATURES.length * FEAT_DUR;
@@ -523,12 +531,7 @@ export function SocialRenderer({
       ctx.fillStyle = "#fff";
       ctx.beginPath(); ctx.arc(cursorX, cursorY, 3, 0, Math.PI * 2); ctx.fill();
 
-      // Watermark
-      ctx.save(); ctx.globalAlpha = 0.55;
-      ctx.font = `600 ${Math.round(W * 0.033)}px sans-serif`;
-      ctx.fillStyle = "#fff"; ctx.textAlign = "right";
-      ctx.fillText("LENS.prorefuel.app", W - Math.round(W*0.05), Math.round(H*0.05));
-      ctx.restore();
+      // Watermark drawn in main drawLoop (not here) to cover every frame
 
       ctx.restore();
     }
@@ -1117,6 +1120,15 @@ export function SocialRenderer({
       else if (elapsed < P.features.e) drawFeatures(elapsed);
       else if (elapsed < P.split.e)    drawSplit(elapsed);
       else                             drawOutro(elapsed);
+
+      // ── LENS_circle.png watermark — every frame ──
+      if (_wmImg && _wmImg.complete && _wmImg.naturalWidth > 0) {
+        const wmSize = Math.round(W * 0.079);
+        ctx.save();
+        ctx.globalAlpha = 0.30;
+        ctx.drawImage(_wmImg, W - wmSize - 5, 5, wmSize, wmSize);
+        ctx.restore();
+      }
 
       rafId = requestAnimationFrame(drawLoop);
     };
