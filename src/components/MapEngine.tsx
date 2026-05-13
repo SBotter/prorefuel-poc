@@ -63,6 +63,9 @@ interface MapEngineProps {
   onDownloadReady?: (blob: Blob, filename: string) => void;
   /** When true, renders only raw video cuts — no telemetry, no map widget, no branding. Default false. */
   hideOverlay?: boolean;
+  /** When true: skips INTRO/MAP phases and stops recording before the BRAND screen.
+   *  Used by the render-engine tool to export clean highlight reels without intro/brand. */
+  skipIntroAndBrand?: boolean;
 }
 
 function calculateBearing(start: GPSPoint, end: GPSPoint) {
@@ -103,6 +106,7 @@ const MapEngine = forwardRef(
       onRenderComplete,
       onDownloadReady,
       hideOverlay = false,
+      skipIntroAndBrand = false,
     }: MapEngineProps,
     ref,
   ) => {
@@ -115,6 +119,7 @@ const MapEngine = forwardRef(
     const autoRecordRef = useRef(autoRecord);
     const startRecordingRef = useRef<(() => Promise<void>) | null>(null);
     const hideOverlayRef = useRef(hideOverlay);
+    const skipIntroAndBrandRef = useRef(skipIntroAndBrand);
 
     // Lightweight Canvas 2D mini-map (replaces Mapbox in ACTION mode)
     const miniMapCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -380,7 +385,8 @@ const MapEngine = forwardRef(
         }
 
         // Pre-brand: last 3s — B&W + telemetry out + brand in, all synchronized
-        if (currentSeg && currentSeg.type === "ACTION") {
+        // Skipped entirely in skipIntroAndBrand mode (no brand = no pre-brand fade)
+        if (!skipIntroAndBrandRef.current && currentSeg && currentSeg.type === "ACTION") {
           const noMoreAction = storyPlan.segments
             .slice(segIdx + 1)
             .every((s: any) => s.type !== "ACTION");
@@ -2199,6 +2205,16 @@ const MapEngine = forwardRef(
         ctx.fillRect(0, 0, W, H);
 
         if (vm === "BRAND") {
+          // skipIntroAndBrand: stop recording immediately when BRAND begins — no brand screen
+          if (skipIntroAndBrandRef.current && !brandStopScheduled && recordingRef.current) {
+            brandStopScheduled = true;
+            const { recorder: rec, compositeLoop: cl } = recordingRef.current;
+            cancelAnimationFrame(cl);
+            recordingRef.current = null;
+            if (rec.state === "recording") rec.stop();
+            return;
+          }
+
           if (brandStartTime === 0) brandStartTime = performance.now();
           const elapsed = performance.now() - brandStartTime;
           const progress = Math.min(elapsed / BRAND_DURATION, 1);
@@ -2370,6 +2386,20 @@ const MapEngine = forwardRef(
       };
       setIsRecording(true);
       startExperience();
+
+      // skipIntroAndBrand: backdate startTime so the animate loop begins at the first ACTION segment
+      if (skipIntroAndBrand && storyPlan) {
+        let skipSec = 0;
+        for (const seg of storyPlan.segments) {
+          if ((seg as any).type === "ACTION") break;
+          skipSec += (seg as any).durationSec ?? 0;
+        }
+        if (skipSec > 0) {
+          state.current.startTime -= skipSec * 1000;
+          state.current.viewMode = "ACTION";
+          setViewMode("ACTION");
+        }
+      }
     };
 
     // Wire the ref so the map 'load' closure can access startRecording safely
