@@ -284,7 +284,7 @@ export function SocialRenderer({
         });
         await ff.writeFile("in.webm", await fetchFile(new Blob(chunks, { type: mime })));
         await ff.exec(["-i","in.webm","-vf","scale=1080:1920","-r","30","-c:v","libx264","-preset","ultrafast","-crf","18","-pix_fmt","yuv420p","-an","-movflags","+faststart","out.mp4"]);
-        const data = await ff.readFile("out.mp4") as Uint8Array;
+        const data = await ff.readFile("out.mp4") as Uint8Array<ArrayBuffer>;
         const blob = new Blob([data], { type: "video/mp4" });
         const n = new Date();
         const ts = `${n.getFullYear()}${String(n.getMonth()+1).padStart(2,"0")}${String(n.getDate()).padStart(2,"0")}${String(n.getHours()).padStart(2,"0")}${String(n.getMinutes()).padStart(2,"0")}${String(n.getSeconds()).padStart(2,"0")}`;
