@@ -936,9 +936,12 @@ const MapEngine = forwardRef(
         }
       };
 
-      // ── Pre-load logo image once ──────────────────────────────────────────────
+      // ── Pre-load logo images once ─────────────────────────────────────────────
       const logoImg = new Image();
       logoImg.src = "/prorefuel_logo.png";
+
+      const lensCircleImg = new Image();
+      lensCircleImg.src = "/LENS_circle.png";
 
       // Lazy logo cache — loads an SVG/image the first time it's requested.
       // Using a live cache (not captured at effect startup) ensures logos added
@@ -1443,22 +1446,14 @@ const MapEngine = forwardRef(
           ctx.fillRect(0, 0, barW, 6);
         }
 
-        // Watermark — top-right, above the mini-map widget (right: 3%, matching widget margin)
-        ctx.save();
-        ctx.globalAlpha = 0.6;
-        ctx.font = `600 ${Math.round(W * 0.033)}px sans-serif`;
-        ctx.fillStyle = "#ffffff";
-        ctx.textAlign = "right";
-        ctx.letterSpacing = "0.04em";
-        ctx.shadowColor = "rgba(0,0,0,0.9)";
-        ctx.shadowBlur = 8;
-        ctx.fillText(
-          "LENS.prorefuel.app",
-          W - Math.round(W * 0.05),
-          Math.round(H * 0.05),
-        );
-        ctx.letterSpacing = "0em";
-        ctx.restore();
+        // Watermark — LENS_circle.png, top-right corner
+        if (lensCircleImg.complete && lensCircleImg.naturalWidth > 0) {
+          const wmSize = Math.round(W * 0.079);
+          ctx.save();
+          ctx.globalAlpha = 0.30;
+          ctx.drawImage(lensCircleImg, W - wmSize - 5, 5, wmSize, wmSize);
+          ctx.restore();
+        }
 
         ctx.restore();
       };
