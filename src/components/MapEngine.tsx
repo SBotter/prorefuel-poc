@@ -431,7 +431,6 @@ const MapEngine = forwardRef(
 
         if (!currentSeg) {
           if (state.current.viewMode !== "BRAND") {
-            console.log(`[LENS-DBG] animateLoop → BRAND (elapsedTotal=${elapsedTotal.toFixed(2)}s startTime=${state.current.startTime.toFixed(0)}ms)`);
             state.current.viewMode = "BRAND";
             setViewMode("BRAND");
             // Clear direct filter (brand screen takes over)
@@ -565,18 +564,11 @@ const MapEngine = forwardRef(
               const seekTarget = isIPhoneRef.current && vid.duration > 0
                 ? Math.min(currentSeg.videoStartTime, vid.duration - 0.1)
                 : currentSeg.videoStartTime;
-              console.log(`[LENS-DBG] ACTION segIdx=${segIdx} seekTarget=${seekTarget.toFixed(3)} vid.currentTime=${vid.currentTime.toFixed(3)} readyState=${vid.readyState} duration=${vid.duration?.toFixed(2)}`);
               if (Math.abs(vid.currentTime - seekTarget) > 0.5) {
-                console.log(`[LENS-DBG] Seeking from ${vid.currentTime.toFixed(3)} to ${seekTarget.toFixed(3)}`);
                 vid.currentTime = seekTarget;
-              } else {
-                console.log(`[LENS-DBG] No seek needed (diff < 0.5s)`);
               }
-              const playT0 = performance.now();
-              vid.play().then(() => {
-                console.log(`[LENS-DBG] vid.play() RESOLVED in ${(performance.now()-playT0).toFixed(0)}ms readyState=${vid.readyState} currentTime=${vid.currentTime.toFixed(3)}`);
-              }).catch((err) => {
-                console.warn(`[LENS-DBG] vid.play() REJECTED in ${(performance.now()-playT0).toFixed(0)}ms:`, err);
+              vid.play().catch((err) => {
+                console.warn("[MapEngine] video.play() failed:", err);
               });
             }
           } else {
@@ -721,7 +713,6 @@ const MapEngine = forwardRef(
       const mimeType =
         preferredTypes.find((t) => MediaRecorder.isTypeSupported(t)) ||
         "video/webm";
-      console.log("[ProRefuel] MediaRecorder mimeType selected:", mimeType);
 
       const chunks: Blob[] = [];
       const stream = offscreen.captureStream(30);
@@ -753,9 +744,6 @@ const MapEngine = forwardRef(
           if (toneStream) {
             const toneSource = audioCtx.createMediaStreamSource(toneStream);
             toneSource.connect(dest);
-            console.log(
-              "[ProRefuel] Tone.js audio bridged into recording stream ✓",
-            );
           }
 
           audioCtxRef.current = { ctx: audioCtx, dest };
@@ -788,7 +776,6 @@ const MapEngine = forwardRef(
             ...stream.getVideoTracks(),
             audioTrack,
           ]);
-          console.log("[ProRefuel] Audio track added to recording stream ✓");
         }
       }
 
@@ -821,12 +808,6 @@ const MapEngine = forwardRef(
         const renderStart = Date.now();
         try {
           const inputBlob = new Blob(chunks, { type: mimeType });
-          console.log(
-            "[ProRefuel] Recorded blob size:",
-            inputBlob.size,
-            "bytes | codec:",
-            mimeType,
-          );
 
           if (inputBlob.size === 0)
             throw new Error("Recording is empty — no data was captured.");
@@ -834,11 +815,9 @@ const MapEngine = forwardRef(
           const { FFmpeg } = await import("@ffmpeg/ffmpeg");
           const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
           const ffmpeg = new FFmpeg();
-          ffmpeg.on("log", ({ message }) => console.log("[FFmpeg]", message));
 
           const baseURL =
             "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
-          console.log("[ProRefuel] Loading FFmpeg WASM...");
           await ffmpeg.load({
             coreURL: await toBlobURL(
               `${baseURL}/ffmpeg-core.js`,
@@ -857,15 +836,11 @@ const MapEngine = forwardRef(
           // output at storyPlan.totalBudgetSec + 2s buffer so the final MP4 duration
           // is always correct regardless of the container header.
           const maxDurSec = String(Math.ceil((storyPlan?.totalBudgetSec ?? 120) + 2));
-          console.log(`[ProRefuel] FFmpeg duration cap: ${maxDurSec}s (storyPlan=${storyPlan?.totalBudgetSec?.toFixed(1)}s)`);
 
           let exitCode: number;
           if (isH264Source) {
             // Fast path: H264 video — copy video stream (no re-encode), transcode audio Opus→AAC.
             // "-c copy" would embed Opus in MP4 which most players reject; audio must be AAC.
-            console.log(
-              "[ProRefuel] H264 source detected — remuxing video, transcoding audio Opus→AAC...",
-            );
             exitCode = await ffmpeg.exec([
               "-i",
               "input.webm",
@@ -887,9 +862,6 @@ const MapEngine = forwardRef(
             ]);
           } else {
             // Slow path: VP8/VP9 → must transcode to H264. Use ultrafast for max speed.
-            console.log(
-              "[ProRefuel] VP8/VP9 source — transcoding with high quality (CRF 20)...",
-            );
             exitCode = await ffmpeg.exec([
               "-i",
               "input.webm",
@@ -917,14 +889,12 @@ const MapEngine = forwardRef(
             ]);
           }
 
-          console.log("[ProRefuel] FFmpeg exit code:", exitCode);
           if (exitCode !== 0)
             throw new Error(`FFmpeg exited with code ${exitCode}`);
 
           const data = (await ffmpeg.readFile(
             "output.mp4",
           )) as Uint8Array<ArrayBuffer>;
-          console.log("[ProRefuel] MP4 size:", data.byteLength, "bytes");
           if (data.byteLength === 0)
             throw new Error("FFmpeg produced an empty MP4.");
 
@@ -2209,42 +2179,18 @@ const MapEngine = forwardRef(
       const firstAction = storyPlan?.segments?.find(
         (s: any) => s.type === "ACTION" && typeof s.videoStartTime === "number"
       );
-      // ── DEBUG LOGGING ─────────────────────────────────────────────────────────
-      const dbg = (msg: string) => console.log(`[LENS-DBG ${performance.now().toFixed(0)}ms] ${msg}`);
-
-      dbg(`startRecording() — file="${videoEl.src.slice(-40)}" preload="${videoEl.getAttribute('preload')}" readyState=${videoEl.readyState} duration=${videoEl.duration?.toFixed(2)}s`);
-      dbg(`firstAction.videoStartTime=${firstAction?.videoStartTime} storyPlan segments=${storyPlan?.segments?.length}`);
-
-      // Log all readyState changes
-      const rsHandler = () => dbg(`readyState changed → ${videoEl.readyState} (0=NOTHING 1=META 2=CURRENT 3=FUTURE 4=ENOUGH) currentTime=${videoEl.currentTime.toFixed(3)}s`);
-      videoEl.addEventListener('loadedmetadata', () => dbg('EVENT: loadedmetadata readyState='+videoEl.readyState));
-      videoEl.addEventListener('loadeddata',     () => dbg('EVENT: loadeddata readyState='+videoEl.readyState+' currentTime='+videoEl.currentTime.toFixed(3)));
-      videoEl.addEventListener('canplay',        () => dbg('EVENT: canplay readyState='+videoEl.readyState));
-      videoEl.addEventListener('canplaythrough', () => dbg('EVENT: canplaythrough readyState='+videoEl.readyState));
-      videoEl.addEventListener('playing',        () => dbg('EVENT: playing readyState='+videoEl.readyState+' currentTime='+videoEl.currentTime.toFixed(3)));
-      videoEl.addEventListener('waiting',        () => dbg('EVENT: waiting (buffering stall) readyState='+videoEl.readyState+' currentTime='+videoEl.currentTime.toFixed(3)));
-      videoEl.addEventListener('stalled',        () => dbg('EVENT: stalled readyState='+videoEl.readyState));
-      videoEl.addEventListener('seeked',         () => dbg('EVENT: seeked readyState='+videoEl.readyState+' currentTime='+videoEl.currentTime.toFixed(3)));
-      videoEl.addEventListener('seeking',        () => dbg('EVENT: seeking currentTime='+videoEl.currentTime.toFixed(3)));
-      videoEl.addEventListener('pause',          () => dbg('EVENT: pause currentTime='+videoEl.currentTime.toFixed(3)));
-      // ─────────────────────────────────────────────────────────────────────────
-
       if (firstAction?.videoStartTime !== undefined) {
         const targetTime = firstAction.videoStartTime;
-        dbg(`seeking to firstAction.videoStartTime=${targetTime} readyState=${videoEl.readyState} currentTime=${videoEl.currentTime.toFixed(3)}`);
-
         if (videoEl.readyState < 2) {
           // Video not yet ready — set currentTime AND await loadeddata/seeked.
           // Note: if currentTime is already at targetTime (e.g. targetTime=0), Chrome
           // does NOT fire a "seeked" event (no-op seek). Use "loadeddata" as the
           // reliable readiness signal, with a 5s safety timeout.
           videoEl.currentTime = targetTime;
-          dbg('readyState < 2 — awaiting loadeddata or seeked (5s timeout)...');
           let timeoutId: ReturnType<typeof setTimeout> | null = null;
           await Promise.race([
             new Promise<void>(resolve => {
               const onReady = () => {
-                dbg('loadeddata/seeked resolved await');
                 if (timeoutId !== null) { clearTimeout(timeoutId); timeoutId = null; }
                 resolve();
               };
@@ -2252,25 +2198,20 @@ const MapEngine = forwardRef(
               videoEl.addEventListener("seeked",     onReady, { once: true });
             }),
             new Promise<void>(resolve => {
-              timeoutId = setTimeout(() => { dbg('seek TIMEOUT (5s) — proceeding anyway'); resolve(); }, 5000);
+              timeoutId = setTimeout(resolve, 5000);
             }),
           ]);
         } else if (Math.abs(videoEl.currentTime - targetTime) > 0.05) {
           // Ready but not at the right position — seek and wait for seeked.
-          dbg(`readyState=${videoEl.readyState} but currentTime wrong — seeking`);
           videoEl.currentTime = targetTime;
           await Promise.race([
             new Promise<void>(resolve => {
-              videoEl.addEventListener("seeked", () => { dbg('seeked resolved'); resolve(); }, { once: true });
+              videoEl.addEventListener("seeked", () => resolve(), { once: true });
             }),
-            new Promise<void>(resolve => setTimeout(() => { dbg('seek TIMEOUT (2s)'); resolve(); }, 2000)),
+            new Promise<void>(resolve => setTimeout(resolve, 2000)),
           ]);
-        } else {
-          dbg(`readyState=${videoEl.readyState} currentTime already at ${targetTime} — no seek needed`);
         }
       }
-
-      dbg(`after seek: readyState=${videoEl.readyState} currentTime=${videoEl.currentTime.toFixed(3)} videoWidth=${videoEl.videoWidth} videoHeight=${videoEl.videoHeight}`);
 
       // colorSeedCanvas: color (non-grayscale) version of the first ACTION frame.
       // Used as ACTION fallback before the first valid live frame is decoded.
@@ -2286,11 +2227,8 @@ const MapEngine = forwardRef(
           frozenCtx.filter = "none";
           colorSeedCtx.drawImage(videoEl, 0, 0, W, H);
           colorSeedReady = true;
-          dbg(`frozenFrame + colorSeed captured ✓ readyState=${videoEl.readyState}`);
-        } else {
-          dbg(`WARN: cannot capture frozen frame — readyState=${videoEl.readyState} videoWidth=${videoEl.videoWidth}`);
         }
-      } catch (e: any) { dbg(`WARN: frozenFrame capture threw: ${e.message}`); }
+      } catch {}
 
       // Last-valid-frame buffer: updated each time we draw a good video frame in ACTION.
       // When readyState < 2 (brief seek gap), we draw this instead of leaving the canvas black.
@@ -2298,11 +2236,6 @@ const MapEngine = forwardRef(
       let lastVideoFrame: OffscreenCanvas | null = null;
       let lastVideoFrameCtx: OffscreenCanvasRenderingContext2D | null = null;
 
-      // Counters for ACTION frame logging
-      let actionFrameCount = 0;
-      let actionRealFrames = 0;
-      let actionFallbackFrames = 0;
-      let actionFirstRealFrameTime = -1;
 
       const compositeLoop = (now: DOMHighResTimeStamp) => {
         if (!recordingRef.current) return;
@@ -2361,11 +2294,7 @@ const MapEngine = forwardRef(
             return;
           }
 
-          if (brandStartTime === 0) {
-            brandStartTime = performance.now();
-            const recT = ((performance.now() - recordingStartTime) / 1000).toFixed(2);
-            console.log(`[LENS-DBG] BRAND phase started at recording t=${recT}s`);
-          }
+          if (brandStartTime === 0) brandStartTime = performance.now();
           const elapsed = performance.now() - brandStartTime;
           const progress = Math.min(elapsed / BRAND_DURATION, 1);
           if (!hideOverlayRef.current) {
@@ -2377,8 +2306,6 @@ const MapEngine = forwardRef(
 
           // Stop recording only after full brand animation completes
           if (progress >= 1 && !brandStopScheduled && recordingRef.current) {
-            const recT = ((performance.now() - recordingStartTime) / 1000).toFixed(2);
-            console.log(`[LENS-DBG] rec.stop() at recording t=${recT}s (brand elapsed=${elapsed.toFixed(0)}ms)`);
             brandStopScheduled = true;
             const { recorder: rec, compositeLoop: cl } = recordingRef.current;
             cancelAnimationFrame(cl);
@@ -2428,13 +2355,6 @@ const MapEngine = forwardRef(
                 sy = Math.round((vH - sh) / 2);
               }
 
-              // Log ACTION frame state periodically (every 30 frames = ~1s)
-              actionFrameCount++;
-              if (actionFrameCount <= 5 || actionFrameCount % 30 === 0) {
-                const recT = ((now - recordingStartTime) / 1000).toFixed(1);
-                console.log(`[LENS-DBG] ACTION frame#${actionFrameCount} t=${recT}s readyState=${videoEl.readyState} currentTime=${videoEl.currentTime.toFixed(3)} paused=${videoEl.paused} real=${actionRealFrames} fallback=${actionFallbackFrames}`);
-              }
-
               if (videoEl.readyState >= 2) {
                 // Grayscale 0→100% over first 60% (0→1.8s of 3s window)
                 const _t = preBrandFadeRef.current;
@@ -2479,20 +2399,9 @@ const MapEngine = forwardRef(
                 }
                 lastVideoFrameCtx!.drawImage(videoEl, 0, 0, vW, vH);
 
-                actionRealFrames++;
-                if (actionFirstRealFrameTime < 0) {
-                  actionFirstRealFrameTime = (now - recordingStartTime) / 1000;
-                  console.log(`[LENS-DBG] ✅ FIRST REAL VIDEO FRAME at t=${actionFirstRealFrameTime.toFixed(2)}s (frame#${actionFrameCount}) readyState=${videoEl.readyState} currentTime=${videoEl.currentTime.toFixed(3)}`);
-                }
-
               } else {
                 // readyState < 2: seek gap — prevent black recording.
                 // Priority: lastVideoFrame (exact prev frame) → colorSeedCanvas (first frame, color)
-                actionFallbackFrames++;
-                if (actionFallbackFrames <= 3 || actionFallbackFrames % 30 === 0) {
-                  const recT = ((now - recordingStartTime) / 1000).toFixed(1);
-                  console.log(`[LENS-DBG] ⚠️ FALLBACK frame#${actionFrameCount} t=${recT}s readyState=${videoEl.readyState} paused=${videoEl.paused} currentTime=${videoEl.currentTime.toFixed(3)} fallback#${actionFallbackFrames}`);
-                }
                 let bAlpha = 1, bScl = 1;
                 if (clipTransStart2 > 0) {
                   const elapsed = now - clipTransStart2;

@@ -99,8 +99,13 @@ export class GPXAnalyzer {
     const metaTime = dom.querySelector('metadata > time')?.textContent;
     const activityStart = metaTime ? new Date(metaTime) : null;
 
-    // All track points
-    const trkpts = Array.from(dom.querySelectorAll('trkpt'));
+    // Primary: track points (<trkpt>). Fallback: route points (<rtept>) with timestamps.
+    let rawPtEls = Array.from(dom.querySelectorAll('trkpt'));
+    if (rawPtEls.length === 0) {
+      const rtepts = Array.from(dom.querySelectorAll('rtept'));
+      rawPtEls = rtepts.filter(el => !!el.querySelector('time')?.textContent);
+    }
+    const trkpts = rawPtEls;
     const totalPoints = trkpts.length;
 
     if (totalPoints < 2) {

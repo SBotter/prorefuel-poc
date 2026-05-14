@@ -27,7 +27,7 @@ export default function MobilePage() {
         </div>
         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/15 border border-amber-500/30">
           <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-          <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Beta v1.0.30</span>
+          <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Beta v1.0.31</span>
         </div>
       </nav>
 
@@ -38,7 +38,7 @@ export default function MobilePage() {
           <svg viewBox="0 0 24 24" className="w-3 h-3 fill-amber-500" stroke="none">
             <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
           </svg>
-          <span className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-200">Beta v1.0.30 · 100% Free</span>
+          <span className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-200">Beta v1.0.31 · 100% Free</span>
         </div>
 
         <h1 className="text-5xl font-black tracking-tight leading-[0.88] mb-5">
