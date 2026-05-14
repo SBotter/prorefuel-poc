@@ -66,6 +66,8 @@ interface MapEngineProps {
   /** When true: skips INTRO/MAP phases and stops recording before the BRAND screen.
    *  Used by the render-engine tool to export clean highlight reels without intro/brand. */
   skipIntroAndBrand?: boolean;
+  /** When true: video is from iPhone — enables safe seek clamping. */
+  isIPhone?: boolean;
 }
 
 function calculateBearing(start: GPSPoint, end: GPSPoint) {
@@ -107,6 +109,7 @@ const MapEngine = forwardRef(
       onDownloadReady,
       hideOverlay = false,
       skipIntroAndBrand = false,
+      isIPhone = false,
     }: MapEngineProps,
     ref,
   ) => {
@@ -120,6 +123,7 @@ const MapEngine = forwardRef(
     const startRecordingRef = useRef<(() => Promise<void>) | null>(null);
     const hideOverlayRef = useRef(hideOverlay);
     const skipIntroAndBrandRef = useRef(skipIntroAndBrand);
+    const isIPhoneRef = useRef(isIPhone);
 
     // Lightweight Canvas 2D mini-map (replaces Mapbox in ACTION mode)
     const miniMapCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -540,8 +544,12 @@ const MapEngine = forwardRef(
 
               prevActionSegIdx = segIdx; // track for next clip change detection
               setClipIdx((prev) => prev + 1);
-              if (Math.abs(vid.currentTime - currentSeg.videoStartTime) > 0.5) {
-                vid.currentTime = currentSeg.videoStartTime;
+              // iPhone: clamp seek to video duration (GPS-derived videoStartTime can exceed duration)
+              const seekTarget = isIPhoneRef.current && vid.duration > 0
+                ? Math.min(currentSeg.videoStartTime, vid.duration - 0.1)
+                : currentSeg.videoStartTime;
+              if (Math.abs(vid.currentTime - seekTarget) > 0.5) {
+                vid.currentTime = seekTarget;
               }
               vid.play().catch((err) => {
                 console.warn("[MapEngine] video.play() failed:", err);
@@ -964,9 +972,15 @@ const MapEngine = forwardRef(
             getDistance(activityPoints[i - 1], activityPoints[i]),
         );
       }
-      const realMaxSpeed = Math.max(
-        ...activityPoints.map((p) => (p as any).speed || 0),
-      );
+      // 98th-percentile speed: robust against GPS spikes that survive the
+      // physics cap in TelemetryCrossRef (e.g. spikes just below 120 km/h).
+      const _speeds = activityPoints
+        .map((p) => (p as any).speed || 0)
+        .filter((s) => s > 0)
+        .sort((a: number, b: number) => a - b);
+      const realMaxSpeed = _speeds.length > 0
+        ? _speeds[Math.floor(_speeds.length * 0.98)]
+        : 0;
       const STABLE_GAUGE_MAX = Math.max(50, Math.ceil(realMaxSpeed / 10) * 10);
 
       // ── Pre-compute elevation bounds ──────────────────────────────────────────
@@ -1352,7 +1366,7 @@ const MapEngine = forwardRef(
           noShadow();
         }
 
-        // Layer 3: max-speed red needle (only redrawn — rarely changes)
+        // Layer 3: max-speed red needle
         if (maxSpeedSeen > 0.5) {
           const maxAngle = speedToAngle(maxSpeedSeen);
           ctx.save();
@@ -1393,6 +1407,14 @@ const MapEngine = forwardRef(
           gCX,
           gCY + Math.round(W * 0.016) + Math.round(W * 0.04),
         );
+
+        // iPhone only: small "GPS Activity" source label inside gauge ring
+        if (isIPhoneRef.current) {
+          noShadow();
+          ctx.font = `500 ${Math.round(W * 0.022)}px sans-serif`;
+          ctx.fillStyle = "rgba(161,161,170,0.65)";
+          ctx.fillText("GPS Activity", gCX, gCY - gR * 0.58);
+        }
 
         // Layer 5: secondary metrics (distance, HR, power, time)
         const metY = gCY + gR + Math.round(H * 0.04);
@@ -1951,28 +1973,24 @@ const MapEngine = forwardRef(
         if (equipAlpha > 0.01 && equipDevices.length > 0) {
           ctx.save();
 
-          const iconH = Math.round(H * 0.024);
-          const padH  = Math.round(W * 0.055);
-          const padV  = Math.round(H * 0.010);
-          const sepGap = Math.round(W * 0.045);
+          // Each logo occupies a fixed slotW×iconH slot — scaled-to-fit centered.
+          // This keeps GPS device logo and camera logo visually equal regardless of AR.
+          const iconH  = Math.round(H * 0.024);
+          const slotW  = Math.round(iconH * 3.6);
+          const padH   = Math.round(W * 0.048);
+          const padV   = Math.round(H * 0.010);
+          const sepGap = Math.round(W * 0.026);
 
           const imgs = equipDevices.map((d) => getLogoImg(d.logoFile));
-          const widths = imgs.map((img) =>
-            img.complete && img.naturalWidth > 0
-              ? (img.naturalWidth / img.naturalHeight) * iconH
-              : iconH,
-          );
 
-          const totalLogoW =
-            widths.reduce((a, b) => a + b, 0) +
-            (equipDevices.length - 1) * sepGap;
+          const totalLogoW = equipDevices.length * slotW + (equipDevices.length - 1) * sepGap;
           const pillW = totalLogoW + padH * 2;
           const pillH = iconH + padV * 2;
           const pillX = (W - pillW) / 2;
           const pillY = Math.round(H * 0.895) - pillH;
           const pr = pillH / 2;
 
-          // Single pill — light frosted, no amber border
+          // Frosted pill background
           ctx.globalAlpha = equipAlpha * 0.80;
           ctx.fillStyle = "rgba(255,255,255,0.20)";
           ctx.beginPath();
@@ -1984,14 +2002,21 @@ const MapEngine = forwardRef(
           ctx.lineWidth = 1;
           ctx.stroke();
 
-          // Logos side by side
+          // Logos — each scaled-to-fit inside its fixed slot, centered
           let lx = pillX + padH;
           equipDevices.forEach((_, i) => {
-            if (widths[i] > 0) {
+            const img = imgs[i];
+            if (img.complete && img.naturalWidth > 0) {
+              const imgAR = img.naturalWidth / img.naturalHeight;
+              let rW = imgAR * iconH;
+              let rH = iconH;
+              if (rW > slotW) { rW = slotW; rH = slotW / imgAR; }
+              const rx = lx + (slotW - rW) / 2;
+              const ry = pillY + padV + (iconH - rH) / 2;
               ctx.globalAlpha = equipAlpha * 0.90;
-              ctx.drawImage(imgs[i], lx, pillY + padV, widths[i], iconH);
+              ctx.drawImage(img, rx, ry, rW, rH);
             }
-            lx += widths[i] + sepGap;
+            lx += slotW + sepGap;
           });
 
           ctx.restore();
@@ -2894,7 +2919,7 @@ const MapEngine = forwardRef(
                 }}
               >
                 <div
-                  className="flex items-center gap-5 px-5 py-2 rounded-full"
+                  className="flex items-center gap-4 px-5 py-2 rounded-full"
                   style={{
                     background: "rgba(255,255,255,0.18)",
                     border: "1px solid rgba(255,255,255,0.20)",
@@ -2903,7 +2928,9 @@ const MapEngine = forwardRef(
                   }}
                 >
                   {srcs.map((src, i) => (
-                    <img key={i} src={src} alt="" className="object-contain" style={{ height: "16px", width: "auto", opacity: 0.88 }} />
+                    <div key={i} className="flex items-center justify-center" style={{ width: "54px", height: "18px" }}>
+                      <img src={src} alt="" style={{ maxWidth: "54px", maxHeight: "18px", width: "auto", height: "auto", opacity: 0.88 }} />
+                    </div>
                   ))}
                 </div>
               </div>

@@ -337,6 +337,7 @@ export default function ProRefuelPage() {
   const [unit, setUnit]                     = useState<UnitSystem>("metric");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [activityMeta, setActivityMeta]     = useState<{ name: string; location?: string; gpsDevice?: DeviceInfo; camera?: DeviceInfo }>({ name: "EPIC RIDE" });
+  const [isIPhoneVideo, setIsIPhoneVideo]   = useState(false);
 
   const mapEngineRef           = useRef<{ start: () => void; startRecording: () => Promise<void>; isRecording: boolean }>(null);
   const gpxMetricsRef          = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
@@ -396,6 +397,7 @@ export default function ProRefuelPage() {
       setStatusMsg("Identifying camera...");
       const cameraDetection = await CameraDetector.detect(file);
       const isIPhone = cameraDetection.type === "iphone";
+      setIsIPhoneVideo(isIPhone);
 
       if (!isIPhone) setVideoFile(file);
 
@@ -968,6 +970,7 @@ export default function ProRefuelPage() {
                       activityMeta={activityMeta}
                       autoRecord={true}
                       unit={unit}
+                      isIPhone={isIPhoneVideo}
                       onRenderComplete={(result: RenderResult) => {
                         trackVideoExport({
                           processing_session_id: processingSessionIdRef.current,
