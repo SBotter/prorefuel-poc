@@ -621,7 +621,9 @@ export default function ProRefuelPage() {
     setGpxProfile(profile);
     const xml = new DOMParser().parseFromString(text, "text/xml");
     const creatorRaw  = xml.documentElement.getAttribute("creator") || "";
-    const pts = Array.from(xml.querySelectorAll("trkpt")).map((pt: Element) => {
+
+    // Parse a single track/route point element into a GPS point object.
+    const parsePoint = (pt: Element) => {
       const lat     = parseFloat(pt.getAttribute("lat") || "0");
       const lon     = parseFloat(pt.getAttribute("lon") || "0");
       const ele     = parseFloat(pt.querySelector("ele")?.textContent || "0");
@@ -635,15 +637,61 @@ export default function ProRefuelPage() {
       const power = powerEl ? parseFloat(powerEl.textContent || "0") || undefined : undefined;
       const speed = speedEl ? parseFloat(speedEl.textContent || "0") * 3.6 || undefined : undefined;
       return { lat, lon, ele, time, ...(hr !== undefined && { hr }), ...(cad !== undefined && { cad }), ...(power !== undefined && { power }), ...(speed !== undefined && { speed }) };
-    });
+    };
+
+    // Primary: track points (<trkpt>) — all GPS devices that record an activity.
+    // Fallback: route points (<rtept>) — Suunto and some devices export routes.
+    //   Route points are useful if they have timestamps (recorded track in route format).
+    //   Route points WITHOUT timestamps cannot be used for video sync and are rejected.
+    let pts = Array.from(xml.querySelectorAll("trkpt")).map(parsePoint);
+    const usedRtept = pts.length === 0;
+
+    if (usedRtept) {
+      const rtepts = Array.from(xml.querySelectorAll("rtept"));
+      if (rtepts.length > 0) {
+        const withTime = rtepts.filter(pt => !!pt.querySelector("time")?.textContent);
+        if (withTime.length === 0) {
+          // Suunto and some apps export route files without timestamps — these are
+          // planned routes, not recorded activities. They cannot be synced with video.
+          const isSuunto = creatorRaw.toLowerCase().includes("suunto");
+          void trackError("NO_GPS_TRACK", `Route file (rtept, no timestamps). Creator: "${creatorRaw}".`, "gpx_upload");
+          setGpxError(
+            isSuunto
+              ? "This is a Suunto route file, not a recording. Please upload the track file (*-track.gpx) instead — it has timestamps and heart rate data."
+              : "This file contains route waypoints but no timestamps. Please export your recorded activity (not a planned route)."
+          );
+          e.target.value = ""; return;
+        }
+        // rtept with timestamps → parse them the same way as trkpt
+        pts = withTime.map(parsePoint);
+      }
+    }
+
     if (pts.length === 0) {
       const deviceHint = creatorRaw ? ` Device: "${creatorRaw}".` : "";
       void trackError("NO_GPS_TRACK", `No GPS track found in this file.${deviceHint}`, "gpx_upload");
       setGpxError("No GPS track found in this file. Make sure your .gpx file contains valid location data."); e.target.value = ""; return;
     }
-    setActivityPoints(pts);
+    // Filter points with invalid timestamps (NaN) — can corrupt sync
+    const validPts = pts.filter(p => isFinite(p.time) && p.time > 0);
+    if (validPts.length === 0) {
+      void trackError("NO_GPS_TRACK", `All points have invalid timestamps. Creator: "${creatorRaw}".`, "gpx_upload");
+      setGpxError("No GPS track found in this file. Make sure your .gpx file contains valid location data."); e.target.value = ""; return;
+    }
+
+    setActivityPoints(validPts);
+
+    // Extract activity name — handle Suunto's "suuntoapp-ActivityType-Timestamp" format.
     const allNameEls  = Array.from(xml.getElementsByTagName("name"));
-    const trackName   = allNameEls.find(el => el.parentElement?.localName === "trk")?.textContent?.trim() || allNameEls.find(el => el.textContent?.trim())?.textContent?.trim() || "EPIC RIDE";
+    const rawTrackName = usedRtept
+      ? (xml.querySelector("rte > name")?.textContent?.trim() || allNameEls[0]?.textContent?.trim() || "")
+      : (allNameEls.find(el => el.parentElement?.localName === "trk")?.textContent?.trim() || allNameEls.find(el => el.textContent?.trim())?.textContent?.trim() || "");
+    // Clean Suunto's machine-generated names: "suuntoapp-Cycling-2026-05-10T..." → "Cycling"
+    const suuntoNameMatch = rawTrackName.match(/^suuntoapp-([A-Za-z]+(?:[A-Z][a-z]+)*)-\d/);
+    const trackName = suuntoNameMatch
+      ? suuntoNameMatch[1].replace(/([A-Z])/g, " $1").trim()  // "TrailRunning" → "Trail Running"
+      : rawTrackName || "EPIC RIDE";
+
     const activityType = xml.querySelector("trk > type")?.textContent?.trim() ?? undefined;
     const gpsDevice   = creatorRaw ? detectGPSDevice(creatorRaw) : undefined;
     setActivityMeta({ name: trackName, ...(gpsDevice?.label ? { gpsDevice } : {}) });
@@ -793,7 +841,7 @@ export default function ProRefuelPage() {
 
           <div className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-zinc-900/80 border border-amber-500/25 mb-8 w-fit shadow-xl backdrop-blur">
             <Zap size={13} className="text-amber-500 fill-amber-500 animate-pulse" />
-            <span className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-200">Beta v1.0.30 &nbsp;·&nbsp; 100% Free</span>
+            <span className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-200">Beta v1.0.31 &nbsp;·&nbsp; 100% Free</span>
           </div>
 
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-black tracking-tight leading-[0.88] mb-6">

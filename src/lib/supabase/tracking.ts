@@ -1,6 +1,6 @@
 import type { ErrorCode, ErrorEventInsert, GpxSessionInsert, ProcessingSessionInsert, VideoExportInsert, VideoUploadInsert } from "./types";
 
-const APP_VERSION = "1.0.29";
+const APP_VERSION = "1.0.31";
 const GPX_GAP_THRESHOLD_S = 30;
 
 /**
