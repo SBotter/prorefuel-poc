@@ -15,20 +15,22 @@
  *   'unknown' → Camera not yet supported — upload is rejected with an explanation
  */
 
-export type CameraType = 'gopro' | 'iphone' | 'unknown';
+export type CameraType = 'gopro' | 'iphone' | 'android' | 'unknown';
 
 export interface CameraDetection {
   type: CameraType;
-  make: string;   // e.g. "GoPro", "Apple"
-  model: string;  // e.g. "HERO12 Black", "iPhone 15 Pro"
+  make: string;   // e.g. "GoPro", "Apple", "Samsung"
+  model: string;  // e.g. "HERO12 Black", "iPhone 15 Pro", "Galaxy S24 FE"
 }
 
 // ── Filename pattern registry ─────────────────────────────────────────────────
 // Each entry is [regex, CameraType]. First match wins.
-// GoPro naming convention: GH (Hero), GX (Max/360), GL (alternative)
 const FILENAME_PATTERNS: [RegExp, CameraType][] = [
-  [/^(GH|GX|GL|GOPR|GP)\d/i, 'gopro'],
-  [/^IMG_\d{4}\.(MOV|mov)$/,  'iphone'],
+  [/^(GH|GX|GL|GOPR|GP)\d/i,           'gopro'],
+  [/^IMG_\d{4}\.(MOV|mov)$/,            'iphone'],
+  // Android / Samsung: YYYYMMDD_HHMMSS.mp4 or VID_YYYYMMDD_HHMMSS.mp4
+  [/^\d{8}_\d{6}\.(mp4|MP4)$/,          'android'],
+  [/^VID_\d{8}_\d{6}\.(mp4|MP4)$/,      'android'],
 ];
 
 // Extension-based fallback (lower confidence than filename pattern)
@@ -41,10 +43,17 @@ const EXT_DEFAULTS: Record<string, CameraType> = {
 // Keys are lowercase substrings of the Make tag value.
 const EXIF_MAKE_MAP: [string, CameraType, string][] = [
   // [substring, type, normalized make]
-  ['gopro',  'gopro',  'GoPro'],
-  ['apple',  'iphone', 'Apple'],
-  ['dji',    'unknown', 'DJI'],       // future pipeline
-  ['insta',  'unknown', 'Insta360'], // future pipeline
+  ['gopro',    'gopro',    'GoPro'],
+  ['apple',    'iphone',  'Apple'],
+  ['samsung',  'android', 'Samsung'],
+  ['huawei',   'android', 'Huawei'],
+  ['xiaomi',   'android', 'Xiaomi'],
+  ['google',   'android', 'Google'],
+  ['motorola', 'android', 'Motorola'],
+  ['oneplus',  'android', 'OnePlus'],
+  ['oppo',     'android', 'OPPO'],
+  ['dji',      'unknown', 'DJI'],
+  ['insta',    'unknown', 'Insta360'],
 ];
 
 export class CameraDetector {
@@ -78,11 +87,13 @@ export class CameraDetector {
       }
     }
 
-    // ── Layer 2: extension fallback (zero I/O — .mov → iPhone, .mp4 → GoPro) ──
+    // ── Layer 2: extension fallback — only for unambiguous extensions ────────
+    // .mov → iPhone (only Apple uses QuickTime brand)
+    // .mp4 → skip here; without a filename pattern match an MP4 could be
+    //        Android or GoPro — defer to EXIF (Layer 3) for confirmation.
     const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-    const extType = EXT_DEFAULTS[ext];
-    if (extType) {
-      return { type: extType, make: extType === 'gopro' ? 'GoPro' : 'Apple', model: '' };
+    if (ext === 'mov') {
+      return { type: 'iphone', make: 'Apple', model: '' };
     }
 
     // ── Layer 3: EXIF Make/Model (last resort — reads file, main thread) ────────

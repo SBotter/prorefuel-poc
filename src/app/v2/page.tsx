@@ -53,13 +53,17 @@ function detectGPSDevice(creatorRaw: string): DeviceInfo {
   return { label: "", logoFile: "" };
 }
 
+const ANDROID_BRANDS = ['samsung', 'galaxy', 'huawei', 'xiaomi', 'google', 'pixel',
+  'motorola', 'oneplus', 'oppo', 'vivo', 'realme', 'sony xperia', 'android'];
+
 function detectCamera(cameraModel: string): DeviceInfo {
   const c = cameraModel.toLowerCase();
-  if (c.includes("gopro"))                         return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
-  if (c.includes("apple") || c.includes("iphone")) return { label: cameraModel, logoFile: `${LOGO_BASE}/iphone_logo.svg` };
-  if (c.includes("dji"))                           return { label: cameraModel, logoFile: "" };
-  if (c.includes("insta360"))                      return { label: cameraModel, logoFile: "" };
-  if (cameraModel)                                 return { label: cameraModel, logoFile: "" };
+  if (c.includes("gopro"))                           return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
+  if (c.includes("apple") || c.includes("iphone"))  return { label: cameraModel, logoFile: `${LOGO_BASE}/iphone_logo.svg` };
+  if (ANDROID_BRANDS.some(b => c.includes(b)))       return { label: cameraModel, logoFile: `${LOGO_BASE}/android_logo.svg` };
+  if (c.includes("dji"))                             return { label: cameraModel, logoFile: "" };
+  if (c.includes("insta360"))                        return { label: cameraModel, logoFile: "" };
+  if (cameraModel)                                   return { label: cameraModel, logoFile: "" };
   return { label: "", logoFile: "" };
 }
 
