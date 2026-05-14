@@ -57,13 +57,17 @@ function detectGPSDevice(creatorRaw: string): DeviceInfo {
   return { label: "", logoFile: "" };
 }
 
+const ANDROID_BRANDS = ['samsung', 'galaxy', 'huawei', 'xiaomi', 'google', 'pixel',
+  'motorola', 'oneplus', 'oppo', 'vivo', 'realme', 'sony xperia', 'android'];
+
 function detectCamera(cameraModel: string): DeviceInfo {
   const c = cameraModel.toLowerCase();
-  if (c.includes("gopro"))                         return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
-  if (c.includes("apple") || c.includes("iphone")) return { label: cameraModel, logoFile: `${LOGO_BASE}/iphone_logo.svg` };
-  if (c.includes("dji"))                           return { label: cameraModel, logoFile: "" };
-  if (c.includes("insta360"))                      return { label: cameraModel, logoFile: "" };
-  if (cameraModel)                                 return { label: cameraModel, logoFile: "" };
+  if (c.includes("gopro"))                           return { label: cameraModel, logoFile: `${LOGO_BASE}/gopro_logo.svg` };
+  if (c.includes("apple") || c.includes("iphone"))  return { label: cameraModel, logoFile: `${LOGO_BASE}/iphone_logo.svg` };
+  if (ANDROID_BRANDS.some(b => c.includes(b)))       return { label: cameraModel, logoFile: `${LOGO_BASE}/android_logo.svg` };
+  if (c.includes("dji"))                             return { label: cameraModel, logoFile: "" };
+  if (c.includes("insta360"))                        return { label: cameraModel, logoFile: "" };
+  if (cameraModel)                                   return { label: cameraModel, logoFile: "" };
   return { label: "", logoFile: "" };
 }
 
@@ -337,7 +341,7 @@ export default function ProRefuelPage() {
   const [unit, setUnit]                     = useState<UnitSystem>("metric");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [activityMeta, setActivityMeta]     = useState<{ name: string; location?: string; gpsDevice?: DeviceInfo; camera?: DeviceInfo }>({ name: "EPIC RIDE" });
-  const [isIPhoneVideo, setIsIPhoneVideo]   = useState(false);
+  const [isMobileVideo, setIsMobileVideo]   = useState(false); // true for iPhone + Android
 
   const mapEngineRef           = useRef<{ start: () => void; startRecording: () => Promise<void>; isRecording: boolean }>(null);
   const gpxMetricsRef          = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
@@ -378,6 +382,7 @@ export default function ProRefuelPage() {
         { CameraDetector },
         { GoProEngineClient },
         { iPhoneEngineClient },
+        { AndroidEngineClient },
         { iPhoneVideoGPSAnalyzer },
         { VideoGPSAnalyzer },
         { SyncStrategySelector },
@@ -387,6 +392,7 @@ export default function ProRefuelPage() {
         import("@/lib/media/CameraDetector"),
         import("@/lib/media/GoProEngineClient"),
         import("@/lib/media/iPhoneEngineClient"),
+        import("@/lib/media/AndroidEngineClient"),
         import("@/lib/engine/iphone/iPhoneVideoGPSAnalyzer"),
         import("@/lib/engine/VideoGPSAnalyzer"),
         import("@/lib/engine/SyncStrategySelector"),
@@ -396,23 +402,27 @@ export default function ProRefuelPage() {
 
       setStatusMsg("Identifying camera...");
       const cameraDetection = await CameraDetector.detect(file);
-      const isIPhone = cameraDetection.type === "iphone";
-      setIsIPhoneVideo(isIPhone);
+      const isIPhone  = cameraDetection.type === "iphone";
+      const isAndroid = cameraDetection.type === "android";
+      const isMobile  = isIPhone || isAndroid;
+      setIsMobileVideo(isMobile);
 
-      if (!isIPhone) setVideoFile(file);
+      if (!isMobile) setVideoFile(file);
 
       if (cameraDetection.type === "unknown") {
         const detected = [cameraDetection.make, cameraDetection.model].filter(Boolean).join(" ") || "unknown";
         void trackError("UNSUPPORTED_CAMERA", `Unsupported camera: "${detected}". File: "${file.name}".`, "video_upload");
-        throw new Error("Unsupported camera. Only GoPro cameras are supported.");
+        throw new Error("Unsupported camera. Supported: GoPro, iPhone, and Android phones.");
       }
 
       let vpts: any[], syncPoints: any[], cameraModel: string, gpsVideoOffsetMs: number;
       let iPhoneVideoStartMs = 0, iPhoneDurationMs = 0, iPhoneHasStartGPS = false;
 
-      if (isIPhone) {
-        setStatusMsg("Reading iPhone metadata...");
-        const result       = await iPhoneEngineClient.extractTelemetry(file);
+      if (isMobile) {
+        setStatusMsg(isAndroid ? "Reading Android metadata..." : "Reading iPhone metadata...");
+        const result = isAndroid
+          ? await AndroidEngineClient.extractTelemetry(file)
+          : await iPhoneEngineClient.extractTelemetry(file);
         vpts               = result.points;
         syncPoints         = result.syncPoints;
         cameraModel        = result.cameraModel;
@@ -469,16 +479,16 @@ export default function ProRefuelPage() {
         if (camera.label) setActivityMeta(prev => ({ ...prev, camera }));
       }
 
-      if (!isIPhone && vpts.length === 0) {
+      if (!isMobile && vpts.length === 0) {
         void trackError("NO_GPS_VIDEO", "No GPS data found in this video.", "video_upload");
         throw new Error("No GPS data found in this video. Make sure GPS is enabled on your GoPro and that you waited for GPS lock before starting recording.");
       }
 
-      const videoProfile = isIPhone
+      const videoProfile = isMobile
         ? iPhoneVideoGPSAnalyzer.analyze(iPhoneVideoStartMs, iPhoneDurationMs, iPhoneHasStartGPS)
         : VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
 
-      if (!isIPhone && (!videoProfile.hasGPSLock || videoProfile.postLockPoints === 0)) {
+      if (!isMobile && (!videoProfile.hasGPSLock || videoProfile.postLockPoints === 0)) {
         void trackError("GPS_WEAK", "GPS signal too weak — no valid fix was recorded.", "video_upload");
         throw new Error("GPS signal too weak — no valid fix was recorded. Wait for the GPS lock icon on your GoPro before starting your activity.");
       }
@@ -486,17 +496,17 @@ export default function ProRefuelPage() {
       const totalPts = vpts.length;
       const fixDist  = videoProfile.fixDistribution;
       const fixTotal = (fixDist.fix0 + fixDist.fix2 + fixDist.fix3) || 1;
-      const gpsStartUtc = isIPhone ? new Date(iPhoneVideoStartMs).toISOString() : (totalPts > 0 ? new Date((vpts[0] as any).time).toISOString() : null);
-      const gpsEndUtc   = isIPhone ? new Date(iPhoneVideoStartMs + iPhoneDurationMs).toISOString() : (totalPts > 0 ? new Date((vpts[totalPts - 1] as any).time).toISOString() : null);
+      const gpsStartUtc = isMobile ? new Date(iPhoneVideoStartMs).toISOString() : (totalPts > 0 ? new Date((vpts[0] as any).time).toISOString() : null);
+      const gpsEndUtc   = isMobile ? new Date(iPhoneVideoStartMs + iPhoneDurationMs).toISOString() : (totalPts > 0 ? new Date((vpts[totalPts - 1] as any).time).toISOString() : null);
       videoMetricsRef.current = {
         filename: file.name, file_size_bytes: file.size, camera_model: resolvedModel ?? null,
-        has_gps: isIPhone ? iPhoneHasStartGPS : totalPts > 0, gps_points_count: totalPts,
+        has_gps: isMobile ? iPhoneHasStartGPS : totalPts > 0, gps_points_count: totalPts,
         gps_duration_s: videoProfile.durationSec, gps_sampling_interval_ms: videoProfile.samplingIntervalMs,
         gps_start_utc: gpsStartUtc, gps_end_utc: gpsEndUtc, gps_video_offset_ms: gpsVideoOffsetMs,
         has_gps_lock: videoProfile.hasGPSLock, gps_lock_latency_s: videoProfile.lockLatencySec,
         pre_lock_points: videoProfile.preLockPoints, post_lock_points: videoProfile.postLockPoints,
-        speed_avg_kmh: isIPhone ? null : Math.round(videoProfile.postLockSpeedAvgKmh * 10) / 10,
-        speed_max_kmh: isIPhone ? null : Math.round(videoProfile.postLockSpeedMaxKmh * 10) / 10,
+        speed_avg_kmh: isMobile ? null : Math.round(videoProfile.postLockSpeedAvgKmh * 10) / 10,
+        speed_max_kmh: isMobile ? null : Math.round(videoProfile.postLockSpeedMaxKmh * 10) / 10,
         distance_m: Math.round(videoProfile.postLockDistanceM),
         fix_pct_no_fix: Math.round((fixDist.fix0 / fixTotal) * 1000) / 10,
         fix_pct_2d: Math.round((fixDist.fix2 / fixTotal) * 1000) / 10,
@@ -530,8 +540,10 @@ export default function ProRefuelPage() {
         }
       }
 
-      const syncPlan = isIPhone
-        ? { method: "timestamp-based" as const, distanceThresholdM: 0, timeWindowMs: 0, confidence: "HIGH" as const, reason: "iPhone CreateDate = activity GPS UTC" }
+      const syncReason = isAndroid ? "Android tkhd CreateDate − duration = activity GPS UTC"
+        : "iPhone CreateDate = activity GPS UTC";
+      const syncPlan = isMobile
+        ? { method: "timestamp-based" as const, distanceThresholdM: 0, timeWindowMs: 0, confidence: "HIGH" as const, reason: syncReason }
         : gpxProfile
           ? SyncStrategySelector.select(gpxProfile, videoProfile)
           : { method: "position-match" as const, distanceThresholdM: 10, timeWindowMs: 30_000, confidence: "LOW" as const, reason: "no GPX profile" };
@@ -546,7 +558,7 @@ export default function ProRefuelPage() {
       const VIDEO_SEEK_WORKAROUND_SEC = 0;
       segments.forEach((s) => { if (s.videoStartTime !== undefined) s.videoStartTime += VIDEO_SEEK_WORKAROUND_SEC; });
 
-      const videoDurationSec = isIPhone
+      const videoDurationSec = isMobile
         ? iPhoneDurationMs / 1000
         : (vpts.length > 1 ? gpsVideoOffsetMs / 1000 + (vpts[vpts.length - 1].time - vpts[0].time) / 1000 : 0);
 
@@ -558,7 +570,7 @@ export default function ProRefuelPage() {
 
       trackProcessingSession({
         status: "success", video_filename: file.name,
-        video_duration_s: isIPhone ? iPhoneDurationMs / 1000 : (vpts.length > 0 ? (vpts[vpts.length - 1] as any).time / 1000 : null),
+        video_duration_s: isMobile ? iPhoneDurationMs / 1000 : (vpts.length > 0 ? (vpts[vpts.length - 1] as any).time / 1000 : null),
         camera_model: resolvedModel ?? null, activity_name: activityMeta.name ?? null,
         gpx_points_count: activityPoints.length || null, gps_device: activityMeta.gpsDevice?.label ?? null,
         activity_location: activityMeta.location ?? null, sync_strategy: syncPlan.method ?? null,
@@ -574,7 +586,7 @@ export default function ProRefuelPage() {
 
       setTimeout(() => {
         setHighlights(segments);
-        if (isIPhone) setVideoFile(file);
+        if (isMobile) setVideoFile(file);
         setStep("READY");
         readyStepStartRef.current = Date.now();
         setLoading(false);
@@ -970,7 +982,7 @@ export default function ProRefuelPage() {
                       activityMeta={activityMeta}
                       autoRecord={true}
                       unit={unit}
-                      isIPhone={isIPhoneVideo}
+                      isIPhone={isMobileVideo}
                       onRenderComplete={(result: RenderResult) => {
                         trackVideoExport({
                           processing_session_id: processingSessionIdRef.current,

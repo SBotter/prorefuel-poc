@@ -85,27 +85,7 @@ export class StorytellingProcessor {
       const segments: StorySegment[] = [];
       segments.push({ type: 'INTRO', startIndex: 0, endIndex: 0, durationSec: INTRO_SEC });
 
-      if (!isLongActivity) {
-        const preclimaxMapBudget = narrativePlan.acts.reduce((sum, a) => {
-          if (a.act === 'INTRO' || a.act === 'OUTRO' || a.act === 'CLIMAX' || a.act === 'RELIEF') return sum;
-          return sum + a.targetDurationSec;
-        }, 0);
-        let preclimaxCursor   = 0;
-        let preclimaxFracUsed = 0;
-        for (const act of narrativePlan.acts) {
-          if (act.act === 'INTRO' || act.act === 'OUTRO' || act.act === 'CLIMAX' || act.act === 'RELIEF') continue;
-          const actFrac   = preclimaxMapBudget > 0 ? act.targetDurationSec / preclimaxMapBudget : 1;
-          const cumFrac   = preclimaxFracUsed + actFrac;
-          const segStart  = preclimaxCursor;
-          const segEnd    = Math.min(Math.round(firstActionIndex * cumFrac), firstActionIndex);
-          preclimaxFracUsed = cumFrac;
-          preclimaxCursor   = segEnd;
-          if (segEnd - segStart < 2) continue;
-          const realSec        = (activityPoints[segEnd].time - activityPoints[segStart].time) / 1000;
-          const mapSpeedFactor = realSec > 0 ? realSec / act.targetDurationSec : 1;
-          segments.push({ type: 'MAP', startIndex: segStart, endIndex: segEnd, durationSec: act.targetDurationSec, mapSpeedFactor });
-        }
-      }
+      // MAP phase removed — mini-map widget used instead during ACTION
 
       segments.push({
         type: 'ACTION', startIndex: firstActionIndex, endIndex: vidEndIdx,
@@ -280,57 +260,15 @@ export class StorytellingProcessor {
         // If rawSegments is empty, the fallback below handles it
 
       } else {
-        // MAP segment — linear journey, not arbitrary scene positions
-
-        // Long activity guard: if the map would need to fly faster than 8× real speed,
-        // it produces a disorienting blur. Discard the MAP segment and return its budget
-        // to ACTION clips. The mini-map widget already shows position during ACTION.
-        if (isLongActivity) {
-          reclaimedMapBudget += narrativeAct.targetDurationSec;
-          // Keep cursor in sync even though we skip
-          if (!seenClimax) {
-            const actFrac = preclimaxMapBudget > 0
-              ? narrativeAct.targetDurationSec / preclimaxMapBudget : 1;
-            preclimaxFracUsed += actFrac;
-            preclimaxCursor = Math.min(Math.round(firstActionIndex * preclimaxFracUsed), firstActionIndex);
-          }
-          continue;
-        }
-
-        let segStartIndex: number;
-        let segEndIndex: number;
-
+        // MAP phase removed — reclaim all MAP budget for ACTION clips.
+        // The in-video mini-map widget (shown during ACTION) provides route context.
+        reclaimedMapBudget += narrativeAct.targetDurationSec;
         if (!seenClimax) {
-          // Pre-CLIMAX: proportional slice of 0 → firstActionIndex
-          const actFrac   = preclimaxMapBudget > 0
-            ? narrativeAct.targetDurationSec / preclimaxMapBudget
-            : 1;
-          const cumFrac   = preclimaxFracUsed + actFrac;
-          segStartIndex   = preclimaxCursor;
-          segEndIndex     = Math.min(Math.round(firstActionIndex * cumFrac), firstActionIndex);
-          preclimaxFracUsed = cumFrac;
-          preclimaxCursor   = segEndIndex;
-        } else {
-          // Post-CLIMAX (RELIEF): map shows the ride continuing after the video
-          segStartIndex = lastActionEndIndex;
-          segEndIndex   = totalPoints - 1;
+          const actFrac = preclimaxMapBudget > 0
+            ? narrativeAct.targetDurationSec / preclimaxMapBudget : 1;
+          preclimaxFracUsed += actFrac;
+          preclimaxCursor = Math.min(Math.round(firstActionIndex * preclimaxFracUsed), firstActionIndex);
         }
-
-        // Skip degenerate segments
-        if (segEndIndex - segStartIndex < 2) continue;
-
-        // Compute how fast the map must fly to cover this real-world distance in durationSec
-        const realSec        = (activityPoints[segEndIndex].time - activityPoints[segStartIndex].time) / 1000;
-        const mapSpeedFactor = realSec > 0 ? realSec / narrativeAct.targetDurationSec : 1;
-
-        segments.push({
-          type:           "MAP",
-          startIndex:     segStartIndex,
-          endIndex:       segEndIndex,
-          durationSec:    narrativeAct.targetDurationSec,
-          mapSpeedFactor,
-          value:          narrativeAct.scenes[0] ? valueFromScene(narrativeAct.scenes[0]) : undefined,
-        });
       }
     }
 

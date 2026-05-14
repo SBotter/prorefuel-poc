@@ -660,46 +660,15 @@ export class StorytellingProcessorV2 {
           }
         }
       } else {
-        // MAP segment logic (identical to V1)
-        if (isLongActivity) {
-          reclaimedMapBudget += narrativeAct.targetDurationSec;
-          if (!seenClimax) {
-            const actFrac = preclimaxMapBudget > 0
-              ? narrativeAct.targetDurationSec / preclimaxMapBudget : 1;
-            preclimaxFracUsed += actFrac;
-            preclimaxCursor = Math.min(Math.round(firstActionIndex * preclimaxFracUsed), firstActionIndex);
-          }
-          continue;
-        }
-
-        let segStart: number;
-        let segEnd:   number;
-
+        // MAP phase removed — reclaim all MAP budget for ACTION clips.
+        // Only the in-video mini-map widget (shown during ACTION) is used.
+        reclaimedMapBudget += narrativeAct.targetDurationSec;
         if (!seenClimax) {
           const actFrac = preclimaxMapBudget > 0
             ? narrativeAct.targetDurationSec / preclimaxMapBudget : 1;
-          const cumFrac = preclimaxFracUsed + actFrac;
-          segStart             = preclimaxCursor;
-          segEnd               = Math.min(Math.round(firstActionIndex * cumFrac), firstActionIndex);
-          preclimaxFracUsed    = cumFrac;
-          preclimaxCursor      = segEnd;
-        } else {
-          segStart = lastActionEndIndex;
-          segEnd   = totalPoints - 1;
+          preclimaxFracUsed += actFrac;
+          preclimaxCursor = Math.min(Math.round(firstActionIndex * preclimaxFracUsed), firstActionIndex);
         }
-
-        if (segEnd - segStart < 2) continue;
-
-        const realSec        = (activityPoints[segEnd].time - activityPoints[segStart].time) / 1000;
-        const mapSpeedFactor = realSec > 0 ? realSec / narrativeAct.targetDurationSec : 1;
-
-        segments.push({
-          type:           'MAP',
-          startIndex:     segStart,
-          endIndex:       segEnd,
-          durationSec:    narrativeAct.targetDurationSec,
-          mapSpeedFactor,
-        });
       }
     }
 
@@ -800,6 +769,8 @@ export class StorytellingProcessorV2 {
     gpsVideoOffsetMs: number,
     videoDurationSec: number,
   ): StoryPlan & { v2Debug?: StorytellingV2Debug } {
+    // MAP phase removed — only the in-video mini-map widget is used.
+    // INTRO_SEC is the same for all devices and video durations (equal treatment).
     const INTRO_SEC     = 6.5;
     const BRAND_SEC     = 3.5;
     const ACTION_BUDGET = 49;
@@ -831,25 +802,31 @@ export class StorytellingProcessorV2 {
     const segments: StorySegment[] = [];
     segments.push({ type: 'INTRO', startIndex: 0, endIndex: 0, durationSec: INTRO_SEC });
 
-    if (!isLongActivity) {
-      const preclimaxMapBudget = narrativePlan.acts.reduce((sum, a) => {
+    if (false && !isLongActivity) { // MAP phase removed — mini-map widget used instead
+      const rawMapBudget = narrativePlan.acts.reduce((sum, a) => {
         if (a.act === 'INTRO' || a.act === 'OUTRO' || a.act === 'CLIMAX' || a.act === 'RELIEF') return sum;
         return sum + a.targetDurationSec;
       }, 0);
+      // Cap MAP budget relative to video length (max 15% or 4s).
+      const mapCap = Math.min(videoDurationSec * 0.15, 4.0);
+      const preclimaxMapBudget = Math.min(rawMapBudget, mapCap);
+      const mapScale = rawMapBudget > 0 ? preclimaxMapBudget / rawMapBudget : 1;
+
       let preclimaxCursor   = 0;
       let preclimaxFracUsed = 0;
       for (const act of narrativePlan.acts) {
         if (act.act === 'INTRO' || act.act === 'OUTRO' || act.act === 'CLIMAX' || act.act === 'RELIEF') continue;
-        const actFrac   = preclimaxMapBudget > 0 ? act.targetDurationSec / preclimaxMapBudget : 1;
+        const scaledDur = act.targetDurationSec * mapScale;
+        const actFrac   = preclimaxMapBudget > 0 ? scaledDur / preclimaxMapBudget : 1;
         const cumFrac   = preclimaxFracUsed + actFrac;
         const segStart  = preclimaxCursor;
         const segEnd    = Math.min(Math.round(firstActionIndex * cumFrac), firstActionIndex);
         preclimaxFracUsed = cumFrac;
         preclimaxCursor   = segEnd;
-        if (segEnd - segStart < 2) continue;
+        if (segEnd - segStart < 2 || scaledDur < 0.5) continue;
         const realSec        = (activityPoints[segEnd].time - activityPoints[segStart].time) / 1000;
-        const mapSpeedFactor = realSec > 0 ? realSec / act.targetDurationSec : 1;
-        segments.push({ type: 'MAP', startIndex: segStart, endIndex: segEnd, durationSec: act.targetDurationSec, mapSpeedFactor });
+        const mapSpeedFactor = realSec > 0 ? realSec / scaledDur : 1;
+        segments.push({ type: 'MAP', startIndex: segStart, endIndex: segEnd, durationSec: scaledDur, mapSpeedFactor });
       }
     }
 
