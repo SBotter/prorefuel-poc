@@ -225,11 +225,19 @@ export class TelemetryCrossRef {
     console.log(`[TelemetryCrossRef] timeModel: videoStart=${new Date(videoStart).toISOString()} gpsOffset=${gpsVideoOffsetMs}ms effectiveStart=${new Date(videoStartGPS).toISOString()}`);
 
     // ── Speed smoothing (unchanged — needed before IntensityEngine) ───────────
+    // 33.33 m/s = 120 km/h: physics cap against GPS position spikes.
+    // A single 1-second interval above this threshold is a receiver glitch,
+    // not real motion. Leave it undefined so the rolling average below fills
+    // it from valid neighbours instead of poisoning STABLE_GAUGE_MAX.
+    const MAX_SPEED_MS = 33.33;
     for (let i = 1; i < activityPoints.length; i++) {
       if (!activityPoints[i].speed) {
         const d = this.getDistance(activityPoints[i - 1], activityPoints[i]);
         const t = (activityPoints[i].time - activityPoints[i - 1].time) / 1000;
-        if (t > 0 && t < 10) activityPoints[i].speed = (d / t) * SPEED_FACTOR[unit];
+        if (t > 0 && t < 10) {
+          const ms = d / t;
+          if (ms < MAX_SPEED_MS) activityPoints[i].speed = ms * SPEED_FACTOR[unit];
+        }
       }
     }
     const WINDOW = 5;
