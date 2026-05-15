@@ -586,8 +586,10 @@ export function MobileCanvasRenderer({
       mlog("REC", "loop started");
 
       // ── 30fps throttle: rAF fires at 60fps on iPhone; only capture at 30fps ──
-      let lastCaptureMs = -1;
-      let lastLogSec    = -1;
+      let lastCaptureMs  = -1;
+      let lastLogSec     = -1;
+      let lastSegIdxLog  = -99;
+      let skippedFrames  = 0;
 
       const loop = (now: number) => {
         if (isStopped) return;
@@ -595,26 +597,37 @@ export function MobileCanvasRenderer({
         const elapsed = (now - recStartMs) / 1000;
         setProgress(Math.round(c01(elapsed / totalDurSec) * 90));
 
-        // Log every second for debugging
+        // ── Detailed log every second ─────────────────────────────────────────
         const secFloor = Math.floor(elapsed);
         if (secFloor > lastLogSec) {
           lastLogSec = secFloor;
-          mlog("REC", `t=${secFloor}s mem=${mlogMemory()}`);
+          const encMB   = ((recorder?.estimatedEncodedBytes ?? 0) / 1_048_576).toFixed(1);
+          const queue   = recorder?.encoderQueueSize ?? "?";
+          const frames  = recorder?.framesCaptured ?? "?";
+          const vState  = videoEl.readyState;
+          const vTime   = videoEl.currentTime.toFixed(2);
+          const vPaused = videoEl.paused ? "PAUSED" : "playing";
+          const vErr    = videoEl.error ? `ERR:${videoEl.error.code}` : "ok";
+          mlog("REC", `t=${secFloor}s enc=${encMB}MB q=${queue} frames=${frames} skip=${skippedFrames} vid=${vState}/${vPaused}@${vTime}s ${vErr}`);
+          skippedFrames = 0; // reset per-second counter
         }
 
         if (elapsed >= totalDurSec) {
           isStopped = true;
-          mlog("REC", "loop ended — calling stop()");
+          const encMB = ((recorder?.estimatedEncodedBytes ?? 0) / 1_048_576).toFixed(1);
+          mlog("STOP", `elapsed=${elapsed.toFixed(1)}s encEst=${encMB}MB — flushing encoder`);
           setStatus("Encoding…");
           const renderStart = Date.now();
 
           recorder!.stop()
             .then(async (blob) => {
-              mlog("DONE", `blob=${(blob.size/1_048_576).toFixed(1)}MB`);
+              mlog("STOP", `flush done in ${Date.now()-renderStart}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
               setProgress(99);
               setStatus("Sharing…");
               const filename = `LENS_${makeTimestamp()}.mp4`;
+              mlog("SHARE", `calling shareOrDownload filename=${filename}`);
               await shareOrDownload(blob, filename);
+              mlog("SHARE", "shareOrDownload returned");
               setProgress(100);
               setStatus("Done!");
               onRenderComplete({
@@ -625,32 +638,40 @@ export function MobileCanvasRenderer({
               });
             })
             .catch((err: any) => {
-              mlog("ERROR", `stop() failed: ${err.message}`);
+              mlog("ERROR", `stop() failed after ${Date.now()-renderStart}ms: ${err?.message ?? err}`);
               setStatus("Export failed.");
               onRenderComplete({
-                durationMs:      0,
-                outputFormat:    "mp4",
-                outputSizeBytes: 0,
-                status:          "error",
-                errorMessage:    err.message ?? "unknown",
+                durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0,
+                status: "error", errorMessage: err?.message ?? "unknown",
               });
             });
           return;
+        }
+
+        // ── Segment transition log ────────────────────────────────────────────
+        const hit = getSegAt(elapsed);
+        if (hit && hit.segIdx !== lastSegIdxLog) {
+          lastSegIdxLog = hit.segIdx;
+          mlog("SEG", `→ seg[${hit.segIdx}] type=${hit.seg.type} dur=${hit.seg.durationSec.toFixed(1)}s videoStart=${hit.seg.videoStartTime?.toFixed(2) ?? "n/a"}s`);
         }
 
         // Draw every rAF for smooth preview
         try {
           drawFrame(elapsed);
         } catch (err: any) {
-          mlog("ERROR", `drawFrame crashed: ${err.message}`);
+          mlog("ERROR", `drawFrame@${elapsed.toFixed(2)}s: ${err?.message}`);
         }
 
         // ── Capture only at 30fps to avoid VideoFrame memory spike on iOS ────
         if (lastCaptureMs < 0 || now - lastCaptureMs >= CAPTURE_INTERVAL_MS) {
-          try {
-            recorder!.captureFrame();
-          } catch (err: any) {
-            mlog("ERROR", `captureFrame crashed: ${err.message}`);
+          if (recorder?.encoderQueueSize ?? 0 > 10) {
+            skippedFrames++;
+          } else {
+            try {
+              recorder!.captureFrame();
+            } catch (err: any) {
+              mlog("ERROR", `captureFrame@${elapsed.toFixed(2)}s: ${err?.message}`);
+            }
           }
           lastCaptureMs = now;
         }
@@ -681,6 +702,8 @@ export function MobileCanvasRenderer({
     }
 
     return () => {
+      // This cleanup fires when the component unmounts (page reload, step change, etc.)
+      mlog("CLEANUP", `isStopped=${isStopped} rafId=${rafId} t=${((performance.now()-recStartMs)/1000).toFixed(1)}s`);
       isStopped = true;
       cancelAnimationFrame(rafId);
       window.removeEventListener("error", onWindowError);

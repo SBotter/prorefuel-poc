@@ -74,7 +74,10 @@ export class MobileRecorder {
     const muxer  = new Muxer({
       target,
       video:      { codec: 'avc', width: MOBILE_W, height: MOBILE_H },
-      fastStart:  'in-memory',
+      // fastStart: false avoids holding a second copy of the data in RAM during
+      // finalize() (the 'in-memory' mode was doing a double-buffer that could OOM).
+      // moov-at-end is fine for download-to-Photos on iOS.
+      fastStart:  false,
     });
 
     // Placeholder — replaced once the class instance exists
@@ -107,6 +110,12 @@ export class MobileRecorder {
   }
 
   get error(): Error | null { return this._error; }
+  get encoderQueueSize(): number { return this._encoder.encodeQueueSize; }
+  get framesCaptured(): number   { return this._frameCount; }
+  /** Estimated encoded bytes accumulated so far (approximate). */
+  get estimatedEncodedBytes(): number {
+    return this._frameCount * VIDEO_BITRATE / MOBILE_FPS / 8;
+  }
 
   /**
    * Captures the current canvas state as one video frame.
