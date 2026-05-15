@@ -89,10 +89,12 @@ export class MobileRecorder {
       output: (chunk: EncodedVideoChunk, meta: any) => {
         if (self._error) return;
         try { muxer.addVideoChunk(chunk, meta ?? undefined); }
-        catch (e) { self._error = e as Error; }
+        catch (e) {
+          mlog('MUXER_ERR', String(e));  // distinguish from encoder error
+          self._error = e as Error;
+        }
       },
       error: (e: DOMException) => {
-        // Log immediately — this error is otherwise invisible
         mlog('ENCODER_ERR', `${e.name}: ${e.message}`);
         if (self) self._error = e;
       },
