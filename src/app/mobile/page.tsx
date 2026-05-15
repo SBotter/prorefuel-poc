@@ -10,6 +10,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
+import { mlog, mlogClear } from "@/lib/engine/mobile/mobileDebugLogger";
 import type { ActionSegment }  from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }     from "@/lib/utils/units";
@@ -268,6 +269,8 @@ export default function MobilePage() {
     }
 
     setLoading(true); setUploadError(null); setProgress(0);
+    mlogClear();
+    mlog("UPLOAD", `file=${file.name} size=${(file.size/1_048_576).toFixed(1)}MB`);
     const interval = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
 
     try {
@@ -297,6 +300,9 @@ export default function MobilePage() {
       const isAndroid = cam.type === "android";
       const isMobile  = isIPhone || isAndroid;
 
+      mlog("CAM", `type=${cam.type} make=${cam.make} model=${cam.model}`);
+      mlog("GPX", `activityPoints=${activityPoints.length} t0=${new Date(activityPoints[0]?.time ?? 0).toISOString()}`);
+
       let vpts: any[]    = [];
       let gpsVideoOffsetMs = 0;
       let iPhoneVideoStartMs = 0, iPhoneDurationMs = 0, iPhoneHasStartGPS = false;
@@ -306,14 +312,53 @@ export default function MobilePage() {
         const result = isAndroid
           ? await AndroidEngineClient.extractTelemetry(file)
           : await iPhoneEngineClient.extractTelemetry(file);
+
+        // ── Critical: use ALL result fields, same as desktop page ──────────────
+        vpts               = result.points as any[];
+        gpsVideoOffsetMs   = result.gpsVideoOffsetMs;
         iPhoneVideoStartMs = result.videoStartMs;
         iPhoneDurationMs   = result.durationMs;
         iPhoneHasStartGPS  = result.hasStartGPS;
+
+        mlog("PARSE", `vpts=${vpts.length} offset=${gpsVideoOffsetMs}ms videoStart=${new Date(iPhoneVideoStartMs).toISOString()} dur=${(iPhoneDurationMs/1000).toFixed(1)}s hasGPS=${iPhoneHasStartGPS}`);
+
+        // ── Timezone auto-correction (same as desktop) ──────────────────────────
+        // If the video's GPS timestamps don't overlap with the activity, try every
+        // 30-min timezone offset to find the best alignment.
+        if (activityPoints.length >= 5 && vpts.length >= 2) {
+          const actStart = activityPoints[0].time;
+          const actEnd   = activityPoints[activityPoints.length - 1].time;
+          const vidStart = vpts[0].time;
+          const vidEnd   = vpts[vpts.length - 1].time;
+          const alreadyOk = vidStart <= actEnd + 60_000 && vidEnd >= actStart - 60_000;
+
+          if (!alreadyOk) {
+            mlog("SYNC", `no overlap — trying TZ offsets. vid=[${new Date(vidStart).toISOString()}..${new Date(vidEnd).toISOString()}] act=[${new Date(actStart).toISOString()}..${new Date(actEnd).toISOString()}]`);
+            let bestOffset = 0, bestOverlap = 0;
+            for (let tzMin = -720; tzMin <= 840; tzMin += 30) {
+              const offsetMs   = tzMin * 60_000;
+              const adjStart   = vidStart - offsetMs;
+              const adjEnd     = vidEnd   - offsetMs;
+              const overlap    = Math.max(0, Math.min(adjEnd, actEnd) - Math.max(adjStart, actStart));
+              if (overlap > bestOverlap) { bestOverlap = overlap; bestOffset = offsetMs; }
+            }
+            if (bestOffset !== 0) {
+              mlog("SYNC", `applying TZ offset ${bestOffset / 60_000}min (overlap=${(bestOverlap/1000).toFixed(0)}s)`);
+              vpts               = vpts.map((p: any) => ({ ...p, time: p.time - bestOffset }));
+              iPhoneVideoStartMs = iPhoneVideoStartMs - bestOffset;
+            } else {
+              mlog("SYNC", "no TZ offset improved overlap — proceeding with original");
+            }
+          } else {
+            mlog("SYNC", `overlap ok — no TZ correction needed`);
+          }
+        }
       } else {
         setStatusMsg("Extracting GoPro telemetry…");
         const result = await GoProEngineClient.extractTelemetry(file);
         vpts             = result.points as any[];
         gpsVideoOffsetMs = result.gpsVideoOffsetMs;
+        mlog("PARSE", `gopro vpts=${vpts.length} offset=${gpsVideoOffsetMs}ms`);
       }
 
       setStatusMsg("Detecting highlights…");
@@ -321,9 +366,17 @@ export default function MobilePage() {
         ? iPhoneVideoGPSAnalyzer.analyze(iPhoneVideoStartMs, iPhoneDurationMs, iPhoneHasStartGPS)
         : VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
 
+      mlog("HIGHLIGHTS", `calling findHighlights vpts=${vpts.length} offset=${gpsVideoOffsetMs}ms`);
       const segments = TelemetryCrossRef.findHighlights(activityPoints, vpts as any, unit, 0, gpsVideoOffsetMs);
+      mlog("HIGHLIGHTS", `found=${segments?.length ?? 0}`);
+
       if (!segments?.length) {
-        throw new Error("No highlight scenes detected. Try a more varied activity.");
+        // Provide diagnostic info in the error
+        const vidT0 = vpts[0]?.time ?? iPhoneVideoStartMs;
+        const actT0 = activityPoints[0]?.time ?? 0;
+        const diffMin = Math.round((vidT0 - actT0) / 60_000);
+        mlog("ERROR", `no highlights. vpts[0].time=${new Date(vidT0).toISOString()} actPts[0].time=${new Date(actT0).toISOString()} diff=${diffMin}min`);
+        throw new Error(`No highlight scenes detected. Video and GPX may not overlap in time (diff: ${Math.abs(diffMin)} min). Make sure both files are from the same ride.`);
       }
 
       setStatusMsg("Building story…");
@@ -331,7 +384,9 @@ export default function MobilePage() {
         ? iPhoneDurationMs / 1000
         : (vpts.length > 1 ? gpsVideoOffsetMs / 1000 + (vpts[vpts.length - 1].time - vpts[0].time) / 1000 : 0);
 
+      mlog("STORY", `videoDuration=${videoDurationSec.toFixed(1)}s`);
       const sp = StorytellingProcessor.generatePlan(activityPoints, vpts as any, unit, 0, gpsVideoOffsetMs, videoDurationSec);
+      mlog("STORY", `segments=${sp.segments.length} totalBudget=${sp.totalBudgetSec?.toFixed(1)}s`);
 
       clearInterval(interval);
       setProgress(100);
@@ -342,6 +397,7 @@ export default function MobilePage() {
       setStep("READY");
     } catch (err: any) {
       clearInterval(interval);
+      mlog("ERROR", `upload failed: ${err.message}`);
       setUploadError(err.message ?? "Processing failed.");
     } finally {
       setLoading(false);
