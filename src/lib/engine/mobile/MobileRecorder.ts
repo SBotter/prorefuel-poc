@@ -129,24 +129,30 @@ export class MobileRecorder {
    * Pass videoReady=false to skip the frame (e.g. during a video seek when
    * readyState=0 — encoding blank/stale frames crashes the iOS VideoEncoder).
    */
-  captureFrame(videoReady = true): void {
+  /**
+   * Capture current canvas state as one encoded frame.
+   *
+   * @param videoReady  false → skip (video element is seeking / readyState < 2)
+   * @param timestampUs explicit timestamp in µs (for RVFC-driven ACTION capture);
+   *                    omit to use frame-count-based monotonic timestamp (INTRO/BRAND)
+   */
+  captureFrame(videoReady = true, timestampUs?: number): void {
     if (this._error) return;
     if (this._encoder.state !== 'configured') {
       mlog('CAPTURE_SKIP', `encoder state=${this._encoder.state}`);
       return;
     }
-    // Skip if video is not ready — avoids feeding bad frames to the encoder
     if (!videoReady) return;
 
-    // Back-pressure guard: skip frames if encoder can't keep up
+    // Back-pressure guard
     if (this._encoder.encodeQueueSize > 10) return;
 
+    const ts = timestampUs ?? (this._frameCount * FRAME_DUR_US);
     const frame = new VideoFrame(this._canvas, {
-      timestamp: this._frameCount * FRAME_DUR_US,
+      timestamp: ts,
       duration:  FRAME_DUR_US,
     });
 
-    // Keyframe every 2 seconds for seekability
     this._encoder.encode(frame, { keyFrame: this._frameCount % (MOBILE_FPS * 2) === 0 });
     frame.close();
     this._frameCount++;

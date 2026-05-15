@@ -660,13 +660,79 @@ export function MobileCanvasRenderer({
 
       setStatus("Recording…");
       recStartMs = performance.now();
-      mlog("REC", "loop started — upload logs preserved above ↑");
+      mlog("REC", "loop started (RVFC for ACTION, rAF for INTRO/BRAND)");
 
-      // ── 30fps throttle: rAF fires at 60fps on iPhone; only capture at 30fps ──
-      let lastCaptureMs  = -1;
-      let lastLogSec     = -1;
-      let lastSegIdxLog  = -99;
-      let skippedFrames  = 0;
+      let lastLogSec    = -1;
+      let lastSegIdxLog = -99;
+      let skippedFrames = 0;
+
+      // ── RVFC state for ACTION phase ────────────────────────────────────────
+      // requestVideoFrameCallback fires AFTER the video decoder has finished a frame,
+      // ensuring the GPU is idle before we create a VideoFrame — prevents the
+      // hardware encoder/decoder race condition that killed the encoder at ~7-8s.
+      let inActionPhase = false;
+      let rvfcId: number | null = null;
+
+      // Shared stop helper — called from both loop and RVFC
+      const doStop = () => {
+        if (isStopped) return;
+        isStopped = true;
+        if (rvfcId !== null) { videoEl.cancelVideoFrameCallback(rvfcId); rvfcId = null; }
+        const encMB = ((recorder?.estimatedEncodedBytes ?? 0) / 1_048_576).toFixed(1);
+        mlog("STOP", `encEst=${encMB}MB — flushing encoder`);
+        setStatus("Encoding…");
+        const renderStart = Date.now();
+        recorder!.stop()
+          .then((blob) => {
+            mlog("STOP", `done in ${Date.now()-renderStart}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
+            setProgress(100); setStatus("Video ready!");
+            setReadyBlob({ blob, filename: `LENS_${makeTimestamp()}.mp4` });
+            onRenderComplete({ durationMs: Date.now()-renderStart, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+          })
+          .catch((err: any) => {
+            mlog("ERROR", `stop() failed: ${err?.message ?? err}`);
+            setStatus("Export failed. Please try again.");
+            onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: err?.message ?? "unknown" });
+          });
+      };
+
+      // ── RVFC callback — ACTION phase capture ─────────────────────────────
+      // Fires when the video decoder has a ready frame (GPU is stable).
+      // We draw + capture here, not in rAF, to avoid decode/encode race.
+      const onVideoFrame = (now: DOMHighResTimeStamp, _meta: VideoFrameCallbackMetadata) => {
+        if (isStopped || !inActionPhase) return;
+
+        const elapsed = (now - recStartMs) / 1000;
+        if (elapsed >= totalDurSec) { doStop(); return; }
+
+        if (recorder?.error) {
+          mlog("ABORT", `encoder died in RVFC at t=${elapsed.toFixed(1)}s`);
+          setStatus("Encoding failed."); isStopped = true;
+          if (rvfcId !== null) { videoEl.cancelVideoFrameCallback(rvfcId); rvfcId = null; }
+          onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: recorder.error.message ?? "Encoder died" });
+          return;
+        }
+
+        // Draw the ACTION frame (video decoder is idle — safe timing)
+        try { drawFrame(elapsed); } catch {}
+
+        // Capture with wall-clock timestamp for monotonic ordering across phases
+        const tsUs = Math.round((now - recStartMs) * 1000);
+        recorder?.captureFrame(videoEl.readyState >= 2, tsUs);
+
+        // Log every second
+        const sec = Math.floor(elapsed);
+        if (sec > lastLogSec) {
+          lastLogSec = sec;
+          const encMB = ((recorder?.estimatedEncodedBytes ?? 0) / 1_048_576).toFixed(1);
+          mlog("REC", `t=${sec}s enc=${encMB}MB frames=${recorder?.framesCaptured} vid=${videoEl.readyState}/playing@${videoEl.currentTime.toFixed(2)}s RVFC`);
+        }
+
+        rvfcId = videoEl.requestVideoFrameCallback(onVideoFrame);
+      };
+
+      // ── rAF loop — INTRO / BRAND capture + overall progress/timing ────────
+      let lastRafCaptureMs = -1;
 
       const loop = (now: number) => {
         if (isStopped) return;
@@ -674,97 +740,59 @@ export function MobileCanvasRenderer({
         const elapsed = (now - recStartMs) / 1000;
         setProgress(Math.round(c01(elapsed / totalDurSec) * 90));
 
-        // ── Encoder death check — stop immediately, don't waste 17 more seconds ─
-        if (recorder?.error) {
-          isStopped = true;
-          mlog("ABORT", `encoder died at t=${elapsed.toFixed(1)}s — stopping early`);
-          setStatus("Encoding failed.");
-          onRenderComplete({
-            durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0,
-            status: "error", errorMessage: recorder.error.message ?? "Encoder died",
-          });
+        // Encoder death check (for non-RVFC phases)
+        if (!inActionPhase && recorder?.error) {
+          mlog("ABORT", `encoder died in rAF at t=${elapsed.toFixed(1)}s`);
+          setStatus("Encoding failed."); isStopped = true;
+          onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: recorder.error.message ?? "Encoder died" });
           return;
         }
 
-        // ── Detailed log every second ─────────────────────────────────────────
-        const secFloor = Math.floor(elapsed);
-        if (secFloor > lastLogSec) {
-          lastLogSec = secFloor;
-          const encMB   = ((recorder?.estimatedEncodedBytes ?? 0) / 1_048_576).toFixed(1);
-          const queue   = recorder?.encoderQueueSize ?? "?";
-          const frames  = recorder?.framesCaptured ?? "?";
-          const vState  = videoEl.readyState;
-          const vTime   = videoEl.currentTime.toFixed(2);
-          const vPaused = videoEl.paused ? "PAUSED" : "playing";
-          const vErr    = videoEl.error ? `ERR:${videoEl.error.code}` : "ok";
-          mlog("REC", `t=${secFloor}s enc=${encMB}MB q=${queue} frames=${frames} skip=${skippedFrames} vid=${vState}/${vPaused}@${vTime}s ${vErr}`);
-          skippedFrames = 0; // reset per-second counter
-        }
-
-        if (elapsed >= totalDurSec) {
-          isStopped = true;
-          const encMB = ((recorder?.estimatedEncodedBytes ?? 0) / 1_048_576).toFixed(1);
-          mlog("STOP", `elapsed=${elapsed.toFixed(1)}s encEst=${encMB}MB — flushing encoder`);
-          setStatus("Encoding…");
-          const renderStart = Date.now();
-
-          recorder!.stop()
-            .then((blob) => {
-              mlog("STOP", `flush done in ${Date.now()-renderStart}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
-              setProgress(100);
-              setStatus("Video ready!");
-              // Store blob — sharing happens on button tap (requires fresh user gesture)
-              const filename = `LENS_${makeTimestamp()}.mp4`;
-              setReadyBlob({ blob, filename });
-              onRenderComplete({
-                durationMs:      Date.now() - renderStart,
-                outputFormat:    "mp4",
-                outputSizeBytes: blob.size,
-                status:          "success",
-              });
-            })
-            .catch((err: any) => {
-              mlog("ERROR", `stop() failed after ${Date.now()-renderStart}ms: ${err?.message ?? err}`);
-              setStatus("Export failed. Please try again.");
-              onRenderComplete({
-                durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0,
-                status: "error", errorMessage: err?.message ?? "unknown",
-              });
-            });
-          return;
-        }
-
-        // ── Segment transition log ────────────────────────────────────────────
         const hit = getSegAt(elapsed);
+
+        // Segment transition tracking
         if (hit && hit.segIdx !== lastSegIdxLog) {
           lastSegIdxLog = hit.segIdx;
-          mlog("SEG", `→ seg[${hit.segIdx}] type=${hit.seg.type} dur=${hit.seg.durationSec.toFixed(1)}s videoStart=${hit.seg.videoStartTime?.toFixed(2) ?? "n/a"}s`);
+          mlog("SEG", `→ seg[${hit.segIdx}] type=${hit.seg.type} dur=${hit.seg.durationSec.toFixed(1)}s`);
         }
 
-        // Draw every rAF for smooth preview
-        try {
-          drawFrame(elapsed);
-        } catch (err: any) {
-          mlog("ERROR", `drawFrame@${elapsed.toFixed(2)}s: ${err?.message}`);
+        // Manage RVFC ↔ rAF transition
+        const isAction = hit?.seg.type === "ACTION";
+
+        if (isAction && !inActionPhase) {
+          inActionPhase = true;
+          mlog("RVFC", "ACTION start — switching capture to requestVideoFrameCallback");
+          if (videoEl.paused) videoEl.play().catch(() => {});
+          rvfcId = videoEl.requestVideoFrameCallback(onVideoFrame);
+        } else if (!isAction && inActionPhase) {
+          inActionPhase = false;
+          if (rvfcId !== null) { videoEl.cancelVideoFrameCallback(rvfcId); rvfcId = null; }
+          mlog("RVFC", "ACTION end — returning capture to rAF");
         }
 
-        // ── Capture only at 30fps to avoid VideoFrame memory spike on iOS ────
-        if (lastCaptureMs < 0 || now - lastCaptureMs >= CAPTURE_INTERVAL_MS) {
-          if ((recorder?.encoderQueueSize ?? 0) > 10) {
-            skippedFrames++;
-          } else {
-            // Pass videoReady=false when video is seeking to prevent encoder crash.
-            // readyState=0 (HAVE_NOTHING) or 1 (HAVE_METADATA) means the video is
-            // rebuffering after a seek — feeding those frames kills the iOS encoder.
-            const videoReady = videoEl.readyState >= 2;
-            if (!videoReady) skippedFrames++;
-            try {
-              recorder!.captureFrame(videoReady);
-            } catch (err: any) {
-              mlog("ERROR", `captureFrame@${elapsed.toFixed(2)}s: ${err?.message}`);
-            }
+        // INTRO / BRAND: draw + capture in rAF (no video, no GPU conflict)
+        if (!isAction) {
+          if (elapsed >= totalDurSec) { doStop(); return; }
+
+          try { drawFrame(elapsed); } catch {}
+
+          // Log every second
+          const sec = Math.floor(elapsed);
+          if (sec > lastLogSec) {
+            lastLogSec = sec;
+            const encMB = ((recorder?.estimatedEncodedBytes ?? 0) / 1_048_576).toFixed(1);
+            mlog("REC", `t=${sec}s enc=${encMB}MB frames=${recorder?.framesCaptured} skip=${skippedFrames} vid=${videoEl.readyState}/PAUSED rAF`);
+            skippedFrames = 0;
           }
-          lastCaptureMs = now;
+
+          if (lastRafCaptureMs < 0 || now - lastRafCaptureMs >= CAPTURE_INTERVAL_MS) {
+            if ((recorder?.encoderQueueSize ?? 0) > 10) { skippedFrames++; }
+            else {
+              const tsUs = Math.round((now - recStartMs) * 1000);
+              try { recorder?.captureFrame(true, tsUs); } catch {}
+            }
+            lastRafCaptureMs = now;
+          }
         }
 
         rafId = requestAnimationFrame(loop);
