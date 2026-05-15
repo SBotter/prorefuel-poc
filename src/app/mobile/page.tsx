@@ -154,9 +154,20 @@ function DebugPanel() {
   return (
     <div className="fixed inset-0 z-[200] bg-black/95 flex flex-col p-4 overflow-hidden">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-amber-400 font-black text-sm uppercase tracking-widest">
-          Debug Log ({logs.length} entries)
-        </span>
+        <div className="flex items-center gap-2">
+          <a
+            href="/mobile"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 text-zinc-300 text-[11px] font-black uppercase tracking-widest active:bg-zinc-700"
+          >
+            <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6"/>
+            </svg>
+            Back
+          </a>
+          <span className="text-amber-400 font-black text-sm uppercase tracking-widest">
+            Debug ({logs.length})
+          </span>
+        </div>
         <div className="flex gap-2">
           <button onClick={refresh} className="px-3 py-1.5 rounded-lg bg-zinc-800 text-zinc-300 text-[11px] font-black uppercase tracking-widest">
             Refresh
@@ -184,7 +195,7 @@ function DebugPanel() {
       )}
 
       <p className="text-zinc-700 text-[10px] mt-2 text-center">
-        Logs persist across page crashes (localStorage). Share by copying.
+        Logs persist across crashes (localStorage). Share via Copy.
       </p>
     </div>
   );
@@ -266,6 +277,14 @@ export default function MobilePage() {
     const nameLc = file.name.toLowerCase();
     if (!nameLc.endsWith(".mp4") && !nameLc.endsWith(".mov")) {
       setUploadError("Only .mp4 and .mov files are supported."); e.target.value = ""; return;
+    }
+
+    // ── File size guard: > 300 MB causes iOS to evict the video buffer ─────────
+    const MAX_VIDEO_MB = 300;
+    if (file.size > MAX_VIDEO_MB * 1_048_576) {
+      setUploadError(`Video too large (${(file.size/1_048_576/1_024).toFixed(1)} GB). Maximum is ${MAX_VIDEO_MB} MB on mobile. Trim the video before uploading.`);
+      e.target.value = "";
+      return;
     }
 
     setLoading(true); setUploadError(null); setProgress(0);
@@ -365,6 +384,24 @@ export default function MobilePage() {
       const videoProfile = isMobile
         ? iPhoneVideoGPSAnalyzer.analyze(iPhoneVideoStartMs, iPhoneDurationMs, iPhoneHasStartGPS)
         : VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
+
+      // ── Temporal overlap guard ────────────────────────────────────────────────
+      // If video and GPX are from different days and no timezone correction worked,
+      // block here with a clear message instead of producing a broken render.
+      {
+        const vidT0  = vpts[0]?.time  ?? (isMobile ? iPhoneVideoStartMs : 0);
+        const vidT1  = vpts[vpts.length - 1]?.time ?? (isMobile ? iPhoneVideoStartMs + iPhoneDurationMs : 0);
+        const actT0  = activityPoints[0]?.time  ?? 0;
+        const actT1  = activityPoints[activityPoints.length - 1]?.time ?? 0;
+        const DRIFT  = 2 * 60 * 60_000; // 2 hours tolerance for edge TZ cases
+        const hasOverlap = vidT0 - DRIFT <= actT1 && vidT1 + DRIFT >= actT0;
+        if (!hasOverlap) {
+          const vidDate = new Date(vidT0).toLocaleDateString();
+          const actDate = new Date(actT0).toLocaleDateString();
+          mlog("ERROR", `no temporal overlap: video=${vidDate} gpx=${actDate}`);
+          throw new Error(`Video (${vidDate}) and GPX (${actDate}) appear to be from different days. Please use files from the same ride.`);
+        }
+      }
 
       mlog("HIGHLIGHTS", `calling findHighlights vpts=${vpts.length} offset=${gpsVideoOffsetMs}ms`);
       mlog("HIGHLIGHTS", `vpts[0].time=${new Date(vpts[0]?.time ?? 0).toISOString()} vpts[-1].time=${new Date(vpts[vpts.length-1]?.time ?? 0).toISOString()}`);

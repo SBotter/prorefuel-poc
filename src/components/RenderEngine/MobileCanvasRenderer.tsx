@@ -610,6 +610,18 @@ export function MobileCanvasRenderer({
         const elapsed = (now - recStartMs) / 1000;
         setProgress(Math.round(c01(elapsed / totalDurSec) * 90));
 
+        // ── Encoder death check — stop immediately, don't waste 17 more seconds ─
+        if (recorder?.error) {
+          isStopped = true;
+          mlog("ABORT", `encoder died at t=${elapsed.toFixed(1)}s — stopping early`);
+          setStatus("Encoding failed.");
+          onRenderComplete({
+            durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0,
+            status: "error", errorMessage: recorder.error.message ?? "Encoder died",
+          });
+          return;
+        }
+
         // ── Detailed log every second ─────────────────────────────────────────
         const secFloor = Math.floor(elapsed);
         if (secFloor > lastLogSec) {
