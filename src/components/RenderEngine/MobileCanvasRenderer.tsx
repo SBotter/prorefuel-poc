@@ -102,6 +102,8 @@ export function MobileCanvasRenderer({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status,   setStatus]   = useState("Preparing…");
   const [progress, setProgress] = useState(0);
+  // After encoding: hold the blob so user can save via a fresh gesture
+  const [readyBlob, setReadyBlob] = useState<{ blob: Blob; filename: string } | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -203,20 +205,54 @@ export function MobileCanvasRenderer({
     const toIRX   = (lon: number) => IR_PAD + ((lon - minLon) / lonR) * IR_W;
     const toIRY   = (lat: number) => IR_Y + IR_H - ((lat - minLat) / latR) * IR_H;
 
-    // ── Segment timeline — hard cap at 30s to prevent OOM on iOS ─────────────
-    // At 4 Mbps, 30s = ~15 MB encoded data. StorytellingProcessor can generate
-    // 60+ second videos which crash the WebKit renderer at this bitrate+resolution.
-    const MOBILE_DUR_CAP = 30;
-    const segments   = storyPlan.segments;
-    const rawDurSec   = segments.reduce((s, seg) => s + seg.durationSec, 0);
-    const totalDurSec = Math.min(rawDurSec, MOBILE_DUR_CAP);
+    // ── Segment timeline — cap at 30s and always reserve 3s for BRAND ──────────
+    // At 4 Mbps, 30s = ~15 MB. StorytellingProcessor can emit 60+ second plans.
+    // We clamp total to 30s BUT guarantee the BRAND screen always renders (3s).
+    const MOBILE_DUR_CAP  = 30;
+    const BRAND_RESERVE_S = 3;
+    const ACTION_CAP_S    = MOBILE_DUR_CAP - BRAND_RESERVE_S; // 27s for non-brand
+
+    const segments = storyPlan.segments;
+
+    // Rebuild a trimmed segment list: keep INTRO/MAP as-is, trim ACTION to fit
+    // within ACTION_CAP_S, then ensure BRAND is appended.
+    const trimmedSegments: typeof segments = [];
+    let actionBudget = ACTION_CAP_S;
+    let hasBrand = false;
+
+    for (const seg of segments) {
+      if (seg.type === "BRAND") {
+        hasBrand = true;
+        continue; // added at end
+      }
+      if (seg.type === "ACTION") {
+        if (actionBudget <= 0) continue;
+        const dur = Math.min(seg.durationSec, actionBudget);
+        trimmedSegments.push({ ...seg, durationSec: dur });
+        actionBudget -= dur;
+      } else {
+        trimmedSegments.push(seg); // INTRO / MAP: keep as-is
+      }
+    }
+
+    // Append BRAND (original or synthesised)
+    const brandSeg = hasBrand
+      ? { ...segments.find(s => s.type === "BRAND")!, durationSec: BRAND_RESERVE_S }
+      : { type: "BRAND" as const, durationSec: BRAND_RESERVE_S,
+          startIndex: segments[segments.length - 1]?.endIndex ?? 0,
+          endIndex:   segments[segments.length - 1]?.endIndex ?? 0,
+          videoStartTime: undefined as any,
+          title: "BRAND", value: "" } as any;
+    trimmedSegments.push(brandSeg);
+
+    const totalDurSec = trimmedSegments.reduce((s, seg) => s + seg.durationSec, 0);
 
     function getSegAt(timeSec: number): {
-      seg: typeof segments[0]; segIdx: number; localTime: number;
+      seg: typeof trimmedSegments[0]; segIdx: number; localTime: number;
     } | null {
       let t = 0;
-      for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i];
+      for (let i = 0; i < trimmedSegments.length; i++) {
+        const seg = trimmedSegments[i];
         if (timeSec < t + seg.durationSec) return { seg, segIdx: i, localTime: timeSec - t };
         t += seg.durationSec;
       }
@@ -584,7 +620,7 @@ export function MobileCanvasRenderer({
       // the video decoder and encoder share the same Video Toolbox hardware block.
       // Solution: seek to the first ACTION segment's position NOW, wait for it
       // to complete, then create the encoder. No seeks happen during encoding.
-      const firstActionSeg = segments.find(
+      const firstActionSeg = trimmedSegments.find(
         (s: any) => s.type === "ACTION" && typeof s.videoStartTime === "number" && s.videoStartTime > 0.5,
       );
       if (firstActionSeg) {
@@ -673,16 +709,13 @@ export function MobileCanvasRenderer({
           const renderStart = Date.now();
 
           recorder!.stop()
-            .then(async (blob) => {
+            .then((blob) => {
               mlog("STOP", `flush done in ${Date.now()-renderStart}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
-              setProgress(99);
-              setStatus("Sharing…");
-              const filename = `LENS_${makeTimestamp()}.mp4`;
-              mlog("SHARE", `calling shareOrDownload filename=${filename}`);
-              await shareOrDownload(blob, filename);
-              mlog("SHARE", "shareOrDownload returned");
               setProgress(100);
-              setStatus("Done!");
+              setStatus("Video ready!");
+              // Store blob — sharing happens on button tap (requires fresh user gesture)
+              const filename = `LENS_${makeTimestamp()}.mp4`;
+              setReadyBlob({ blob, filename });
               onRenderComplete({
                 durationMs:      Date.now() - renderStart,
                 outputFormat:    "mp4",
@@ -692,7 +725,7 @@ export function MobileCanvasRenderer({
             })
             .catch((err: any) => {
               mlog("ERROR", `stop() failed after ${Date.now()-renderStart}ms: ${err?.message ?? err}`);
-              setStatus("Export failed.");
+              setStatus("Export failed. Please try again.");
               onRenderComplete({
                 durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0,
                 status: "error", errorMessage: err?.message ?? "unknown",
@@ -772,36 +805,105 @@ export function MobileCanvasRenderer({
   }, [videoFile, activityPoints.length, storyPlan]);
 
   // ── UI ─────────────────────────────────────────────────────────────────────
+
+  // ── State: video ready to save (shown after encoding) ──────────────────────
+  if (readyBlob) {
+    const { blob, filename } = readyBlob;
+    const handleSave = async () => {
+      const file = new File([blob], filename, { type: "video/mp4" });
+      if (typeof navigator.share === "function" && navigator.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: "LENS Video" });
+        } catch (e: any) {
+          if (e?.name !== "AbortError") {
+            // Fallback: direct download
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a"); a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
+          }
+        }
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 z-[100] bg-[#050505] flex flex-col items-center justify-center p-6">
+        {/* Success icon */}
+        <div className="w-16 h-16 rounded-2xl bg-green-500/15 border border-green-500/40 flex items-center justify-center mb-5">
+          <svg viewBox="0 0 24 24" className="w-8 h-8 text-green-400" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </div>
+
+        <p className="text-white font-black text-xl uppercase tracking-[0.15em] mb-1">Video Ready!</p>
+        <p className="text-zinc-500 text-[11px] font-black uppercase tracking-widest mb-7">
+          {(blob.size / 1_048_576).toFixed(1)} MB · MP4 · {W}×{H}
+        </p>
+
+        {/* Save to Photos — primary action (fresh user gesture) */}
+        <button
+          onClick={handleSave}
+          className="w-full max-w-[280px] py-5 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-[0.3em] text-sm shadow-[0_10px_30px_rgba(245,158,11,0.35)] active:scale-[0.97] transition-transform flex items-center justify-center gap-3 mb-3"
+        >
+          <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><polyline points="21 15 16 10 5 21"/>
+          </svg>
+          Save to Photos
+        </button>
+
+        {/* Done — return to form */}
+        <button
+          onClick={() => onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" })}
+          className="w-full max-w-[280px] py-3 rounded-2xl bg-zinc-800/80 border border-zinc-700 text-zinc-400 font-black uppercase tracking-[0.2em] text-xs active:bg-zinc-700 transition-colors"
+        >
+          Done — Back to Form
+        </button>
+
+        <p className="text-zinc-700 text-[10px] mt-5 text-center max-w-[220px] leading-relaxed">
+          Tap "Save to Photos" to open the iOS share sheet and save to your Camera Roll.
+        </p>
+      </div>
+    );
+  }
+
+  // ── State: encoding in progress ─────────────────────────────────────────────
   return (
     <div className="fixed inset-0 z-[100] bg-[#050505] flex flex-col items-center justify-center p-4">
 
-      {/* Title */}
       <div className="text-white text-lg font-black uppercase tracking-[0.2em] mb-0.5 text-center">
         Creating Your Video
       </div>
-      <div className="text-amber-500 text-[11px] font-black uppercase tracking-widest mb-5 animate-pulse">
+      <div className={`text-[11px] font-black uppercase tracking-widest mb-5 ${status.includes("failed") ? "text-red-400" : "text-amber-500 animate-pulse"}`}>
         {status}
       </div>
 
-      {/* Progress bar */}
       <div className="w-[240px] h-2 bg-white/10 rounded-full mb-5 overflow-hidden">
-        <div
-          className="h-full bg-amber-500 transition-all duration-300 ease-out"
-          style={{ width: `${progress}%` }}
-        />
+        <div className="h-full bg-amber-500 transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
       </div>
 
       {/* Phone mockup preview */}
       <div className="relative w-[178px] h-[316px] bg-black border-2 border-zinc-800 rounded-[1.4rem] overflow-hidden shadow-[0_0_50px_rgba(245,158,11,0.10)] pointer-events-none">
         <canvas ref={canvasRef} width={W} height={H} className="w-full h-full object-cover" />
-        {/* Inner screen shine */}
         <div className="absolute inset-0 rounded-[1.4rem] ring-1 ring-inset ring-white/5 pointer-events-none" />
       </div>
 
-      {/* Hint */}
-      <p className="text-zinc-600 text-[11px] mt-5 text-center max-w-[220px] leading-relaxed">
-        Keep this screen active while your video is generated.
-      </p>
+      {status.includes("failed") ? (
+        <button
+          onClick={() => onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: status })}
+          className="mt-5 px-6 py-3 rounded-2xl bg-zinc-800 border border-zinc-700 text-zinc-300 font-black uppercase tracking-widest text-xs active:bg-zinc-700"
+        >
+          ← Try Again
+        </button>
+      ) : (
+        <p className="text-zinc-600 text-[11px] mt-5 text-center max-w-[220px] leading-relaxed">
+          Keep this screen active while your video is generated.
+        </p>
+      )}
     </div>
   );
 }

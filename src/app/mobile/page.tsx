@@ -457,13 +457,10 @@ export default function MobilePage() {
 
   // ── After render complete ───────────────────────────────────────────────────
   const handleRenderComplete = (result: RenderResult) => {
-    if (result.status === "success") {
-      setTimeout(() => {
-        setVideoFile(null); setHighlights([]); setStoryPlan(null);
-        setVideoLoaded(false); setUploadError(null);
-        setProgress(0); setStep("READY");
-      }, 3000);
-    }
+    // Return to form for both success and error — user taps "Done" or "Try Again"
+    setVideoFile(null); setHighlights([]); setStoryPlan(null);
+    setVideoLoaded(false); setUploadError(null);
+    setProgress(0); setStatusMsg(""); setStep("READY");
   };
 
   // ── Render: debug panel (overlay — shown on top of any state) ─────────────
