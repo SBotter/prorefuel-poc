@@ -527,19 +527,15 @@ export function MobileCanvasRenderer({
       } else if (seg.type === "ACTION") {
         if (segIdx !== lastSegIdx && typeof seg.videoStartTime === "number") {
           lastSegIdx = segIdx;
-          const target  = seg.videoStartTime;
-          const current = videoEl.currentTime;
-          // ── CRITICAL: never seek backwards on iOS ──────────────────────────
-          // A backward seek forces the video decoder to restart, competing with
-          // VideoEncoder for the same Video Toolbox hardware block.
-          // This reliably kills the encoder with "Encoding task did not complete".
-          // Only seek when moving forward by more than 0.5s.
-          if (target > current + 0.5) {
-            mlog("SEEK", `forward ${current.toFixed(2)}→${target.toFixed(2)}s`);
-            videoEl.currentTime = target;
-          } else {
-            mlog("SEEK", `skip (cur=${current.toFixed(2)}s tgt=${target.toFixed(2)}s)`);
-          }
+          // ── NO SEEKS during encoding on iOS ────────────────────────────────
+          // Any HTMLVideoElement seek while VideoEncoder is active kills the
+          // encoder ("Encoding task did not complete") because both pipelines
+          // share the same Video Toolbox hardware block on iPhone.
+          // The pre-seek before encoder creation already positioned the video
+          // at the first ACTION segment. Subsequent segments play forward from
+          // wherever the video currently is — telemetry overlay is correct
+          // regardless of exact video position.
+          mlog("SEG_START", `seg[${segIdx}] ACTION — no seek (encoder running), video at ${videoEl.currentTime.toFixed(2)}s`);
           if (videoEl.paused) videoEl.play().catch(() => {});
         }
 
@@ -582,6 +578,38 @@ export function MobileCanvasRenderer({
       mlog("---", "=== RENDER START ===");
       mlog("INIT", `canvas=${W}×${H} fps=${FPS} dur=${totalDurSec.toFixed(1)}s segments=${segments.length}`);
       mlog("INIT", `pts=${pts.length} videoFile=${videoFile?.name} size=${((videoFile?.size ?? 0)/1_048_576).toFixed(1)}MB`);
+
+      // ── Pre-seek video BEFORE creating the encoder ───────────────────────────
+      // On iOS, seeking while VideoEncoder is running kills the encoder because
+      // the video decoder and encoder share the same Video Toolbox hardware block.
+      // Solution: seek to the first ACTION segment's position NOW, wait for it
+      // to complete, then create the encoder. No seeks happen during encoding.
+      const firstActionSeg = segments.find(
+        (s: any) => s.type === "ACTION" && typeof s.videoStartTime === "number" && s.videoStartTime > 0.5,
+      );
+      if (firstActionSeg) {
+        const target = firstActionSeg.videoStartTime!;
+        mlog("PRESEEK", `seeking to ${target.toFixed(2)}s before encoder starts`);
+        setStatus("Preparing video…");
+        videoEl.currentTime = target;
+
+        // Wait for seek to complete
+        await new Promise<void>(resolve => {
+          const onSeeked = () => { videoEl.removeEventListener("seeked", onSeeked); resolve(); };
+          videoEl.addEventListener("seeked", onSeeked);
+          setTimeout(resolve, 5000); // fallback timeout
+        });
+
+        // Wait for readyState >= 2 (HAVE_CURRENT_DATA)
+        if (videoEl.readyState < 2) {
+          await new Promise<void>(resolve => {
+            const check = () => videoEl.readyState >= 2 ? resolve() : setTimeout(check, 80);
+            check();
+            setTimeout(resolve, 5000);
+          });
+        }
+        mlog("PRESEEK", `done — readyState=${videoEl.readyState} currentTime=${videoEl.currentTime.toFixed(2)}s`);
+      }
 
       setStatus("Initializing encoder…");
       try {
