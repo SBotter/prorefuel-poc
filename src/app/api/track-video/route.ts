@@ -11,6 +11,12 @@ export async function POST(req: NextRequest) {
       filename:                 body.filename                 ?? null,
       file_size_bytes:          body.file_size_bytes          ?? null,
       camera_model:             body.camera_model             ?? null,
+      // Recording device details
+      device_type:              body.device_type              ?? null,
+      device_make:              body.device_make              ?? null,
+      device_model:             body.device_model             ?? null,
+      device_os:                body.device_os                ?? null,
+      device_os_version:        body.device_os_version        ?? null,
       has_gps:                  body.has_gps                  ?? null,
       gps_points_count:         body.gps_points_count         ?? null,
       gps_duration_s:           body.gps_duration_s           ?? null,

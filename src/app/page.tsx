@@ -350,9 +350,16 @@ export default function ProRefuelPage() {
   const readyStepStartRef      = useRef<number | null>(null);
   const experienceStartRef     = useRef<number | null>(null);
 
+  // Browser device info — collected once on mount, used in tracking calls
+  const browserInfoRef = useRef<import("@/lib/utils/browserInfo").BrowserInfo | null>(null);
+
   useEffect(() => {
     setMounted(true);
     setIsMobileDevice(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+    // Collect browser/OS info asynchronously (may need high-entropy UA hints)
+    import("@/lib/utils/browserInfo").then(({ getBrowserInfoEnriched }) => {
+      getBrowserInfoEnriched().then(info => { browserInfoRef.current = info; });
+    });
   }, []);
 
   // ── Video upload ──────────────────────────────────────────────────────
@@ -364,8 +371,8 @@ export default function ProRefuelPage() {
     const isMP4  = nameLc.endsWith(".mp4") || file.type === "video/mp4";
     const isMOV  = nameLc.endsWith(".mov") || file.type === "video/quicktime";
     if (!isMP4 && !isMOV) {
-      void trackError("WRONG_VIDEO_FORMAT", "Unsupported file format. Only GoPro MP4 files (.mp4) are accepted.", "video_upload");
-      setUploadError("Unsupported file format. Only GoPro MP4 files (.mp4) are accepted.");
+      void trackError("WRONG_VIDEO_FORMAT", "Unsupported file format. Only .mp4 and .mov are accepted.", "video_upload");
+      setUploadError("Unsupported format. Use GoPro .mp4, iPhone .mov, or Android .mp4.");
       e.target.value = "";
       return;
     }
@@ -411,12 +418,17 @@ export default function ProRefuelPage() {
 
       if (cameraDetection.type === "unknown") {
         const detected = [cameraDetection.make, cameraDetection.model].filter(Boolean).join(" ") || "unknown";
-        void trackError("UNSUPPORTED_CAMERA", `Unsupported camera: "${detected}". File: "${file.name}".`, "video_upload");
+        void trackError("UNSUPPORTED_CAMERA", `Unsupported camera: "${detected}". File: "${file.name}".`, "video_upload", {
+          device_type: "unknown", device_make: cameraDetection.make || null,
+          device_model: cameraDetection.model || null,
+          file_extension: "." + (file.name.split(".").pop() ?? ""),
+        });
         throw new Error("Unsupported camera. Supported: GoPro, iPhone, and Android phones.");
       }
 
       let vpts: any[], syncPoints: any[], cameraModel: string, gpsVideoOffsetMs: number;
       let iPhoneVideoStartMs = 0, iPhoneDurationMs = 0, iPhoneHasStartGPS = false;
+      let recordingDeviceOsVersion: string | null = null;
 
       if (isMobile) {
         setStatusMsg(isAndroid ? "Reading Android metadata..." : "Reading iPhone metadata...");
@@ -430,6 +442,7 @@ export default function ProRefuelPage() {
         iPhoneVideoStartMs = result.videoStartMs;
         iPhoneDurationMs   = result.durationMs;
         iPhoneHasStartGPS  = result.hasStartGPS;
+        if (isAndroid) recordingDeviceOsVersion = (result as any).deviceOsVersion ?? null;
 
         if (activityPoints.length >= 5) {
           let clockCorrected = false;
@@ -498,8 +511,31 @@ export default function ProRefuelPage() {
       const fixTotal = (fixDist.fix0 + fixDist.fix2 + fixDist.fix3) || 1;
       const gpsStartUtc = isMobile ? new Date(iPhoneVideoStartMs).toISOString() : (totalPts > 0 ? new Date((vpts[0] as any).time).toISOString() : null);
       const gpsEndUtc   = isMobile ? new Date(iPhoneVideoStartMs + iPhoneDurationMs).toISOString() : (totalPts > 0 ? new Date((vpts[totalPts - 1] as any).time).toISOString() : null);
+      // Recording device info (from video metadata / EXIF / detection)
+      const deviceType  = cameraDetection.type as VideoUploadInsert["device_type"];
+      // make: prefer EXIF detection; for Android the worker returns the model (e.g. "Galaxy S24 FE")
+      // so we derive the brand from the resolved model string if detection returned empty
+      const inferMakeFromModel = (model: string): string | null => {
+        const lc = model.toLowerCase();
+        if (lc.includes("samsung") || lc.includes("galaxy")) return "Samsung";
+        if (lc.includes("pixel") || lc.includes("google"))   return "Google";
+        if (lc.includes("huawei"))                           return "Huawei";
+        if (lc.includes("xiaomi") || lc.includes("redmi"))   return "Xiaomi";
+        if (lc.includes("oneplus"))                          return "OnePlus";
+        if (lc.includes("oppo"))                             return "OPPO";
+        if (lc.includes("motorola") || lc.includes("moto")) return "Motorola";
+        return null;
+      };
+      const deviceMake  = cameraDetection.make ||
+                          (isAndroid ? inferMakeFromModel(resolvedModel ?? "") : null) ||
+                          null;
+      const deviceModel = resolvedModel || cameraDetection.model || null;
+      const deviceOs    = isIPhone ? "iOS" : isAndroid ? "Android" : null;
+
       videoMetricsRef.current = {
         filename: file.name, file_size_bytes: file.size, camera_model: resolvedModel ?? null,
+        device_type: deviceType, device_make: deviceMake, device_model: deviceModel,
+        device_os: deviceOs, device_os_version: recordingDeviceOsVersion,
         has_gps: isMobile ? iPhoneHasStartGPS : totalPts > 0, gps_points_count: totalPts,
         gps_duration_s: videoProfile.durationSec, gps_sampling_interval_ms: videoProfile.samplingIntervalMs,
         gps_start_utc: gpsStartUtc, gps_end_utc: gpsEndUtc, gps_video_offset_ms: gpsVideoOffsetMs,
@@ -568,10 +604,18 @@ export default function ProRefuelPage() {
       clearInterval(interval);
       setProgress(100);
 
+      const bi = browserInfoRef.current;
       trackProcessingSession({
         status: "success", video_filename: file.name,
         video_duration_s: isMobile ? iPhoneDurationMs / 1000 : (vpts.length > 0 ? (vpts[vpts.length - 1] as any).time / 1000 : null),
         camera_model: resolvedModel ?? null, activity_name: activityMeta.name ?? null,
+        // Recording device (from video metadata)
+        device_type: deviceType, device_make: deviceMake, device_model: deviceModel,
+        device_os: deviceOs, device_os_version: recordingDeviceOsVersion,
+        // Browser / web-app client device (from User-Agent)
+        browser_os: bi?.os ?? null, browser_os_version: bi?.os_version ?? null,
+        browser_name: bi?.browser ?? null, browser_version: bi?.browser_version ?? null,
+        browser_is_mobile: bi?.is_mobile ?? null,
         gpx_points_count: activityPoints.length || null, gps_device: activityMeta.gpsDevice?.label ?? null,
         activity_location: activityMeta.location ?? null, sync_strategy: syncPlan.method ?? null,
         scenes_count: sp.segments.length ?? null, unit_system: unit,
@@ -853,11 +897,37 @@ export default function ProRefuelPage() {
           </h1>
 
           <p className="text-zinc-300 text-xl font-semibold max-w-md mb-3 leading-relaxed">
-            Your GoPro captures everything. LENS edits what matters.
+            GoPro, iPhone, or Android — LENS edits what matters.
           </p>
-          <p className="text-zinc-500 text-sm max-w-sm mb-8 leading-relaxed">
-            Import your GPX activity and GoPro video. LENS reads your GPS data, detects the best moments, and generates a cinematic 9:16 edit — synced, scored, and ready to post. In seconds.
+          <p className="text-zinc-500 text-sm max-w-sm mb-6 leading-relaxed">
+            Import your GPX activity from Garmin, Strava, or Suunto and your action camera or phone video. LENS reads your GPS data, detects the best moments, and generates a cinematic 9:16 edit — synced, scored, ready to post. In seconds.
           </p>
+
+          {/* Compatible devices strip */}
+          <div className="flex flex-wrap items-center gap-3 mb-8">
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Works with</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              {[
+                { src: "/devices/logos/gopro_logo.svg",   alt: "GoPro",   w: 52 },
+                { src: "/devices/logos/iphone_logo.svg",  alt: "iPhone",  w: 56 },
+                { src: "/devices/logos/android_logo.svg", alt: "Android", w: 72 },
+              ].map(d => (
+                <div key={d.alt} className="flex items-center justify-center h-7 px-3 rounded-lg bg-white/50 border border-white/40">
+                  <img src={d.src} alt={d.alt} style={{ height: 16, width: "auto", maxWidth: d.w, opacity: 1 }} />
+                </div>
+              ))}
+              <span className="text-zinc-700 text-xs">·</span>
+              {[
+                { src: "/devices/logos/garmin_logo.svg",  alt: "Garmin",  w: 52 },
+                { src: "/devices/logos/strava_logo.svg",  alt: "Strava",  w: 44 },
+                { src: "/devices/logos/suunto_logo.svg",  alt: "Suunto",  w: 52 },
+              ].map(d => (
+                <div key={d.alt} className="flex items-center justify-center h-7 px-3 rounded-lg bg-white/50 border border-white/40">
+                  <img src={d.src} alt={d.alt} style={{ height: 14, width: "auto", maxWidth: d.w, opacity: 0.92 }} />
+                </div>
+              ))}
+            </div>
+          </div>
 
           {/* Render time hero stat */}
           <div className="relative mb-5 rounded-2xl overflow-hidden border border-amber-500/40 bg-gradient-to-br from-amber-500/15 to-amber-600/5 px-6 py-5 flex items-center gap-5 w-fit">
@@ -915,7 +985,7 @@ export default function ProRefuelPage() {
               <span className="text-amber-500">Edited in seconds.</span>
             </h2>
             <p className="text-zinc-400 text-base leading-relaxed mb-8 max-w-md">
-              Drop your GPX activity file and your GoPro video. LENS does the rest — scene detection, GPS sync, cinematic cuts, telemetry overlay. No editing skills needed.
+              Drop your GPX activity file and your video — GoPro, iPhone, or Android. LENS does the rest — scene detection, GPS sync, cinematic cuts, telemetry overlay. No editing skills needed.
             </p>
             <div className="space-y-3">
               {[
@@ -953,7 +1023,7 @@ export default function ProRefuelPage() {
                     <div className="w-14 h-14 rounded-2xl bg-zinc-800 flex items-center justify-center text-2xl">🖥️</div>
                     <p className="font-black text-white text-base uppercase tracking-wide">Desktop only</p>
                     <p className="text-zinc-400 text-sm leading-relaxed max-w-xs">
-                      LENS requires Chrome on a desktop computer to process your GoPro video.
+                      LENS requires Chrome on a desktop computer to process your video.
                     </p>
                     <a href="https://lens.prorefuel.app" className="px-5 py-3 rounded-xl bg-amber-500 text-black font-black text-sm uppercase tracking-widest">
                       lens.prorefuel.app
@@ -974,7 +1044,17 @@ export default function ProRefuelPage() {
                       <div className="flex-1 min-w-0">
                         <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${gpxError ? "text-red-400" : activityPoints.length > 0 ? "text-green-500" : "text-amber-500"}`}>Step 01</span>
                         <p className="text-base font-black uppercase text-white leading-none">Import GPX</p>
-                        {gpxError && <p className="text-[11px] font-semibold mt-1 text-red-400">{gpxError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>}
+                        {gpxError ? (
+                          <p className="text-[11px] font-semibold mt-1 text-red-400">{gpxError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>
+                        ) : (
+                          <div className="flex items-center gap-1.5 mt-1.5">
+                            {["/devices/logos/garmin_logo.svg", "/devices/logos/strava_logo.svg", "/devices/logos/suunto_logo.svg"].map((src, i) => (
+                              <div key={i} className="flex items-center justify-center px-2 py-1 rounded bg-white/50 border border-white/40">
+                                <img src={src} alt="" style={{ height: 11, width: "auto", maxWidth: 38, opacity: activityPoints.length > 0 ? 1 : 0.9 }} />
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
                     </label>
@@ -986,9 +1066,21 @@ export default function ProRefuelPage() {
                       <div className="flex-1 min-w-0">
                         <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${uploadError ? "text-red-400" : activityPoints.length === 0 ? "text-zinc-600" : "text-amber-500"}`}>Step 02</span>
                         <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>Import Video</p>
-                        <p className={`text-[11px] font-semibold mt-1 ${uploadError ? "text-red-400" : "text-zinc-500"}`}>
-                          {uploadError ? <>{uploadError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></> : loading ? statusMsg : activityPoints.length === 0 ? "Load GPX first" : "GoPro .mp4"}
-                        </p>
+                        {uploadError ? (
+                          <p className="text-[11px] font-semibold mt-1 text-red-400">{uploadError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>
+                        ) : loading ? (
+                          <p className="text-[11px] font-semibold mt-1 text-zinc-500">{statusMsg}</p>
+                        ) : activityPoints.length === 0 ? (
+                          <p className="text-[11px] font-semibold mt-1 text-zinc-600">Load GPX first</p>
+                        ) : (
+                          <div className="flex items-center gap-1.5 mt-1.5">
+                            {["/devices/logos/gopro_logo.svg", "/devices/logos/iphone_logo.svg", "/devices/logos/android_logo.svg"].map((src, i) => (
+                              <div key={i} className="flex items-center justify-center px-2 py-1 rounded bg-white/50 border border-white/40">
+                                <img src={src} alt="" style={{ height: 11, width: "auto", maxWidth: 42, opacity: 1 }} />
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <input type="file" accept=".mp4,.mov,video/mp4,video/quicktime" disabled={activityPoints.length === 0} onChange={handleVideoUpload} className="hidden" />
                       {activityPoints.length === 0 && <Lock size={16} className="text-zinc-700 shrink-0" />}
@@ -1042,11 +1134,88 @@ export default function ProRefuelPage() {
                           output_size_bytes: result.outputSizeBytes,
                           output_duration_s: storyPlan ? storyPlan.segments.reduce((s, seg) => s + (seg.durationSec ?? 0), 0) : null,
                         });
+                        // After successful download: reset video state so the user can
+                        // generate another video immediately — GPX stays loaded.
+                        if (result.status === "success") {
+                          setTimeout(() => {
+                            setVideoFile(null);
+                            setHighlights([]);
+                            setStoryPlan(null);
+                            setIsMobileVideo(false);
+                            setUploadError(null);
+                            setProgress(0);
+                            setStatusMsg("");
+                            processingSessionIdRef.current = null;
+                            readyStepStartRef.current     = null;
+                            experienceStartRef.current    = null;
+                            setStep("READY");
+                          }, 2000);
+                        }
                       }}
                     />
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── COMPATIBLE DEVICES ──────────────────────────────────────────── */}
+      <section className="relative z-10 border-t border-zinc-800/40">
+        <div className="max-w-[1600px] mx-auto px-6 md:px-12 py-16">
+          <div className="text-center mb-10">
+            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-amber-500/70 mb-3">Compatible Devices</p>
+            <h2 className="text-3xl sm:text-4xl font-black tracking-tight mb-3">
+              Works with your gear.
+            </h2>
+            <p className="text-zinc-500 text-sm max-w-md mx-auto">Your camera and GPS tracker — no matter the brand.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+            {/* Video cameras */}
+            <div className="bg-white/15 border border-white/20 rounded-3xl p-7">
+              <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-5">Video Camera</p>
+              <div className="space-y-4">
+                {[
+                  { logo: "/devices/logos/gopro_logo.svg", name: "GoPro", detail: "HERO 8–13, Max, all models — GPMF telemetry at 18Hz", lw: 52 },
+                  { logo: "/devices/logos/iphone_logo.svg", name: "iPhone", detail: "iPhone 8 and newer — synced via CreateDate timestamp", lw: 60 },
+                  { logo: "/devices/logos/android_logo.svg", name: "Android", detail: "Samsung Galaxy, Google Pixel, and any Android phone", lw: 80 },
+                ].map(d => (
+                  <div key={d.name} className="flex items-center gap-4 p-3 rounded-2xl bg-white/35 border border-white/30">
+                    <div className="w-12 h-10 flex items-center justify-center shrink-0">
+                      <img src={d.logo} alt={d.name} style={{ height: 18, width: "auto", maxWidth: d.lw, opacity: 1 }} />
+                    </div>
+                    <div>
+                      <p className="text-zinc-900 text-sm font-black">{d.name}</p>
+                      <p className="text-zinc-700 text-[11px] leading-snug">{d.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* GPS trackers */}
+            <div className="bg-white/15 border border-white/20 rounded-3xl p-7">
+              <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-5">GPS Tracker — export as .gpx</p>
+              <div className="space-y-4">
+                {[
+                  { logo: "/devices/logos/garmin_logo.svg", name: "Garmin", detail: "Edge, Fenix, Forerunner — export GPX from Garmin Connect", lw: 52 },
+                  { logo: "/devices/logos/strava_logo.svg", name: "Strava", detail: "Export activity GPX from Strava's activity page", lw: 48 },
+                  { logo: "/devices/logos/suunto_logo.svg", name: "Suunto", detail: "Export -track.gpx from Suunto app (not the route file)", lw: 52 },
+                ].map(d => (
+                  <div key={d.name} className="flex items-center gap-4 p-3 rounded-2xl bg-white/35 border border-white/30">
+                    <div className="w-12 h-10 flex items-center justify-center shrink-0">
+                      <img src={d.logo} alt={d.name} style={{ height: 16, width: "auto", maxWidth: d.lw, opacity: 0.95 }} />
+                    </div>
+                    <div>
+                      <p className="text-zinc-900 text-sm font-black">{d.name}</p>
+                      <p className="text-zinc-700 text-[11px] leading-snug">{d.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-zinc-700 text-[11px] mt-4 leading-relaxed">Also works with Wahoo, Polar, Coros, Komoot and any app that exports standard .gpx files.</p>
             </div>
           </div>
         </div>

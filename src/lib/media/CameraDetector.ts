@@ -83,7 +83,8 @@ export class CameraDetector {
     // ── Layer 1: filename pattern (zero I/O, covers GoPro naming + iPhone IMG_XXXX) ─
     for (const [pattern, type] of FILENAME_PATTERNS) {
       if (pattern.test(file.name)) {
-        return { type, make: type === 'gopro' ? 'GoPro' : 'Apple', model: '' };
+        const make = type === 'gopro' ? 'GoPro' : type === 'iphone' ? 'Apple' : '';
+        return { type, make, model: '' };
       }
     }
 

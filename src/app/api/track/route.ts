@@ -10,6 +10,18 @@ export async function POST(req: NextRequest) {
       video_filename:     body.video_filename     ?? null,
       video_duration_s:   body.video_duration_s   ?? null,
       camera_model:       body.camera_model       ?? null,
+      // Recording device (camera / phone) — from video metadata
+      device_type:        body.device_type        ?? null,
+      device_make:        body.device_make        ?? null,
+      device_model:       body.device_model       ?? null,
+      device_os:          body.device_os          ?? null,
+      device_os_version:  body.device_os_version  ?? null,
+      // Browser / web-app client device — from User-Agent
+      browser_os:         body.browser_os         ?? null,
+      browser_os_version: body.browser_os_version ?? null,
+      browser_name:       body.browser_name       ?? null,
+      browser_version:    body.browser_version    ?? null,
+      browser_is_mobile:  body.browser_is_mobile  ?? null,
       activity_name:      body.activity_name      ?? null,
       gpx_points_count:   body.gpx_points_count   ?? null,
       gps_device:         body.gps_device         ?? null,

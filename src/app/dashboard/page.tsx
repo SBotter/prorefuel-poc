@@ -34,15 +34,15 @@ export default async function DashboardPage() {
       <div className="relative z-10 max-w-7xl mx-auto px-6 md:px-10 py-10">
 
         {/* Header */}
-        <div className="mb-10">
+        <div className="mb-8">
           <h1 className="text-3xl font-black tracking-tight mb-1">Engine Insights</h1>
-          <p className="text-zinc-500 text-sm">Real-time data from all user sessions — use this to continuously improve LENS.</p>
+          <p className="text-zinc-500 text-sm">Real-time analytics from all user sessions — use this to improve LENS and understand your users.</p>
         </div>
 
-        {/* KPIs */}
+        {/* Global KPIs — always visible */}
         <KpiCards data={data.kpis} />
 
-        {/* Charts */}
+        {/* Tabbed charts */}
         <DashboardCharts data={data} />
 
       </div>

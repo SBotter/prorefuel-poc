@@ -35,6 +35,20 @@ export interface ProcessingSession {
   video_duration_s: number | null;
   camera_model: string | null;
 
+  // Recording device (camera / phone) — optional for backward compat
+  device_type?: "gopro" | "iphone" | "android" | "unknown" | null;
+  device_make?: string | null;       // 'Apple', 'Samsung', 'GoPro'
+  device_model?: string | null;      // 'iPhone 13', 'Galaxy S24 FE', 'HERO12 Black'
+  device_os?: string | null;         // 'iOS', 'Android' (null for action cams)
+  device_os_version?: string | null; // '17.1', '16' (from video metadata)
+
+  // Browser / web-app client device — optional for backward compat
+  browser_os?: string | null;         // 'Windows', 'macOS', 'iOS', 'Android', 'Linux'
+  browser_os_version?: string | null; // '11', '14.5'
+  browser_name?: string | null;       // 'Chrome', 'Safari', 'Firefox'
+  browser_version?: string | null;    // '125.0'
+  browser_is_mobile?: boolean | null;
+
   // Activity metadata
   activity_name: string | null;
   gpx_points_count: number | null;
@@ -70,6 +84,8 @@ export interface GpxSession {
 
   // Identity
   creator: string | null;
+  gps_device_brand?: string | null;  // 'Garmin', 'Suunto', 'Wahoo' — parsed from creator
+  gps_device_model?: string | null;  // 'Edge 530', 'Fenix 7 Pro' — null when via app
   activity_type: string | null;
   activity_name: string | null;
   activity_start_at: string | null;
@@ -156,6 +172,13 @@ export interface VideoUpload {
   file_size_bytes: number | null;
   camera_model: string | null;
 
+  // Recording device details — optional for backward compat
+  device_type?: "gopro" | "iphone" | "android" | "unknown" | null;
+  device_make?: string | null;       // 'Apple', 'Samsung', 'GoPro'
+  device_model?: string | null;      // 'iPhone 13', 'Galaxy S24 FE', 'HERO12 Black'
+  device_os?: string | null;         // 'iOS', 'Android' (null for action cams)
+  device_os_version?: string | null; // '17.1', '16'
+
   // GPS presence
   has_gps: boolean | null;
   gps_points_count: number | null;
@@ -218,6 +241,11 @@ export interface ErrorEvent {
   error_code: ErrorCode;
   error_message: string | null;
   error_source: string | null;
+  // Device context — optional for backward compat
+  device_type?: "gopro" | "iphone" | "android" | "unknown" | null;
+  device_make?: string | null;
+  device_model?: string | null;
+  file_extension?: string | null;  // '.mov', '.mp4', '.gpx'
   app_version: string | null;
   user_agent: string | null;
 }
