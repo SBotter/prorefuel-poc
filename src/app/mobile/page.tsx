@@ -49,11 +49,27 @@ export default function MobilePage() {
         </h1>
 
         <p className="text-zinc-300 text-lg font-semibold mb-2 leading-relaxed">
-          Your GoPro captures everything.<br />LENS edits what matters.
+          GoPro, iPhone, or Android.<br />LENS edits what matters.
         </p>
-        <p className="text-zinc-500 text-sm mb-8 leading-relaxed">
+        <p className="text-zinc-500 text-sm mb-5 leading-relaxed">
           GPS-synced cinematic edit — in under 60 seconds.
         </p>
+
+        {/* Compatible devices strip */}
+        <div className="flex flex-wrap items-center gap-2 mb-8">
+          {[
+            { src: "/devices/logos/gopro_logo.svg",   w: 44 },
+            { src: "/devices/logos/iphone_logo.svg",  w: 52 },
+            { src: "/devices/logos/android_logo.svg", w: 64 },
+            { src: "/devices/logos/garmin_logo.svg",  w: 44 },
+            { src: "/devices/logos/strava_logo.svg",  w: 40 },
+            { src: "/devices/logos/suunto_logo.svg",  w: 44 },
+          ].map((d, i) => (
+            <div key={i} className="flex items-center justify-center h-7 px-2.5 rounded-lg bg-white/50 border border-white/40">
+              <img src={d.src} alt="" style={{ height: 14, width: "auto", maxWidth: d.w, opacity: 1 }} />
+            </div>
+          ))}
+        </div>
 
         {/* Render time hero stat */}
         <div className="relative mb-4 rounded-2xl overflow-hidden border border-amber-500/40 bg-amber-500/10 px-5 py-5 flex items-center gap-4">
@@ -115,6 +131,51 @@ export default function MobilePage() {
           <div className="px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-700 text-center">
             <span className="text-zinc-300 font-mono text-sm font-bold">lens.prorefuel.app</span>
           </div>
+        </div>
+      </section>
+
+      {/* COMPATIBLE DEVICES */}
+      <section className="relative z-10 px-5 py-10 border-t border-zinc-800/40">
+        <p className="text-[10px] font-black uppercase tracking-[0.35em] text-amber-500/70 mb-4 text-center">Compatible Devices</p>
+        <h2 className="text-2xl font-black tracking-tight text-center mb-7">Works with your gear.</h2>
+
+        <div className="space-y-3 mb-4">
+          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 px-1">Video Camera</p>
+          {[
+            { logo: "/devices/logos/gopro_logo.svg",   name: "GoPro",   detail: "HERO 8–13, Max — GPMF telemetry at 18Hz", lw: 52 },
+            { logo: "/devices/logos/iphone_logo.svg",  name: "iPhone",  detail: "iPhone 8 and newer — timestamp sync", lw: 58 },
+            { logo: "/devices/logos/android_logo.svg", name: "Android", detail: "Samsung, Pixel and any Android phone", lw: 72 },
+          ].map(d => (
+            <div key={d.name} className="flex items-center gap-3 p-3 rounded-2xl bg-white/35 border border-white/30">
+              <div className="min-w-[64px] h-9 flex items-center justify-center shrink-0 bg-white/50 rounded-lg px-2">
+                <img src={d.logo} alt={d.name} style={{ height: 16, width: "auto", maxWidth: d.lw }} />
+              </div>
+              <div>
+                <p className="text-zinc-900 text-sm font-black">{d.name}</p>
+                <p className="text-zinc-700 text-[11px]">{d.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-3">
+          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 px-1 mt-5">GPS Tracker — export as .gpx</p>
+          {[
+            { logo: "/devices/logos/garmin_logo.svg", name: "Garmin", detail: "Edge, Fenix, Forerunner — via Garmin Connect", lw: 52 },
+            { logo: "/devices/logos/strava_logo.svg", name: "Strava", detail: "Export activity GPX from Strava", lw: 48 },
+            { logo: "/devices/logos/suunto_logo.svg", name: "Suunto", detail: "Export -track.gpx from Suunto app", lw: 52 },
+          ].map(d => (
+            <div key={d.name} className="flex items-center gap-3 p-3 rounded-2xl bg-white/35 border border-white/30">
+              <div className="min-w-[64px] h-9 flex items-center justify-center shrink-0 bg-white/50 rounded-lg px-2">
+                <img src={d.logo} alt={d.name} style={{ height: 14, width: "auto", maxWidth: d.lw }} />
+              </div>
+              <div>
+                <p className="text-zinc-900 text-sm font-black">{d.name}</p>
+                <p className="text-zinc-700 text-[11px]">{d.detail}</p>
+              </div>
+            </div>
+          ))}
+          <p className="text-zinc-600 text-[11px] px-1 leading-relaxed">Also: Wahoo, Polar, Coros, Komoot and any app exporting .gpx.</p>
         </div>
       </section>
 

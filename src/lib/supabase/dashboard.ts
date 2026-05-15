@@ -118,16 +118,67 @@ export async function getCameraModels() {
 }
 
 export async function getGpsDevices() {
+  // Prefer gps_device_model when available (direct device export), fall back to brand/creator
   const { data } = await db()
     .from("gpx_sessions")
-    .select("creator")
+    .select("creator, gps_device_brand, gps_device_model")
     .not("creator", "is", null);
 
+  // Key priority: "Brand Model" when model known, "Brand (via app)" when app-only, raw creator fallback
   const map: Record<string, number> = {};
-  (data ?? []).forEach((r) => { const k = r.creator!; map[k] = (map[k] ?? 0) + 1; });
+  (data ?? []).forEach((r) => {
+    let key: string;
+    if (r.gps_device_brand && r.gps_device_model) {
+      key = `${r.gps_device_brand} ${r.gps_device_model}`;   // e.g. "Garmin Edge 530"
+    } else if (r.gps_device_brand) {
+      key = r.gps_device_brand;                               // e.g. "Garmin"
+    } else {
+      key = r.creator!;                                       // raw fallback for old data
+    }
+    map[key] = (map[key] ?? 0) + 1;
+  });
   return Object.entries(map)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
+    .slice(0, 12)
+    .map(([name, value]) => ({ name, value }));
+}
+
+// ── GPS device models breakdown (specific hardware) ───────────────────────────
+
+export async function getGpsDeviceModels() {
+  const { data } = await db()
+    .from("gpx_sessions")
+    .select("gps_device_brand, gps_device_model")
+    .not("gps_device_model", "is", null); // only rows where we have a real model
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => {
+    if (r.gps_device_model) {
+      const k = r.gps_device_brand ? `${r.gps_device_brand} ${r.gps_device_model}` : r.gps_device_model;
+      map[k] = (map[k] ?? 0) + 1;
+    }
+  });
+
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([name, value]) => ({ name, value }));
+}
+
+// ── GPS brand breakdown ───────────────────────────────────────────────────────
+
+export async function getGpsDeviceBrands() {
+  const { data } = await db()
+    .from("gpx_sessions")
+    .select("gps_device_brand")
+    .not("gps_device_brand", "is", null);
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => { if (r.gps_device_brand) map[r.gps_device_brand] = (map[r.gps_device_brand] ?? 0) + 1; });
+
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
     .map(([name, value]) => ({ name, value }));
 }
 
@@ -162,10 +213,10 @@ export async function getGpxFieldsPresence() {
     rows.filter((r) => r[key] === true).length;
 
   return [
-    { name: "Heart Rate", value: count("has_hr") },
-    { name: "Cadence",    value: count("has_cadence") },
-    { name: "Power",      value: count("has_power") },
-    { name: "Speed",      value: count("has_speed") },
+    { name: "Speed (GPS-derived)", value: count("has_speed") },
+    { name: "Heart Rate",          value: count("has_hr") },
+    { name: "Cadence",             value: count("has_cadence") },
+    { name: "Power (Watts)",       value: count("has_power") },
   ];
 }
 
@@ -346,6 +397,84 @@ export async function getErrorKPIs() {
   };
 }
 
+// ── Device type breakdown (gopro / iphone / android / unknown) ───────────────
+
+export async function getVideoDeviceTypes() {
+  const { data } = await db()
+    .from("processing_sessions")
+    .select("device_type")
+    .not("device_type", "is", null);
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => {
+    const k = r.device_type ?? "unknown";
+    map[k] = (map[k] ?? 0) + 1;
+  });
+  return Object.entries(map)
+    .map(([name, value]) => ({ name: name.charAt(0).toUpperCase() + name.slice(1), value }))
+    .sort((a, b) => b.value - a.value);
+}
+
+// ── Device makes (Apple, Samsung, GoPro…) ────────────────────────────────────
+
+export async function getVideoDeviceMakes() {
+  const { data } = await db()
+    .from("processing_sessions")
+    .select("device_make")
+    .not("device_make", "is", null);
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => { if (r.device_make) map[r.device_make] = (map[r.device_make] ?? 0) + 1; });
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([name, value]) => ({ name, value }));
+}
+
+// ── Browser OS breakdown ──────────────────────────────────────────────────────
+
+export async function getBrowserOsBreakdown() {
+  const { data } = await db()
+    .from("processing_sessions")
+    .select("browser_os, browser_is_mobile")
+    .not("browser_os", "is", null);
+
+  const osMap: Record<string, number> = {};
+  let mobile = 0, desktop = 0;
+  (data ?? []).forEach((r) => {
+    if (r.browser_os) osMap[r.browser_os] = (osMap[r.browser_os] ?? 0) + 1;
+    if (r.browser_is_mobile) mobile++; else desktop++;
+  });
+  return {
+    byOs: Object.entries(osMap).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })),
+    mobileDesktop: [
+      { name: "Mobile",  value: mobile },
+      { name: "Desktop", value: desktop },
+    ].filter(d => d.value > 0),
+  };
+}
+
+// ── Processing time distribution ──────────────────────────────────────────────
+
+export async function getProcessingTimeBuckets() {
+  const { data } = await db()
+    .from("processing_sessions")
+    .select("processing_time_ms")
+    .eq("status", "success")
+    .not("processing_time_ms", "is", null);
+
+  const buckets: Record<string, number> = { "< 5s": 0, "5–15s": 0, "15–30s": 0, "30–60s": 0, "> 60s": 0 };
+  (data ?? []).forEach((r) => {
+    const ms = r.processing_time_ms ?? 0;
+    if (ms < 5_000)        buckets["< 5s"]++;
+    else if (ms < 15_000)  buckets["5–15s"]++;
+    else if (ms < 30_000)  buckets["15–30s"]++;
+    else if (ms < 60_000)  buckets["30–60s"]++;
+    else                   buckets["> 60s"]++;
+  });
+  return Object.entries(buckets).map(([name, value]) => ({ name, value }));
+}
+
 export type DashboardData = Awaited<ReturnType<typeof getAllDashboardData>>;
 
 export async function getAllDashboardData() {
@@ -353,21 +482,27 @@ export async function getAllDashboardData() {
     kpis, sessionsOverTime, sessionSuccessOverTime, funnel, renderStatus,
     renderDuration, cameraModels, gpsDevices, gpsLock,
     syncStrategies, gpxFields, activityTypes, unitSystem,
-    topLocations, timeOnReady,
+    topLocations, timeOnReady, processingTime,
     errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
+    videoDeviceTypes, videoDeviceMakes, browserOs,
+    gpsDeviceModels, gpsDeviceBrands,
   ] = await Promise.all([
     getKPIs(), getSessionsOverTime(), getSessionSuccessOverTime(), getFunnel(), getRenderStatus(),
     getRenderDurationBuckets(), getCameraModels(), getGpsDevices(), getGpsLockStats(),
     getSyncStrategies(), getGpxFieldsPresence(), getActivityTypes(), getUnitSystem(),
-    getTopLocations(), getTimeOnReady(),
+    getTopLocations(), getTimeOnReady(), getProcessingTimeBuckets(),
     getErrorsByCode(), getErrorsBySource(), getErrorsByDevice(), getErrorsOverTime(), getRecentErrors(), getErrorKPIs(),
+    getVideoDeviceTypes(), getVideoDeviceMakes(), getBrowserOsBreakdown(),
+    getGpsDeviceModels(), getGpsDeviceBrands(),
   ]);
 
   return {
     kpis, sessionsOverTime, sessionSuccessOverTime, funnel, renderStatus,
     renderDuration, cameraModels, gpsDevices, gpsLock,
     syncStrategies, gpxFields, activityTypes, unitSystem,
-    topLocations, timeOnReady,
+    topLocations, timeOnReady, processingTime,
     errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
+    videoDeviceTypes, videoDeviceMakes, browserOs,
+    gpsDeviceModels, gpsDeviceBrands,
   };
 }

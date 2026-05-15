@@ -1,6 +1,57 @@
 import type { ErrorCode, ErrorEventInsert, GpxSessionInsert, ProcessingSessionInsert, VideoExportInsert, VideoUploadInsert } from "./types";
 
 const APP_VERSION = "1.0.31";
+
+// ── GPS device creator parser ─────────────────────────────────────────────────
+// Extracts brand and device model from the GPX creator string.
+//
+// The creator field varies by export method:
+//   • Via app  → "Garmin Connect", "Suunto app", "Strava"      — no device model
+//   • Direct   → "Garmin Edge 530", "Garmin Fenix 7 Pro"       — has device model
+//
+// Returns { brand, model } where model is null when only the app name is present.
+
+export function parseGpsCreator(creator: string | null | undefined): { brand: string | null; model: string | null } {
+  if (!creator) return { brand: null, model: null };
+  const raw = creator.trim();
+  const lc  = raw.toLowerCase();
+
+  // ── Brand detection ───────────────────────────────────────────────────────
+  const BRANDS: [string, string][] = [
+    ["garmin",   "Garmin"],
+    ["suunto",   "Suunto"],
+    ["wahoo",    "Wahoo"],
+    ["polar",    "Polar"],
+    ["coros",    "Coros"],
+    ["sigma",    "Sigma"],
+    ["bryton",   "Bryton"],
+    ["lezyne",   "Lezyne"],
+    ["cyclemeter","CycleMeter"],
+    ["strava",   "Strava"],
+    ["komoot",   "Komoot"],
+    ["mapmyfitness","MapMyFitness"],
+    ["runtastic","Runtastic"],
+    ["endomondo","Endomondo"],
+  ];
+
+  for (const [key, brand] of BRANDS) {
+    if (!lc.includes(key)) continue;
+
+    // Everything after the brand name = potential model suffix
+    const suffix = raw.replace(new RegExp(brand, "i"), "").trim();
+    const suffixLc = suffix.toLowerCase().trim();
+
+    // Known app-only suffixes → no hardware model info
+    const APP_SUFFIXES = ["connect", "connect api", "app", "fitness", "flow", "sport", "", "api"];
+    const isAppOnly = APP_SUFFIXES.includes(suffixLc) || suffixLc.startsWith("connect");
+
+    const model = (!isAppOnly && suffix.length > 0) ? suffix : null;
+    return { brand, model };
+  }
+
+  // Unknown creator — return as-is (limit length)
+  return { brand: raw.slice(0, 60), model: null };
+}
 const GPX_GAP_THRESHOLD_S = 30;
 
 /**
@@ -62,9 +113,13 @@ export function computeGpxMetrics(
   pts: RawPoint[],
   meta: { creator?: string; activityType?: string; activityName?: string; activityLocation?: string }
 ): Omit<GpxSessionInsert, "app_version"> {
+  const { brand: gps_device_brand, model: gps_device_model } = parseGpsCreator(meta.creator);
+
   if (pts.length === 0) {
     return {
       creator: meta.creator ?? null,
+      gps_device_brand,
+      gps_device_model,
       activity_type: meta.activityType ?? null,
       activity_name: meta.activityName ?? null,
       activity_start_at: null,
@@ -146,11 +201,15 @@ export function computeGpxMetrics(
     has_hr:                hrValues.length > 0,
     has_cadence:           pts.some((p) => p.cad !== undefined),
     has_power:             powerValues.length > 0,
-    has_speed:             pts.some((p) => p.speed !== undefined),
+    // Speed is always derivable from GPS position deltas (distance/time) even without an
+    // explicit <speed> tag. Mark true for any GPX with valid GPS + timestamps.
+    has_speed:             validPts.length >= 2 && hasAllTimestamps,
     hr_avg:                avg(hrValues) !== null ? Math.round(avg(hrValues)!) : null,
     hr_max:                hrValues.length ? Math.max(...hrValues) : null,
     power_avg:             avg(powerValues) !== null ? Math.round(avg(powerValues)!) : null,
     power_max:             powerValues.length ? Math.max(...powerValues) : null,
+    gps_device_brand,
+    gps_device_model,
     processing_session_id: null, // filled in after processing_sessions is created
   };
 }
@@ -200,13 +259,23 @@ export async function trackVideoExport(
 export async function trackError(
   code: ErrorCode,
   message: string,
-  source: "gpx_upload" | "video_upload" | "render" | "worker" | "unknown" = "unknown"
+  source: "gpx_upload" | "video_upload" | "render" | "worker" | "unknown" = "unknown",
+  deviceCtx?: {
+    device_type?: string | null;
+    device_make?: string | null;
+    device_model?: string | null;
+    file_extension?: string | null;
+  }
 ): Promise<void> {
   try {
     const payload: Omit<ErrorEventInsert, "app_version" | "user_agent"> = {
       error_code: code,
       error_message: message,
       error_source: source,
+      device_type: (deviceCtx?.device_type as ErrorEventInsert["device_type"]) ?? null,
+      device_make: deviceCtx?.device_make ?? null,
+      device_model: deviceCtx?.device_model ?? null,
+      file_extension: deviceCtx?.file_extension ?? null,
     };
     await fetch("/api/track-error", {
       method: "POST",

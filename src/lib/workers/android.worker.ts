@@ -50,6 +50,7 @@ interface WorkerSuccessPayload {
   videoStartMs:     number;
   durationMs:       number;
   hasStartGPS:      boolean;
+  deviceOsVersion:  string | null;  // Android version from com.android.version (e.g. "16")
 }
 
 interface WorkerErrorPayload {
@@ -247,6 +248,52 @@ function parseVideoTrack(moov: Uint8Array): VideoTrackResult | null {
 }
 
 /**
+ * Extract Android OS version from moov/meta keys/ilst.
+ * Returns the value of com.android.version (e.g. "16") or null.
+ */
+function parseAndroidOsVersion(moov: Uint8Array): string | null {
+  const meta = findBox(moov, 'meta');
+  if (!meta) return null;
+  const keysBox = findBox(meta, 'keys');
+  const ilstBox = findBox(meta, 'ilst');
+  if (!keysBox || !ilstBox || keysBox.length < 8) return null;
+
+  const keyCount = u32(keysBox, 4);
+  const keyNames: string[] = [];
+  let kpos = 8;
+  for (let i = 0; i < keyCount && kpos + 8 <= keysBox.length; i++) {
+    const ks = u32(keysBox, kpos);
+    if (ks < 8 || kpos + ks > keysBox.length) break;
+    keyNames.push(new TextDecoder().decode(keysBox.subarray(kpos + 8, kpos + ks)));
+    kpos += ks;
+  }
+
+  // Find index of com.android.version
+  const versionIdx = keyNames.findIndex(k => k.endsWith('.android.version') || k === 'com.android.version');
+  if (versionIdx < 0) return null;
+
+  // Find matching value in ilst
+  let ipos = 0;
+  while (ipos + 8 <= ilstBox.length) {
+    const entrySize = u32(ilstBox, ipos);
+    if (entrySize < 8 || ipos + entrySize > ilstBox.length) break;
+    const keyIndex0 = u32(ilstBox, ipos + 4) - 1;
+    if (keyIndex0 === versionIdx && ipos + 24 <= ipos + entrySize) {
+      const dataSize = u32(ilstBox, ipos + 8);
+      const dataTag  = String.fromCharCode(ilstBox[ipos + 12], ilstBox[ipos + 13], ilstBox[ipos + 14], ilstBox[ipos + 15]);
+      if (dataTag === 'data') {
+        const val = new TextDecoder().decode(
+          ilstBox.subarray(ipos + 24, Math.min(ipos + 8 + dataSize, ilstBox.length))
+        ).trim();
+        if (val) return val;
+      }
+    }
+    ipos += entrySize;
+  }
+  return null;
+}
+
+/**
  * Extract device model from moov/udta.
  * Checks 'auth' box (3GPP Author, contains friendly name like "Galaxy S24 FE"),
  * then Samsung 'smta' box as fallback.
@@ -326,9 +373,10 @@ self.onmessage = async (e: MessageEvent<{ file: File }>) => {
   // Android tkhd stores END time → subtract duration to get START
   const videoStartMs = createDateMs - durationMs;
 
-  // ── Step 3: Parse device model ────────────────────────────────────────────
-  const rawModel    = parseUdtaModel(moov);
-  const cameraModel = rawModel || 'Android Camera';
+  // ── Step 3: Parse device model + OS version ──────────────────────────────
+  const rawModel       = parseUdtaModel(moov);
+  const cameraModel    = rawModel || 'Android Camera';
+  const deviceOsVersion = parseAndroidOsVersion(moov);
 
   // ── Step 4: Build synthetic boundary points ───────────────────────────────
   const endMs       = videoStartMs + durationMs;
@@ -352,5 +400,6 @@ self.onmessage = async (e: MessageEvent<{ file: File }>) => {
     videoStartMs,
     durationMs,
     hasStartGPS:      false,
+    deviceOsVersion,
   } as WorkerSuccessPayload);
 };

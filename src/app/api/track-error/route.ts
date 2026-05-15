@@ -7,11 +7,15 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
 
     const record: ErrorEventInsert = {
-      error_code:    body.error_code    ?? "UNKNOWN",
-      error_message: body.error_message ?? null,
-      error_source:  body.error_source  ?? null,
-      app_version:   body.app_version   ?? null,
-      user_agent:    req.headers.get("user-agent") ?? null,
+      error_code:     body.error_code     ?? "UNKNOWN",
+      error_message:  body.error_message  ?? null,
+      error_source:   body.error_source   ?? null,
+      device_type:    body.device_type    ?? null,
+      device_make:    body.device_make    ?? null,
+      device_model:   body.device_model   ?? null,
+      file_extension: body.file_extension ?? null,
+      app_version:    body.app_version    ?? null,
+      user_agent:     req.headers.get("user-agent") ?? null,
     };
 
     const supabase = createServerClient();

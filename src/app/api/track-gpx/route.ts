@@ -8,6 +8,8 @@ export async function POST(req: NextRequest) {
 
     const session: GpxSessionInsert = {
       creator:               body.creator               ?? null,
+      gps_device_brand:      body.gps_device_brand      ?? null,
+      gps_device_model:      body.gps_device_model      ?? null,
       activity_type:         body.activity_type         ?? null,
       activity_name:         body.activity_name         ?? null,
       activity_start_at:     body.activity_start_at     ?? null,

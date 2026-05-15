@@ -11,9 +11,10 @@
 import type { TelemetryResult } from './GoProEngineClient';
 
 export interface AndroidTelemetryResult extends TelemetryResult {
-  videoStartMs:  number;
-  durationMs:    number;
-  hasStartGPS:   boolean;
+  videoStartMs:     number;
+  durationMs:       number;
+  hasStartGPS:      boolean;
+  deviceOsVersion:  string | null;  // Android OS version (e.g. "16")
 }
 
 export class AndroidEngineClient {
@@ -32,13 +33,8 @@ export class AndroidEngineClient {
         const data = e.data;
 
         if (data.success) {
-          const { points, syncPoints, cameraModel, gpsVideoOffsetMs, videoStartMs, durationMs, hasStartGPS } = data;
-          console.log(
-            `[AndroidEngineClient] Worker done — model="${cameraModel}" ` +
-            `start=${new Date(videoStartMs).toISOString()} ` +
-            `duration=${(durationMs / 1000).toFixed(0)}s`,
-          );
-          resolve({ points, syncPoints, cameraModel, gpsVideoOffsetMs, videoStartMs, durationMs, hasStartGPS });
+          const { points, syncPoints, cameraModel, gpsVideoOffsetMs, videoStartMs, durationMs, hasStartGPS, deviceOsVersion } = data;
+          resolve({ points, syncPoints, cameraModel, gpsVideoOffsetMs, videoStartMs, durationMs, hasStartGPS, deviceOsVersion });
         } else {
           console.error(`[AndroidEngineClient] Worker error [${data.code}]:`, data.error);
           const err = Object.assign(new Error(data.error), { code: data.code });
