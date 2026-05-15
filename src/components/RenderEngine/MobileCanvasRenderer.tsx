@@ -664,11 +664,16 @@ export function MobileCanvasRenderer({
 
         // ── Capture only at 30fps to avoid VideoFrame memory spike on iOS ────
         if (lastCaptureMs < 0 || now - lastCaptureMs >= CAPTURE_INTERVAL_MS) {
-          if (recorder?.encoderQueueSize ?? 0 > 10) {
+          if ((recorder?.encoderQueueSize ?? 0) > 10) {
             skippedFrames++;
           } else {
+            // Pass videoReady=false when video is seeking to prevent encoder crash.
+            // readyState=0 (HAVE_NOTHING) or 1 (HAVE_METADATA) means the video is
+            // rebuffering after a seek — feeding those frames kills the iOS encoder.
+            const videoReady = videoEl.readyState >= 2;
+            if (!videoReady) skippedFrames++;
             try {
-              recorder!.captureFrame();
+              recorder!.captureFrame(videoReady);
             } catch (err: any) {
               mlog("ERROR", `captureFrame@${elapsed.toFixed(2)}s: ${err?.message}`);
             }

@@ -14,6 +14,7 @@
 
 // @ts-ignore — mp4-muxer ships its own types
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
+import { mlog } from '@/lib/engine/mobile/mobileDebugLogger';
 
 // 720×1280 keeps Instagram quality on phone screens while halving VideoFrame
 // memory vs 1080×1920 (3.7 MB/frame → significant OOM relief on iOS).
@@ -91,6 +92,8 @@ export class MobileRecorder {
         catch (e) { self._error = e as Error; }
       },
       error: (e: DOMException) => {
+        // Log immediately — this error is otherwise invisible
+        mlog('ENCODER_ERR', `${e.name}: ${e.message}`);
         if (self) self._error = e;
       },
     });
@@ -102,7 +105,9 @@ export class MobileRecorder {
       bitrate: VIDEO_BITRATE,
       framerate: MOBILE_FPS,
       hardwareAcceleration: 'prefer-hardware',
-      latencyMode: 'quality',
+      // 'realtime' uses less internal buffering than 'quality' — more stable on iOS
+      // when the video element briefly drops to readyState=0 during seeks.
+      latencyMode: 'realtime',
     });
 
     self = new MobileRecorder(encoder, muxer, canvas);
@@ -121,11 +126,17 @@ export class MobileRecorder {
    * Captures the current canvas state as one video frame.
    * Call once per requestAnimationFrame tick.
    *
-   * Silently skips frames if the encoder queue is backing up —
-   * this prevents OOM on slow devices.
+   * Pass videoReady=false to skip the frame (e.g. during a video seek when
+   * readyState=0 — encoding blank/stale frames crashes the iOS VideoEncoder).
    */
-  captureFrame(): void {
-    if (this._error || this._encoder.state !== 'configured') return;
+  captureFrame(videoReady = true): void {
+    if (this._error) return;
+    if (this._encoder.state !== 'configured') {
+      mlog('CAPTURE_SKIP', `encoder state=${this._encoder.state}`);
+      return;
+    }
+    // Skip if video is not ready — avoids feeding bad frames to the encoder
+    if (!videoReady) return;
 
     // Back-pressure guard: skip frames if encoder can't keep up
     if (this._encoder.encodeQueueSize > 10) return;

@@ -367,8 +367,14 @@ export default function MobilePage() {
         : VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
 
       mlog("HIGHLIGHTS", `calling findHighlights vpts=${vpts.length} offset=${gpsVideoOffsetMs}ms`);
+      mlog("HIGHLIGHTS", `vpts[0].time=${new Date(vpts[0]?.time ?? 0).toISOString()} vpts[-1].time=${new Date(vpts[vpts.length-1]?.time ?? 0).toISOString()}`);
+      mlog("HIGHLIGHTS", `actPts[0].time=${new Date(activityPoints[0]?.time ?? 0).toISOString()}`);
       const segments = TelemetryCrossRef.findHighlights(activityPoints, vpts as any, unit, 0, gpsVideoOffsetMs);
       mlog("HIGHLIGHTS", `found=${segments?.length ?? 0}`);
+      // Log first 3 segments to see computed videoStartTime values
+      segments?.slice(0, 3).forEach((s, i) => {
+        mlog("SEG_CALC", `seg[${i}] videoStart=${s.videoStartTime?.toFixed(2)}s startIdx=${s.startIndex} ptTime=${new Date(activityPoints[s.startIndex]?.time ?? 0).toISOString()}`);
+      });
 
       if (!segments?.length) {
         // Provide diagnostic info in the error
