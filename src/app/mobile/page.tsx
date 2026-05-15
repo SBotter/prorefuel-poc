@@ -279,10 +279,17 @@ export default function MobilePage() {
       setUploadError("Only .mp4 and .mov files are supported."); e.target.value = ""; return;
     }
 
-    // ── File size guard: > 300 MB causes iOS to evict the video buffer ─────────
-    const MAX_VIDEO_MB = 300;
+    // ── File size guard (device-aware) ──────────────────────────────────────────
+    // All limits apply only on /mobile (iOS + Android). Desktop has no limit.
+    // iOS 18+ (A17+ chips, iPhone 15+): 1 GB  — plenty of RAM for encoding
+    // iOS 17.x (A16 chips, iPhone 14+): 1 GB
+    // iOS 16.4–16.x (A14/A15, iPhone 12–13): 500 MB
+    // Android Chrome:                          500 MB
+    const iosVer = mobileCaps?.iosVersion ?? 0;
+    const MAX_VIDEO_MB = iosVer >= 17 ? 1024 : 500;
     if (file.size > MAX_VIDEO_MB * 1_048_576) {
-      setUploadError(`Video too large (${(file.size/1_048_576/1_024).toFixed(1)} GB). Maximum is ${MAX_VIDEO_MB} MB on mobile. Trim the video before uploading.`);
+      const fileMB = (file.size / 1_048_576).toFixed(0);
+      setUploadError(`Video too large (${fileMB} MB). Maximum for this device is ${MAX_VIDEO_MB} MB. Trim the clip before uploading.`);
       e.target.value = "";
       return;
     }
