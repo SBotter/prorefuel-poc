@@ -19,6 +19,11 @@ import type { RenderResult } from "@/components/MapEngine";
 // Dynamic import — keeps mapbox-gl, Tone.js and ffmpeg out of the initial bundle.
 // MapEngine is only needed when the user clicks Generate, never on landing page load.
 const MapEngine = dynamic(() => import("@/components/MapEngine"), { ssr: false });
+// Mobile pipeline — loaded only when the user is on a supported iOS/Android device.
+const MobileCanvasRenderer = dynamic(
+  () => import("@/components/RenderEngine/MobileCanvasRenderer").then(m => ({ default: m.MobileCanvasRenderer })),
+  { ssr: false },
+);
 import type { VideoUploadInsert } from "@/lib/supabase/types";
 // Type-only imports — zero runtime cost, erased by TypeScript compiler
 import type { ActionSegment }   from "@/lib/engine/TelemetryCrossRef";
@@ -340,6 +345,7 @@ export default function ProRefuelPage() {
   const [gpxError, setGpxError]             = useState<string | null>(null);
   const [unit, setUnit]                     = useState<UnitSystem>("metric");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [mobileCaps, setMobileCaps]         = useState<import("@/lib/engine/mobile/mobileCapabilities").MobileCapabilities | null>(null);
   const [activityMeta, setActivityMeta]     = useState<{ name: string; location?: string; gpsDevice?: DeviceInfo; camera?: DeviceInfo }>({ name: "EPIC RIDE" });
   const [isMobileVideo, setIsMobileVideo]   = useState(false); // true for iPhone + Android
 
@@ -356,6 +362,10 @@ export default function ProRefuelPage() {
   useEffect(() => {
     setMounted(true);
     setIsMobileDevice(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+    // Mobile WebCodecs capability check (runs after mount so window is available)
+    import("@/lib/engine/mobile/mobileCapabilities").then(({ getMobileCapabilities }) => {
+      setMobileCaps(getMobileCapabilities());
+    });
     // Collect browser/OS info asynchronously (may need high-entropy UA hints)
     import("@/lib/utils/browserInfo").then(({ getBrowserInfoEnriched }) => {
       getBrowserInfoEnriched().then(info => { browserInfoRef.current = info; });
@@ -1018,16 +1028,59 @@ export default function ProRefuelPage() {
               </div>
 
               <div className="bg-[#0f0f0f] rounded-[2.8rem] border border-zinc-800/80 p-7 md:p-9 shadow-2xl relative ring-1 ring-white/4">
-                {(mounted && isMobileDevice) ? (
-                  <div className="flex flex-col items-center gap-4 py-8 text-center">
-                    <div className="w-14 h-14 rounded-2xl bg-zinc-800 flex items-center justify-center text-2xl">🖥️</div>
-                    <p className="font-black text-white text-base uppercase tracking-wide">Desktop only</p>
-                    <p className="text-zinc-400 text-sm leading-relaxed max-w-xs">
-                      LENS requires Chrome on a desktop computer to process your video.
-                    </p>
-                    <a href="https://lens.prorefuel.app" className="px-5 py-3 rounded-xl bg-amber-500 text-black font-black text-sm uppercase tracking-widest">
-                      lens.prorefuel.app
-                    </a>
+                {/* ── Mobile: unsupported device gate ─────────────────────── */}
+                {(mounted && isMobileDevice && mobileCaps && !mobileCaps.isSupported) ? (
+                  <div className="flex flex-col items-center gap-5 py-10 text-center">
+                    <div className="w-16 h-16 rounded-2xl bg-zinc-800/80 border border-zinc-700 flex items-center justify-center">
+                      <svg viewBox="0 0 24 24" className="w-8 h-8 text-amber-500" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="font-black text-white text-base uppercase tracking-widest mb-2">
+                        Update Required
+                      </p>
+                      <p className="text-zinc-400 text-sm leading-relaxed max-w-[240px]">
+                        {mobileCaps.blockedReason ?? "This device is not supported."}
+                      </p>
+                    </div>
+                    <div className="w-full h-px bg-zinc-800" />
+                    <div className="space-y-2 w-full">
+                      {mobileCaps.isIOS && (
+                        <p className="text-zinc-600 text-[11px] uppercase tracking-widest font-black">
+                          Settings → General → Software Update
+                        </p>
+                      )}
+                      {mobileCaps.isAndroid && (
+                        <p className="text-zinc-600 text-[11px] uppercase tracking-widest font-black">
+                          Open in Chrome 94+ to continue
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : (mounted && isMobileDevice && mobileCaps?.isSupported && step === "EXPERIENCE") ? (
+                  /* ── Mobile: supported — render with WebCodecs pipeline ── */
+                  <div className="aspect-[9/16] w-full rounded-[2.8rem] overflow-hidden bg-black relative shadow-2xl ring-1 ring-amber-500/20">
+                    <MobileCanvasRenderer
+                      activityPoints={activityPoints}
+                      highlights={highlights}
+                      storyPlan={storyPlan}
+                      videoFile={videoFile}
+                      unit={unit}
+                      onRenderComplete={(result: RenderResult) => {
+                        if (result.status === "success") {
+                          setTimeout(() => {
+                            setVideoFile(null); setHighlights([]); setStoryPlan(null);
+                            setIsMobileVideo(false); setUploadError(null);
+                            setProgress(0); setStatusMsg("");
+                            processingSessionIdRef.current = null;
+                            readyStepStartRef.current = null;
+                            experienceStartRef.current = null;
+                            setStep("READY");
+                          }, 3000);
+                        }
+                      }}
+                    />
                   </div>
                 ) : step !== "EXPERIENCE" ? (
                   <div className="space-y-5 relative z-10">
