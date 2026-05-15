@@ -525,11 +525,22 @@ export function MobileCanvasRenderer({
         drawIntroPhase(ctx, localTime, seg.durationSec);
 
       } else if (seg.type === "ACTION") {
-        // Seek video to this highlight's start (once per new ACTION segment)
         if (segIdx !== lastSegIdx && typeof seg.videoStartTime === "number") {
           lastSegIdx = segIdx;
-          videoEl.currentTime = seg.videoStartTime;
-          videoEl.play().catch(() => {});
+          const target  = seg.videoStartTime;
+          const current = videoEl.currentTime;
+          // ── CRITICAL: never seek backwards on iOS ──────────────────────────
+          // A backward seek forces the video decoder to restart, competing with
+          // VideoEncoder for the same Video Toolbox hardware block.
+          // This reliably kills the encoder with "Encoding task did not complete".
+          // Only seek when moving forward by more than 0.5s.
+          if (target > current + 0.5) {
+            mlog("SEEK", `forward ${current.toFixed(2)}→${target.toFixed(2)}s`);
+            videoEl.currentTime = target;
+          } else {
+            mlog("SEEK", `skip (cur=${current.toFixed(2)}s tgt=${target.toFixed(2)}s)`);
+          }
+          if (videoEl.paused) videoEl.play().catch(() => {});
         }
 
         drawVideoFrame(ctx);
@@ -566,7 +577,9 @@ export function MobileCanvasRenderer({
 
     // ── Main recording loop ────────────────────────────────────────────────────
     async function startRecordingLoop() {
-      mlogClear(); // fresh log for this session
+      // Do NOT mlogClear() here — upload logs (SEG_CALC, HIGHLIGHTS, etc.) are valuable
+      // for diagnosing sync issues. Just append a separator.
+      mlog("---", "=== RENDER START ===");
       mlog("INIT", `canvas=${W}×${H} fps=${FPS} dur=${totalDurSec.toFixed(1)}s segments=${segments.length}`);
       mlog("INIT", `pts=${pts.length} videoFile=${videoFile?.name} size=${((videoFile?.size ?? 0)/1_048_576).toFixed(1)}MB`);
 
@@ -583,7 +596,7 @@ export function MobileCanvasRenderer({
 
       setStatus("Recording…");
       recStartMs = performance.now();
-      mlog("REC", "loop started");
+      mlog("REC", "loop started — upload logs preserved above ↑");
 
       // ── 30fps throttle: rAF fires at 60fps on iPhone; only capture at 30fps ──
       let lastCaptureMs  = -1;
