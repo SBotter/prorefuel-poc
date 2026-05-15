@@ -203,9 +203,13 @@ export function MobileCanvasRenderer({
     const toIRX   = (lon: number) => IR_PAD + ((lon - minLon) / lonR) * IR_W;
     const toIRY   = (lat: number) => IR_Y + IR_H - ((lat - minLat) / latR) * IR_H;
 
-    // ── Segment timeline ─────────────────────────────────────────────────────
+    // ── Segment timeline — hard cap at 30s to prevent OOM on iOS ─────────────
+    // At 4 Mbps, 30s = ~15 MB encoded data. StorytellingProcessor can generate
+    // 60+ second videos which crash the WebKit renderer at this bitrate+resolution.
+    const MOBILE_DUR_CAP = 30;
     const segments   = storyPlan.segments;
-    const totalDurSec = segments.reduce((s, seg) => s + seg.durationSec, 0);
+    const rawDurSec   = segments.reduce((s, seg) => s + seg.durationSec, 0);
+    const totalDurSec = Math.min(rawDurSec, MOBILE_DUR_CAP);
 
     function getSegAt(timeSec: number): {
       seg: typeof segments[0]; segIdx: number; localTime: number;

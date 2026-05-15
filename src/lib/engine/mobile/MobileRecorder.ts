@@ -15,12 +15,17 @@
 // @ts-ignore — mp4-muxer ships its own types
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 
-export const MOBILE_W   = 1080;
-export const MOBILE_H   = 1920;
+// 720×1280 keeps Instagram quality on phone screens while halving VideoFrame
+// memory vs 1080×1920 (3.7 MB/frame → significant OOM relief on iOS).
+export const MOBILE_W   = 720;
+export const MOBILE_H   = 1280;
 export const MOBILE_FPS = 30;
 
 const FRAME_DUR_US  = Math.round(1_000_000 / MOBILE_FPS); // microseconds per frame
-const VIDEO_BITRATE = 8_000_000;                           // 8 Mbps — perfect for mobile screens
+// 4 Mbps gives excellent quality at 720×1280.
+// At 8 Mbps the ArrayBufferTarget accumulated ~59 MB for a 59s clip → OOM on iOS.
+// 4 Mbps halves the in-memory encoded data (~15 MB for a 30s cap).
+const VIDEO_BITRATE = 4_000_000;
 
 // H264 codec strings ordered by quality preference.
 // All supported on iOS 16.4+ and Android Chrome 94+.
