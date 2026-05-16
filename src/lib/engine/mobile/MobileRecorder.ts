@@ -75,10 +75,11 @@ export class MobileRecorder {
     const muxer  = new Muxer({
       target,
       video:      { codec: 'avc', width: MOBILE_W, height: MOBILE_H },
-      // fastStart: false avoids holding a second copy of the data in RAM during
-      // finalize() (the 'in-memory' mode was doing a double-buffer that could OOM).
-      // moov-at-end is fine for download-to-Photos on iOS.
       fastStart:  false,
+      // Wall-clock timestamps start at ~37ms (not 0) because the first rAF tick
+      // fires slightly after recStartMs. 'offset' subtracts the first timestamp
+      // from all subsequent ones so DTS always starts at 0 in the container.
+      firstTimestampBehavior: 'offset',
     });
 
     // Placeholder — replaced once the class instance exists

@@ -152,7 +152,7 @@ export function MobileCanvasRenderer({
     }, 0);
     const eleGainDisp = Math.round(totalEleGain * ELE_FACTOR);
 
-    // ── GPS bounds (for map overlays) ────────────────────────────────────────
+    // ── GPS bounds ────────────────────────────────────────────────────────────
     let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
     for (const p of pts) {
       if (p.lat < minLat) minLat = p.lat; if (p.lat > maxLat) maxLat = p.lat;
@@ -161,49 +161,190 @@ export function MobileCanvasRenderer({
     const latR = maxLat - minLat || 0.001;
     const lonR = maxLon - minLon || 0.001;
 
-    // ── Mini-map (ACTION phase — top-right corner) ───────────────────────────
-    const MM_W  = Math.round(W * 0.38);
-    const MM_H  = Math.round(MM_W * 0.72);
+    // ── Mini-map — matches desktop MapEngine broadmap exactly ────────────────
+    // Desktop: pipW=W*0.52, pipH=W*0.34, at pipX=W-pipW-W*0.04, pipY=H*0.07
+    // No background box — route uses drop shadow for 3D depth, same as desktop.
+    const MM_W  = Math.round(W * 0.52);
+    const MM_H  = Math.round(W * 0.34);
     const MM_X  = W - MM_W - Math.round(W * 0.04);
-    const MM_Y  = Math.round(H * 0.055);
-    const toMMX = (lon: number) => 14 + ((lon - minLon) / lonR) * (MM_W - 28);
-    const toMMY = (lat: number) => MM_H - 14 - ((lat - minLat) / latR) * (MM_H - 28);
+    const MM_Y  = Math.round(H * 0.07);
+    const MM_PAD = 32;
+    const toMMX = (lon: number) => MM_PAD + ((lon - minLon) / lonR) * (MM_W - MM_PAD * 2);
+    const toMMY = (lat: number) => MM_H - MM_PAD - ((lat - minLat) / latR) * (MM_H - MM_PAD * 2);
 
-    // Pre-render full route to an offscreen canvas (O(n) once, O(1) per frame)
-    const routeCache = document.createElement("canvas");
-    routeCache.width = MM_W; routeCache.height = MM_H;
-    const rc = routeCache.getContext("2d")!;
-    rc.strokeStyle = "rgba(255,255,255,0.65)"; rc.lineWidth = 2.5; rc.lineJoin = "round"; rc.lineCap = "round";
-    rc.beginPath();
-    pts.forEach((p: any, i: number) =>
-      i === 0 ? rc.moveTo(toMMX(p.lon), toMMY(p.lat)) : rc.lineTo(toMMX(p.lon), toMMY(p.lat)),
-    );
-    rc.stroke();
+    // broadmapCache: full route with drop shadow — no background box
+    const broadmapCache = document.createElement("canvas");
+    broadmapCache.width = MM_W; broadmapCache.height = MM_H;
+    (() => {
+      const bc = broadmapCache.getContext("2d")!;
+      bc.shadowColor = "rgba(0,0,0,0.90)"; bc.shadowBlur = 10;
+      bc.shadowOffsetX = 3; bc.shadowOffsetY = 4;
+      bc.strokeStyle = "rgba(255,255,255,0.85)"; bc.lineWidth = 2.5;
+      bc.lineJoin = "round"; bc.lineCap = "round";
+      bc.beginPath();
+      pts.forEach((p: any, i: number) =>
+        i === 0 ? bc.moveTo(toMMX(p.lon), toMMY(p.lat)) : bc.lineTo(toMMX(p.lon), toMMY(p.lat)));
+      bc.stroke();
+    })();
 
-    // ── Speed gauge (ACTION phase — left side) ───────────────────────────────
-    const G_CX      = Math.round(W * 0.255);
-    const G_CY      = Math.round(H * 0.215);
-    const G_R       = Math.round(W * 0.185);
-    const G_START   = Math.PI * 0.75;
-    const G_SWEEP   = Math.PI * 1.5;
-    const G_LW      = Math.round(W * 0.025);
-    const maxGauge  = Math.max(60, Math.ceil(maxSpeedDisp / 10) * 10);
+    // trailCache: incremental amber trail (O(delta) per frame, same as desktop)
+    const trailCache = document.createElement("canvas");
+    trailCache.width = MM_W; trailCache.height = MM_H;
+    const trailCtx = trailCache.getContext("2d")!;
+    trailCtx.strokeStyle = "rgba(245,158,11,0.95)"; trailCtx.lineWidth = 3;
+    trailCtx.lineJoin = "round"; trailCtx.lineCap = "round";
+    trailCtx.shadowColor = "rgba(0,0,0,0.85)"; trailCtx.shadowBlur = 8;
+    trailCtx.shadowOffsetX = 2; trailCtx.shadowOffsetY = 3;
+    let lastTrailIdx = -1;
 
-    // Pre-render gauge track (O(1) per frame)
-    const gaugeTrackCache = document.createElement("canvas");
-    gaugeTrackCache.width  = Math.round(W * 0.60);
-    gaugeTrackCache.height = Math.round(H * 0.48);
-    const gc = gaugeTrackCache.getContext("2d")!;
-    gc.strokeStyle = "rgba(255,255,255,0.10)"; gc.lineWidth = G_LW; gc.lineCap = "round";
-    gc.beginPath(); gc.arc(G_CX, G_CY, G_R, G_START, G_START + G_SWEEP); gc.stroke();
+    // ── Speed gauge — matches desktop MapEngine ────────────────────────────────
+    // Desktop: gCX=W*0.2, gCY=H*0.15, gR=W*0.13, gaugeCache W*0.52×H*0.44
+    const G_CX    = W * 0.2;
+    const G_CY    = H * 0.15;
+    const G_R     = W * 0.13;
+    const G_LW    = Math.round(W * 0.022);
+    const G_START = Math.PI * 0.75;
+    const G_SWEEP = Math.PI * 1.5;
+    const G_END   = G_START + G_SWEEP;
+    const maxGauge = Math.max(50, Math.ceil(maxSpeedDisp / 10) * 10);
+    const speedToAngle = (s: number) => G_START + Math.min(s / maxGauge, 1) * G_SWEEP;
 
-    // ── Intro-phase full-route projection (animated GPS route reveal) ─────────
-    const IR_PAD  = Math.round(W * 0.11);
-    const IR_W    = W - IR_PAD * 2;
-    const IR_H    = Math.round(H * 0.48);
-    const IR_Y    = Math.round(H * 0.18);
-    const toIRX   = (lon: number) => IR_PAD + ((lon - minLon) / lonR) * IR_W;
-    const toIRY   = (lat: number) => IR_Y + IR_H - ((lat - minLat) / latR) * IR_H;
+    // gaugeCache: static layer — vignette + track arc + tick marks + hub (O(1) blit per frame)
+    const gaugeCacheW = Math.round(W * 0.52);
+    const gaugeCacheH = Math.round(H * 0.44);
+    const gaugeCache  = document.createElement("canvas");
+    gaugeCache.width  = gaugeCacheW; gaugeCache.height = gaugeCacheH;
+    (() => {
+      const gc = gaugeCache.getContext("2d")!;
+      // Soft radial vignette
+      const vg = gc.createRadialGradient(G_CX, G_CY, 0, G_CX, G_CY, W * 0.42);
+      vg.addColorStop(0, "rgba(0,0,0,0.28)"); vg.addColorStop(1, "rgba(0,0,0,0)");
+      gc.fillStyle = vg; gc.fillRect(0, 0, gaugeCacheW, gaugeCacheH);
+      // Track arc
+      gc.lineWidth = G_LW; gc.lineCap = "round";
+      gc.strokeStyle = "rgba(255,255,255,0.12)";
+      gc.beginPath(); gc.arc(G_CX, G_CY, G_R, G_START, G_END); gc.stroke();
+      // Tick marks + speed labels
+      gc.lineCap = "butt";
+      for (let spd = 0; spd <= maxGauge; spd += 10) {
+        const a = speedToAngle(spd), cosA = Math.cos(a), sinA = Math.sin(a);
+        const isMajor = spd % 20 === 0;
+        const outer = G_R - Math.round(W * 0.024);
+        const inner = outer - (isMajor ? G_R * 0.12 : G_R * 0.07);
+        gc.strokeStyle = isMajor ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.15)";
+        gc.lineWidth = isMajor ? 2.5 : 1.5;
+        gc.beginPath();
+        gc.moveTo(G_CX + cosA * outer, G_CY + sinA * outer);
+        gc.lineTo(G_CX + cosA * inner, G_CY + sinA * inner);
+        gc.stroke();
+        if (isMajor && spd > 0) {
+          const lr = inner - G_R * 0.12;
+          gc.shadowColor = "rgba(0,0,0,1)"; gc.shadowBlur = 10;
+          gc.font = `700 ${Math.round(W * 0.024)}px sans-serif`;
+          gc.fillStyle = "rgba(255,255,255,0.6)"; gc.textAlign = "center";
+          gc.fillText(String(spd), G_CX + cosA * lr, G_CY + sinA * lr + 5);
+          gc.shadowBlur = 0;
+        }
+      }
+      // Hub dot
+      gc.fillStyle = "#1a1a1a";
+      gc.beginPath(); gc.arc(G_CX, G_CY, W * 0.022, 0, Math.PI * 2); gc.fill();
+      gc.strokeStyle = "rgba(255,255,255,0.15)"; gc.lineWidth = 1.5;
+      gc.beginPath(); gc.arc(G_CX, G_CY, W * 0.022, 0, Math.PI * 2); gc.stroke();
+    })();
+
+    // Max speed tracker for red needle (same as desktop)
+    let maxSpeedSeen = 0;
+
+    // ── Altimetry — matches desktop MapEngine ─────────────────────────────────
+    // Desktop: ALT_H=H*0.12, ALT_PAD_TOP=28, ALT_Y=H-ALT_H-28, full width
+    const ALT_H     = Math.round(H * 0.12);
+    const ALT_PT    = 28; // padding top (above curve for peak label)
+    const ALT_Y     = H - ALT_H - ALT_PT;
+    const ALT_PAD_X = Math.round(W * 0.02);
+    const totalDistMalt = cumDist[cumDist.length - 1] || 1;
+
+    // Find peak elevation index
+    let minE = Infinity, maxE = -Infinity, peakEleIdx = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const e = Number((pts[i] as any).ele) || 0;
+      if (e < minE) minE = e;
+      if (e > maxE) { maxE = e; peakEleIdx = i; }
+    }
+    const eRange = maxE - minE || 1;
+
+    // Pre-project altimetry X/Y (O(1) lookup per frame)
+    const altProjX = new Float32Array(pts.length);
+    const altProjY = new Float32Array(pts.length);
+    for (let i = 0; i < pts.length; i++) {
+      altProjX[i] = ALT_PAD_X + (cumDist[i] / totalDistMalt) * (W - 2 * ALT_PAD_X);
+      altProjY[i] = ALT_Y + ALT_PT + ALT_H - ((Number((pts[i] as any).ele) || 0) - minE) / eRange * (ALT_H * 0.85);
+    }
+
+    // altimetryCache: static background (dark fade + amber fill + curve + peak indicator + markers)
+    const altimetryCache = document.createElement("canvas");
+    altimetryCache.width = W; altimetryCache.height = ALT_H + ALT_PT;
+    (() => {
+      const ac = altimetryCache.getContext("2d")!;
+      // Dark fade strip
+      const bgG = ac.createLinearGradient(0, 0, 0, ALT_H + ALT_PT);
+      bgG.addColorStop(0, "rgba(5,5,5,0)"); bgG.addColorStop(0.3, "rgba(5,5,5,0.75)"); bgG.addColorStop(1, "rgba(5,5,5,0.97)");
+      ac.fillStyle = bgG; ac.fillRect(0, 0, W, ALT_H + ALT_PT);
+      // Amber area fill
+      const altG = ac.createLinearGradient(0, ALT_PT, 0, ALT_PT + ALT_H);
+      altG.addColorStop(0, "rgba(245,158,11,0.45)"); altG.addColorStop(1, "rgba(245,158,11,0)");
+      ac.fillStyle = altG;
+      ac.beginPath(); ac.moveTo(ALT_PAD_X, ALT_PT + ALT_H);
+      pts.forEach((_: any, i: number) => ac.lineTo(altProjX[i], altProjY[i] - ALT_Y));
+      ac.lineTo(W - ALT_PAD_X, ALT_PT + ALT_H); ac.closePath(); ac.fill();
+      // Curve glow
+      ac.strokeStyle = "#f59e0b"; ac.lineWidth = 2.5; ac.lineJoin = "round";
+      ac.shadowColor = "rgba(245,158,11,0.45)"; ac.shadowBlur = 8;
+      ac.beginPath();
+      pts.forEach((_: any, i: number) =>
+        i === 0 ? ac.moveTo(altProjX[i], altProjY[i] - ALT_Y) : ac.lineTo(altProjX[i], altProjY[i] - ALT_Y));
+      ac.stroke(); ac.shadowBlur = 0;
+      // Peak elevation indicator
+      const peakXc = altProjX[peakEleIdx];
+      const peakYc = altProjY[peakEleIdx] - ALT_Y;
+      const labelFontSize = Math.round(W * 0.026);
+      ac.font = `800 ${labelFontSize}px sans-serif`;
+      const labelText = `▲ ${Math.round(maxE)}m`;
+      const textW = ac.measureText(labelText).width;
+      const pillW = textW + 20; const pillH = labelFontSize + 10;
+      const pillGap = 6;
+      const pillX = Math.min(Math.max(peakXc - pillW / 2, 4), W - pillW - 4);
+      const pillY = Math.max(peakYc - pillH - pillGap - 8, 2);
+      // Dotted vertical line
+      ac.save(); ac.setLineDash([4, 4]); ac.strokeStyle = "rgba(245,158,11,0.55)"; ac.lineWidth = 1.5;
+      ac.beginPath(); ac.moveTo(peakXc, pillY + pillH + pillGap); ac.lineTo(peakXc, peakYc - 6); ac.stroke();
+      ac.setLineDash([]); ac.restore();
+      // Peak dot
+      ac.beginPath(); ac.arc(peakXc, peakYc, 6, 0, Math.PI * 2); ac.fillStyle = "rgba(0,0,0,0.75)"; ac.fill();
+      ac.beginPath(); ac.arc(peakXc, peakYc, 5, 0, Math.PI * 2); ac.fillStyle = "#f59e0b"; ac.fill();
+      // Pill
+      ac.shadowColor = "rgba(0,0,0,0.9)"; ac.shadowBlur = 8;
+      ac.fillStyle = "rgba(0,0,0,0.72)";
+      ac.beginPath(); (ac as any).roundRect?.(pillX, pillY, pillW, pillH, pillH / 2); ac.fill();
+      ac.shadowBlur = 0;
+      ac.strokeStyle = "rgba(245,158,11,0.55)"; ac.lineWidth = 1.2;
+      ac.beginPath(); (ac as any).roundRect?.(pillX, pillY, pillW, pillH, pillH / 2); ac.stroke();
+      ac.fillStyle = "#fbbf24"; ac.textAlign = "center"; ac.textBaseline = "middle";
+      ac.fillText(labelText, pillX + pillW / 2, pillY + pillH / 2);
+      // Start (green) / End (red) markers
+      const drawAltDot = (x: number, y: number, color: string) => {
+        ac.beginPath(); ac.arc(x, y, 6, 0, Math.PI * 2); ac.fillStyle = "rgba(0,0,0,0.75)"; ac.fill();
+        ac.beginPath(); ac.arc(x, y, 5, 0, Math.PI * 2); ac.fillStyle = color; ac.fill();
+      };
+      drawAltDot(altProjX[0], altProjY[0] - ALT_Y, "#22c55e");
+      drawAltDot(altProjX[pts.length - 1], altProjY[pts.length - 1] - ALT_Y, "#ef4444");
+    })();
+
+    // grayFrameCache: pre-computed grayscale frozen video frame for INTRO phase
+    // Computed in startRecordingLoop() after pre-seek — populated below.
+    const grayFrameCache = document.createElement("canvas");
+    grayFrameCache.width = W; grayFrameCache.height = H;
+    let grayFrameReady = false;
 
     // ── Segment timeline — cap at 30s and always reserve 3s for BRAND ──────────
     // At 4 Mbps, 30s = ~15 MB. StorytellingProcessor can emit 60+ second plans.
@@ -288,192 +429,212 @@ export function MobileCanvasRenderer({
       try { c.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H); } catch { /* video not ready */ }
     }
 
-    // ── Drawing: GPS mini-map (ACTION overlay) ────────────────────────────────
-    function drawMiniMap(c: CanvasRenderingContext2D, gpsIdx: number, alpha: number) {
-      if (alpha <= 0) return;
-      c.save(); c.globalAlpha = alpha;
+    // ── Drawing: GPS mini-map — matches desktop drawBroadMap exactly ─────────
+    // No background box. Route has drop shadow. Incremental trail cache.
+    function drawMiniMap(c: CanvasRenderingContext2D, gpsIdx: number) {
+      // Layer 1: pre-cached route (no background box — shadow gives depth)
+      c.save();
+      c.drawImage(broadmapCache, MM_X, MM_Y, MM_W, MM_H);
 
-      // Card background
-      c.fillStyle = "rgba(8,8,14,0.86)";
-      c.beginPath(); c.roundRect(MM_X - 6, MM_Y - 6, MM_W + 12, MM_H + 12, 14); c.fill();
-      c.strokeStyle = "rgba(245,158,11,0.22)"; c.lineWidth = 1.5; c.stroke();
-
-      // Full route (O(1) blit)
-      c.drawImage(routeCache, MM_X, MM_Y);
-
-      // Amber trail up to current GPS
-      const trailEnd = Math.min(gpsIdx + 1, pts.length);
-      if (trailEnd > 1) {
-        c.strokeStyle = "#f59e0b"; c.lineWidth = 3.2; c.lineJoin = "round"; c.lineCap = "round";
-        sh(c, "rgba(245,158,11,0.55)", 8);
-        c.beginPath();
-        for (let i = 0; i < trailEnd; i++) {
-          const p = pts[i] as any;
-          i === 0 ? c.moveTo(MM_X + toMMX(p.lon), MM_Y + toMMY(p.lat))
-                  : c.lineTo(MM_X + toMMX(p.lon), MM_Y + toMMY(p.lat));
-        }
-        c.stroke(); nosh(c);
+      // Layer 2: amber progress trail — incremental (O(delta) not O(idx))
+      if (gpsIdx > lastTrailIdx) {
+        const from = Math.max(lastTrailIdx, 0);
+        trailCtx.beginPath();
+        trailCtx.moveTo(toMMX(pts[from].lon), toMMY(pts[from].lat));
+        for (let i = from + 1; i <= gpsIdx; i++)
+          trailCtx.lineTo(toMMX((pts[i] as any).lon), toMMY((pts[i] as any).lat));
+        trailCtx.stroke();
+        lastTrailIdx = gpsIdx;
       }
+      c.drawImage(trailCache, 0, 0, MM_W, MM_H, MM_X, MM_Y, MM_W, MM_H);
 
-      // Position dot
-      const cur = pts[gpsIdx] as any;
-      if (cur) {
-        sh(c, "rgba(245,158,11,0.85)", 16);
-        c.fillStyle = "#f59e0b";
-        c.beginPath(); c.arc(MM_X + toMMX(cur.lon), MM_Y + toMMY(cur.lat), 7, 0, Math.PI * 2); c.fill();
+      // Layer 3: current position dot + glow
+      const cx = MM_X + toMMX((pts[gpsIdx] as any).lon);
+      const cy = MM_Y + toMMY((pts[gpsIdx] as any).lat);
+      c.shadowBlur = 18; c.shadowColor = "rgba(245,158,11,0.8)";
+      c.fillStyle = "#f59e0b";
+      c.beginPath(); c.arc(cx, cy, 8, 0, Math.PI * 2); c.fill();
+      c.shadowBlur = 0;
+      c.fillStyle = "#fff";
+      c.beginPath(); c.arc(cx, cy, 4, 0, Math.PI * 2); c.fill();
+      c.restore();
+    }
+
+    // ── Drawing: telemetry HUD — matches desktop MapEngine drawTelemetry ────────
+    function drawTelemetryHUD(c: CanvasRenderingContext2D, gpsIdx: number) {
+      const cur      = pts[gpsIdx] as any;
+      const cur2     = pts[Math.min(gpsIdx + 1, pts.length - 1)] as any;
+      const speedRaw = Number(cur?.speed) || 0;
+      if (speedRaw > maxSpeedSeen) maxSpeedSeen = speedRaw;
+      const speedVal = Math.round(speedRaw * SPEED_DIV);
+      const distM    = cumDist[Math.min(gpsIdx, cumDist.length - 1)] || 0;
+      const distVal  = (distM / DIST_DIV).toFixed(2);
+
+      // Layer 1: static gauge cache (vignette + track + ticks + hub)
+      c.save();
+      c.drawImage(gaugeCache, 0, 0, gaugeCacheW, gaugeCacheH);
+
+      // Layer 2: speed fill arc
+      const arcGrad = c.createLinearGradient(G_CX - G_R, G_CY, G_CX + G_R, G_CY);
+      arcGrad.addColorStop(0, "#f59e0b"); arcGrad.addColorStop(1, "#fbbf24");
+      if (speedRaw > 0.5) {
+        c.strokeStyle = arcGrad; c.lineWidth = G_LW; c.lineCap = "round";
+        c.shadowColor = "rgba(245,158,11,0.4)"; c.shadowBlur = 18;
+        c.beginPath(); c.arc(G_CX, G_CY, G_R, G_START, speedToAngle(speedRaw * SPEED_DIV)); c.stroke();
         nosh(c);
-        c.fillStyle = "#fff";
-        c.beginPath(); c.arc(MM_X + toMMX(cur.lon), MM_Y + toMMY(cur.lat), 4, 0, Math.PI * 2); c.fill();
       }
+
+      // Layer 3: max-speed red needle (same as desktop)
+      if (maxSpeedSeen > 0.5) {
+        const maxAngle = speedToAngle(maxSpeedSeen * SPEED_DIV);
+        c.save(); c.translate(G_CX, G_CY); c.rotate(maxAngle);
+        c.strokeStyle = "#ef4444"; c.lineWidth = Math.round(W * 0.006);
+        c.shadowColor = "rgba(239,68,68,0.7)"; c.shadowBlur = 10; c.lineCap = "round";
+        c.beginPath(); c.moveTo(-G_R * 0.12, 0); c.lineTo(G_R * 0.82, 0); c.stroke();
+        c.fillStyle = "#ef4444"; c.shadowBlur = 14;
+        c.beginPath(); c.arc(G_R * 0.82, 0, W * 0.006, 0, Math.PI * 2); c.fill();
+        c.restore(); nosh(c);
+      }
+
+      // Layer 4: speed number + unit
+      sh(c, "rgba(0,0,0,0.9)", 20);
+      c.font = `900 ${Math.round(W * 0.13)}px sans-serif`;
+      c.fillStyle = speedRaw > maxSpeedSeen * 0.9 ? "#fbbf24" : "#fff";
+      c.textAlign = "center";
+      c.fillText(String(speedVal), G_CX, G_CY + Math.round(W * 0.015));
+      c.font = `700 ${Math.round(W * 0.028)}px sans-serif`;
+      c.fillStyle = "#f59e0b";
+      c.fillText(SPEED_UNIT, G_CX, G_CY + Math.round(W * 0.016) + Math.round(W * 0.04));
+
+      // "GPS Activity" label for iPhone source (same as desktop)
+      nosh(c);
+      c.font = `500 ${Math.round(W * 0.022)}px sans-serif`;
+      c.fillStyle = "rgba(161,161,170,0.65)";
+      c.fillText("GPS Activity", G_CX, G_CY - G_R * 0.58);
+
+      // Layer 5: secondary metrics — distance, HR, time
+      const metY = G_CY + G_R + Math.round(H * 0.04);
+      sh(c, "rgba(0,0,0,1)", 25);
+      c.font = `900 ${Math.round(W * 0.11)}px sans-serif`;
+      c.fillStyle = "#fff"; c.textAlign = "left";
+      c.fillText(distVal, W * 0.04, metY);
+      const dw = c.measureText(distVal).width;
+      c.font = `700 ${Math.round(W * 0.035)}px sans-serif`;
+      c.fillStyle = "#f59e0b";
+      c.fillText(` ${DIST_UNIT}`, W * 0.04 + dw, metY - 4);
+
+      const subY = metY + Math.round(H * 0.036);
+      c.save();
+      c.beginPath(); c.rect(0, 0, Math.round(W * 0.54), H); c.clip();
+      c.font = `900 ${Math.round(W * 0.044)}px sans-serif`;
+      let groupX = W * 0.04;
+      if (hasHR && cur?.hr) {
+        sh(c, "rgba(0,0,0,1)", 20);
+        c.fillStyle = "#ff4d4d";
+        c.fillText(`♥ ${Math.round(cur.hr)}`, groupX, subY);
+        groupX += c.measureText(`♥ ${Math.round(cur.hr)}`).width + Math.round(W * 0.03);
+      }
+      const relMs  = Math.max(0, (cur?.time || 0) - (pts[0]?.time || 0));
+      const relSec = Math.round(relMs / 1000);
+      const rhh = Math.floor(relSec / 3600);
+      const rmm = Math.floor((relSec % 3600) / 60).toString().padStart(2, "0");
+      const rss = Math.floor(relSec % 60).toString().padStart(2, "0");
+      const tstr = rhh > 0 ? `${rhh.toString().padStart(2,"0")}:${rmm}:${rss}` : `${rmm}:${rss}`;
+      sh(c, "rgba(0,0,0,1)", 20);
+      c.fillStyle = "rgba(255,255,255,0.9)";
+      c.fillText(`⏱ ${tstr}`, groupX, subY);
+      c.restore();
+
+      // Intensity bar — top of canvas (speed-based, same as desktop concept)
+      const barW2 = Math.round(W * c01(speedRaw / (maxGauge / SPEED_DIV)));
+      if (barW2 > 0) {
+        const barG = c.createLinearGradient(0, 0, W, 0);
+        barG.addColorStop(0, "#f59e0b"); barG.addColorStop(0.6, "#f97316"); barG.addColorStop(1, "#ef4444");
+        c.fillStyle = barG; c.fillRect(0, 0, barW2, 6);
+      }
+
+      // Mini-map — no background box, matches desktop
+      drawMiniMap(c, gpsIdx);
+
+      // Altimetry — matches desktop exactly
+      const altCursorX = altProjX[gpsIdx];
+      const altCursorY = altProjY[gpsIdx];
+      c.drawImage(altimetryCache, 0, ALT_Y);
+
+      // Altimetry cursor (current position on the curve)
+      c.strokeStyle = "rgba(255,255,255,0.4)"; c.lineWidth = 1.5; c.setLineDash([4, 4]);
+      c.beginPath(); c.moveTo(altCursorX, ALT_Y); c.lineTo(altCursorX, ALT_Y + ALT_PT + ALT_H); c.stroke();
+      c.setLineDash([]);
+      c.fillStyle = "#f59e0b"; c.shadowColor = "rgba(245,158,11,0.6)"; c.shadowBlur = 8;
+      c.beginPath(); c.arc(altCursorX, altCursorY, 5, 0, Math.PI * 2); c.fill();
+      c.shadowBlur = 0;
 
       c.restore();
     }
 
-    // ── Drawing: telemetry HUD (ACTION phase) ─────────────────────────────────
-    function drawTelemetryHUD(c: CanvasRenderingContext2D, gpsIdx: number, elapsed: number) {
-      const cur      = pts[gpsIdx] as any;
-      const speedRaw = Number(cur?.speed) || 0;
-      const speedVal = Math.round(speedRaw * SPEED_DIV);
-      const distM    = cumDist[Math.min(gpsIdx, cumDist.length - 1)] || 0;
-      const distVal  = (distM / DIST_DIV).toFixed(1);
+    // ── Drawing: INTRO phase ──────────────────────────────────────────────────
+    // Shows the FIRST FRAME of the video (at highlight position), frozen in
+    // black & white. Activity stats overlay animates in. Fades to black before
+    // ACTION starts, which then plays the same frame in full color.
+    function drawIntroPhase(c: CanvasRenderingContext2D, localTime: number, segDur: number) {
+      c.fillStyle = "#050505"; c.fillRect(0, 0, W, H);
 
-      // Intensity bar (top)
-      const iGrad = c.createLinearGradient(0, 0, W, 0);
-      iGrad.addColorStop(0, "#f59e0b"); iGrad.addColorStop(0.65, "#f97316"); iGrad.addColorStop(1, "#ef4444");
-      c.fillStyle = iGrad;
-      const barW = c01(Math.max(0.12, speedVal / maxGauge) * 0.92 + Math.sin(elapsed * 0.9) * 0.03);
-      c.fillRect(0, 0, W * barW, 7);
+      // Fade in from black
+      const fadeIn  = eOut(pp(localTime, 0, 0.4));
+      // Fade out to black at end (so ACTION "color reveal" feels cinematic)
+      const fadeOut = eOut(pp(localTime, segDur * 0.80, segDur));
 
-      // Gauge track (O(1) blit)
-      c.drawImage(gaugeTrackCache, 0, 0);
+      // Grayscale frozen video frame (pre-computed — O(1) blit every frame)
+      if (grayFrameReady && fadeIn > 0) {
+        c.save();
+        c.globalAlpha = fadeIn * (1 - fadeOut) * 0.82; // slightly darker for cinematic feel
+        c.drawImage(grayFrameCache, 0, 0, W, H);
+        c.restore();
+      }
 
-      // Gauge fill
-      const speedFrac = c01(speedVal / maxGauge);
-      if (speedFrac > 0.01) {
-        const arcGrad = c.createLinearGradient(G_CX - G_R, G_CY, G_CX + G_R, G_CY);
-        arcGrad.addColorStop(0, "#f59e0b"); arcGrad.addColorStop(1, "#f97316");
-        c.strokeStyle = arcGrad; c.lineWidth = G_LW; c.lineCap = "round";
-        sh(c, "rgba(245,158,11,0.50)", 22);
-        c.beginPath(); c.arc(G_CX, G_CY, G_R, G_START, G_START + G_SWEEP * speedFrac); c.stroke();
+      // Dark vignette to frame the content
+      const vig = c.createRadialGradient(W / 2, H / 2, H * 0.05, W / 2, H / 2, H * 0.70);
+      vig.addColorStop(0, "rgba(0,0,0,0.10)"); vig.addColorStop(1, "rgba(0,0,0,0.78)");
+      c.fillStyle = vig; c.fillRect(0, 0, W, H);
+
+      // Fade to black overlay
+      if (fadeOut > 0) {
+        c.fillStyle = `rgba(5,5,5,${fadeOut})`; c.fillRect(0, 0, W, H);
+      }
+
+      // ── Text elements fade in together ────────────────────────────────────
+      const textA = fadeIn * (1 - fadeOut);
+      if (textA < 0.02) return;
+      c.save(); c.globalAlpha = textA;
+
+      // "YOUR RIDE" title
+      const titleA = eOut(pp(localTime, 0.3, 1.2));
+      if (titleA > 0) {
+        c.globalAlpha = textA * titleA;
+        sh(c, "rgba(0,0,0,0.9)", 28);
+        c.textAlign = "center";
+        c.font = `700 ${Math.round(W * 0.032)}px sans-serif`;
+        c.fillStyle = "#f59e0b";
+        c.fillText("GPS · TELEMETRY · STORY", W / 2, Math.round(H * 0.09));
+        c.font = `900 ${Math.round(W * 0.086)}px sans-serif`;
+        c.fillStyle = "#fff";
+        c.fillText("YOUR RIDE", W / 2, Math.round(H * 0.135));
         nosh(c);
       }
 
-      // Speed number
-      sh(c, "rgba(0,0,0,0.95)", 30);
-      c.font = `900 ${Math.round(W * 0.155)}px sans-serif`;
-      c.fillStyle = "#fff"; c.textAlign = "center";
-      c.fillText(String(speedVal), G_CX, G_CY + Math.round(W * 0.030));
-      c.font = `700 ${Math.round(W * 0.033)}px sans-serif`;
-      c.fillStyle = "#f59e0b";
-      c.fillText(SPEED_UNIT, G_CX, G_CY + Math.round(W * 0.082));
-      nosh(c);
-
-      // Distance
-      const metY = G_CY + G_R + Math.round(H * 0.040);
-      sh(c, "rgba(0,0,0,1)", 22);
-      c.textAlign = "left";
-      c.font = `900 ${Math.round(W * 0.115)}px sans-serif`;
-      c.fillStyle = "#fff";
-      c.fillText(distVal, W * 0.04, metY);
-      const dw = c.measureText(distVal).width;
-      c.font = `700 ${Math.round(W * 0.038)}px sans-serif`;
-      c.fillStyle = "#f59e0b";
-      c.fillText(DIST_UNIT, W * 0.04 + dw + 8, metY - 6);
-
-      // Secondary row: HR + time
-      const subY = metY + Math.round(H * 0.038);
-      c.font = `900 ${Math.round(W * 0.046)}px sans-serif`;
-      let subX = W * 0.04;
-      if (hasHR && Number(cur?.hr) > 0) {
-        const hr = Math.round(Number(cur.hr) + Math.sin(elapsed * 1.1) * 2);
-        c.fillStyle = "#ff4d4d"; sh(c, "rgba(0,0,0,0.8)", 12);
-        c.fillText(`♥ ${hr}`, subX, subY);
-        subX += c.measureText(`♥ ${hr}`).width + Math.round(W * 0.04);
-      }
-      const relMs  = Math.max(0, (cur?.time || 0) - (pts[0]?.time || 0));
-      const relSec = Math.round(relMs / 1000);
-      const rh     = Math.floor(relSec / 3600);
-      const rm     = Math.floor((relSec % 3600) / 60).toString().padStart(2, "0");
-      const rs     = Math.floor(relSec % 60).toString().padStart(2, "0");
-      const curTime = rh > 0 ? `⏱ ${rh}:${rm}:${rs}` : `⏱ ${rm}:${rs}`;
-      c.fillStyle = "rgba(255,255,255,0.88)"; sh(c, "rgba(0,0,0,0.8)", 12);
-      c.fillText(curTime, subX, subY);
-      nosh(c);
-
-      // Mini-map
-      drawMiniMap(c, gpsIdx, 1);
-    }
-
-    // ── Drawing: INTRO phase ───────────────────────────────────────────────────
-    function drawIntroPhase(c: CanvasRenderingContext2D, localTime: number, segDur: number) {
-      // Dark background
-      const bg = c.createLinearGradient(0, 0, 0, H);
-      bg.addColorStop(0, "#06060f"); bg.addColorStop(1, "#050505");
-      c.fillStyle = bg; c.fillRect(0, 0, W, H);
-
-      // GPS route reveal (progressively draws the route)
-      const routeProg = eOut(pp(localTime, 0, segDur * 0.65));
-      const drawCount = Math.round(pts.length * routeProg);
-
-      if (drawCount > 1) {
-        // Dim full route
-        c.strokeStyle = "rgba(255,255,255,0.16)"; c.lineWidth = 2.5; c.lineJoin = "round"; c.lineCap = "round";
-        c.beginPath();
-        pts.forEach((p: any, i: number) => i === 0 ? c.moveTo(toIRX(p.lon), toIRY(p.lat)) : c.lineTo(toIRX(p.lon), toIRY(p.lat)));
-        c.stroke();
-
-        // Animated amber trail
-        sh(c, "rgba(245,158,11,0.50)", 12);
-        c.strokeStyle = "#f59e0b"; c.lineWidth = 4; c.lineJoin = "round"; c.lineCap = "round";
-        c.beginPath();
-        for (let i = 0; i < drawCount; i++) {
-          const p = pts[i] as any;
-          i === 0 ? c.moveTo(toIRX(p.lon), toIRY(p.lat)) : c.lineTo(toIRX(p.lon), toIRY(p.lat));
-        }
-        c.stroke(); nosh(c);
-
-        // Start dot (green)
-        const sp = pts[0] as any;
-        sh(c, "rgba(34,197,94,0.75)", 14);
-        c.fillStyle = "#22c55e";
-        c.beginPath(); c.arc(toIRX(sp.lon), toIRY(sp.lat), 9, 0, Math.PI * 2); c.fill(); nosh(c);
-
-        // End dot (amber, appears when route is 95% drawn)
-        if (routeProg > 0.95) {
-          const ep = pts[pts.length - 1] as any;
-          sh(c, "rgba(245,158,11,0.75)", 14);
-          c.fillStyle = "#f59e0b";
-          c.beginPath(); c.arc(toIRX(ep.lon), toIRY(ep.lat), 9, 0, Math.PI * 2); c.fill(); nosh(c);
-        }
-      }
-
-      // Title — "YOUR RIDE" + sub-label
-      const titleA = eOut(pp(localTime, 0.25, 1.1));
-      if (titleA > 0) {
-        c.save(); c.globalAlpha = titleA;
-        sh(c, "rgba(0,0,0,0.9)", 26);
-        c.textAlign = "center";
-        c.font = `900 ${Math.round(W * 0.082)}px sans-serif`;
-        c.fillStyle = "#fff";
-        c.fillText("YOUR RIDE", W / 2, Math.round(H * 0.108));
-        c.font = `700 ${Math.round(W * 0.032)}px sans-serif`;
-        c.fillStyle = "#f59e0b";
-        c.fillText("GPS · TELEMETRY · STORY", W / 2, Math.round(H * 0.148));
-        nosh(c); c.restore();
-      }
-
-      // Stats (distance / time / max speed) — appear near end of INTRO
-      const statsA = eOut(pp(localTime, segDur * 0.55, segDur * 0.85));
+      // Stats (distance / time / max speed) — animate in at mid-INTRO
+      const statsA = eOut(pp(localTime, segDur * 0.35, segDur * 0.65));
       if (statsA > 0) {
-        c.save(); c.globalAlpha = statsA;
+        c.globalAlpha = textA * statsA;
         const statDefs = [
-          { val: totalDist, unit: DIST_UNIT, label: "DISTANCE" },
-          { val: timeStr,   unit: "",        label: "TIME" },
+          { val: totalDist, unit: DIST_UNIT,       label: "DISTANCE" },
+          { val: timeStr,   unit: "",              label: "TIME" },
           { val: String(maxSpeedDisp), unit: SPEED_UNIT, label: "MAX SPEED" },
-          ...(hasHR ? [{ val: String(maxHR), unit: "BPM", label: "MAX HR" }] : [{ val: `+${eleGainDisp}`, unit: ELE_UNIT, label: "ELEVATION" }]),
+          ...(hasHR ? [{ val: String(maxHR), unit: "BPM", label: "MAX HR" }]
+                    : [{ val: `+${eleGainDisp}`, unit: ELE_UNIT, label: "ELEVATION" }]),
         ].slice(0, 3);
 
-        const statY = Math.round(H * 0.765);
+        const statY = Math.round(H * 0.77);
         const SW    = W / statDefs.length;
         statDefs.forEach((s, i) => {
           const sx = SW * i + SW / 2;
@@ -487,12 +648,12 @@ export function MobileCanvasRenderer({
           c.fillStyle = "rgba(180,180,180,0.85)";
           c.fillText(s.label, sx, statY + Math.round(W * 0.044));
         });
-        // Dividers between stats
         c.fillStyle = "rgba(255,255,255,0.10)";
         for (let i = 1; i < statDefs.length; i++)
           c.fillRect(SW * i - 1, statY - Math.round(W * 0.065), 2, Math.round(W * 0.092));
-        c.restore();
       }
+
+      c.restore();
     }
 
     // ── Drawing: BRAND / outro phase ──────────────────────────────────────────
@@ -582,7 +743,7 @@ export function MobileCanvasRenderer({
         vig.addColorStop(0, "rgba(0,0,0,0.02)"); vig.addColorStop(1, "rgba(0,0,0,0.58)");
         ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
 
-        drawTelemetryHUD(ctx, gpsIdx, elapsed);
+        drawTelemetryHUD(ctx, gpsIdx);
         drawWatermark(ctx);
 
       } else if (seg.type === "BRAND") {
@@ -649,9 +810,37 @@ export function MobileCanvasRenderer({
         // Wait for the video decoder hardware to fully settle before starting
         // the encoder. Both use Video Toolbox on iOS — concurrent init causes
         // the encoder to fail immediately with no error log (muxer-level error).
-        mlog("PRESEEK", "waiting 600ms for Video Toolbox to release decoder resources…");
+        mlog("PRESEEK", "waiting 600ms for Video Toolbox to settle…");
         await new Promise<void>(r => setTimeout(r, 600));
-        mlog("PRESEEK", "delay done — creating encoder");
+        mlog("PRESEEK", "delay done");
+
+        // ── Pre-compute grayscale frozen frame for INTRO ─────────────────────
+        // Draw the current video frame (at the highlight position) to an offscreen
+        // canvas and convert to grayscale pixel-by-pixel. Done ONCE — O(n) pixels,
+        // then O(1) blit every INTRO frame. Cannot use ctx.filter on iOS < 18.
+        try {
+          const gfCtx = grayFrameCache.getContext("2d")!;
+          if (videoEl.readyState >= 2 && videoEl.videoWidth > 0) {
+            const vW = videoEl.videoWidth, vH = videoEl.videoHeight;
+            const ar = W / H, vAr = vW / vH;
+            let sx = 0, sy = 0, sw = vW, sh2 = vH;
+            if (vAr > ar) { sw = Math.round(vH * ar); sx = Math.round((vW - sw) / 2); }
+            else { sh2 = Math.round(vW / ar); sy = Math.round((vH - sh2) / 2); }
+            gfCtx.drawImage(videoEl, sx, sy, sw, sh2, 0, 0, W, H);
+            // Pixel-level grayscale conversion (iOS < 18 has no ctx.filter)
+            const imgData = gfCtx.getImageData(0, 0, W, H);
+            const d = imgData.data;
+            for (let i = 0; i < d.length; i += 4) {
+              const gray = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
+              d[i] = d[i + 1] = d[i + 2] = gray;
+            }
+            gfCtx.putImageData(imgData, 0, 0);
+            grayFrameReady = true;
+            mlog("GRAY", `grayscale frame ready ${W}×${H}`);
+          }
+        } catch (e: any) {
+          mlog("GRAY", `grayscale pre-compute failed: ${e?.message} — INTRO will show black`);
+        }
       }
 
       setStatus("Initializing encoder…");
