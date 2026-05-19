@@ -1208,34 +1208,42 @@ export function MobileCanvasRenderer({
   // ── State: video ready to save (shown after encoding) ──────────────────────
   if (readyBlob) {
     const { blob, filename } = readyBlob;
+    const isAndroid = /Android/i.test(typeof navigator !== "undefined" ? navigator.userAgent : "");
+
     const handleSave = async () => {
       const file = new File([blob], filename, { type: "video/mp4" });
-      let shared = false;
 
+      if (isAndroid) {
+        // ── Android: direct download → /sdcard/Downloads → Media Scanner → Gallery ──
+        // navigator.share() on Android opens a general share sheet (no "Save to Gallery").
+        // A direct <a download> saves to Downloads; the Android Media Scanner detects
+        // new MP4 files there and automatically adds them to the Gallery app.
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+        return;
+      }
+
+      // ── iOS: Web Share API → Save to Photos in the native share sheet ─────────
       if (typeof navigator.share === "function" && navigator.canShare?.({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: "LENS Video" });
-          shared = true;
+          onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+          return;
         } catch (e: any) {
           if (e?.name === "AbortError") return; // user dismissed — stay on screen
           // Share failed — fall through to direct download
         }
       }
 
-      if (!shared) {
-        // Fallback: direct download (Android, desktop, or share API unavailable)
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href = url; a.download = filename;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-        shared = true;
-      }
-
-      // After successful save/share: navigate back to form automatically.
-      // No "Done" button needed — the share sheet closing IS the confirmation.
-      if (shared) {
-        onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
-      }
+      // Fallback: direct download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
     };
 
     return (
@@ -1252,7 +1260,7 @@ export function MobileCanvasRenderer({
           {(blob.size / 1_048_576).toFixed(1)} MB · MP4 · {W}×{H}
         </p>
 
-        {/* Save to Photos — only action needed */}
+        {/* Save button — label adapts to platform */}
         <button
           onClick={handleSave}
           className="w-full max-w-[280px] py-5 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-[0.3em] text-sm shadow-[0_10px_30px_rgba(245,158,11,0.35)] active:scale-[0.97] transition-transform flex items-center justify-center gap-3"
@@ -1260,11 +1268,13 @@ export function MobileCanvasRenderer({
           <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><polyline points="21 15 16 10 5 21"/>
           </svg>
-          Save to Photos
+          {isAndroid ? "Save to Gallery" : "Save to Photos"}
         </button>
 
         <p className="text-zinc-500 text-[11px] mt-5 text-center max-w-[220px] leading-relaxed">
-          Tap to open the iOS share sheet. After saving, the app returns automatically.
+          {isAndroid
+            ? "Video saves to your Downloads folder and appears in your Gallery automatically."
+            : "Tap to open the share sheet and save to your Camera Roll."}
         </p>
       </div>
     );
