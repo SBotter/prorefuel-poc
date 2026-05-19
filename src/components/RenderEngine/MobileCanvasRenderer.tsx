@@ -340,10 +340,7 @@ export function MobileCanvasRenderer({
       drawAltDot(altProjX[pts.length - 1], altProjY[pts.length - 1] - ALT_Y, "#ef4444");
     })();
 
-    // grayFrameCache: pre-computed grayscale frozen video frame for INTRO phase
-    // Computed in startRecordingLoop() after pre-seek — populated below.
-    const grayFrameCache = document.createElement("canvas");
-    grayFrameCache.width = W; grayFrameCache.height = H;
+    // grayFrameReady: set once video element has a valid frame at the seek position
     let grayFrameReady = false;
 
     // ── Segment timeline — cap at 30s and always reserve 3s for BRAND ──────────
@@ -584,12 +581,18 @@ export function MobileCanvasRenderer({
       // Fade out to black at end (so ACTION "color reveal" feels cinematic)
       const fadeOut = eOut(pp(localTime, segDur * 0.80, segDur));
 
-      // Grayscale frozen video frame (pre-computed — O(1) blit every frame)
+      // Grayscale frozen video frame — drawn live using canvas 'color' blend mode.
+      // globalCompositeOperation='color' desaturates without getImageData (GPU-side only).
+      // getImageData would force GPU→CPU readback, leaving the hardware decoder in a state
+      // that conflicts with VideoEncoder when playback starts. This avoids that entirely.
       if (grayFrameReady && fadeIn > 0) {
         c.save();
-        c.globalAlpha = fadeIn * (1 - fadeOut) * 0.82; // slightly darker for cinematic feel
-        c.drawImage(grayFrameCache, 0, 0, W, H);
-        c.restore();
+        c.globalAlpha = fadeIn * (1 - fadeOut) * 0.82;
+        drawVideoFrame(c);                          // draw video at current seek position
+        c.globalCompositeOperation = "color";       // replace hue+sat with gray (sat=0)
+        c.fillStyle = "#808080";
+        c.fillRect(0, 0, W, H);                     // desaturates the video frame above
+        c.restore();                                // restores source-over + globalAlpha
       }
 
       // Dark vignette to frame the content
@@ -813,34 +816,9 @@ export function MobileCanvasRenderer({
         mlog("PRESEEK", "waiting 600ms for Video Toolbox to settle…");
         await new Promise<void>(r => setTimeout(r, 600));
         mlog("PRESEEK", "delay done");
-
-        // ── Pre-compute grayscale frozen frame for INTRO ─────────────────────
-        // Draw the current video frame (at the highlight position) to an offscreen
-        // canvas and convert to grayscale pixel-by-pixel. Done ONCE — O(n) pixels,
-        // then O(1) blit every INTRO frame. Cannot use ctx.filter on iOS < 18.
-        try {
-          const gfCtx = grayFrameCache.getContext("2d")!;
-          if (videoEl.readyState >= 2 && videoEl.videoWidth > 0) {
-            const vW = videoEl.videoWidth, vH = videoEl.videoHeight;
-            const ar = W / H, vAr = vW / vH;
-            let sx = 0, sy = 0, sw = vW, sh2 = vH;
-            if (vAr > ar) { sw = Math.round(vH * ar); sx = Math.round((vW - sw) / 2); }
-            else { sh2 = Math.round(vW / ar); sy = Math.round((vH - sh2) / 2); }
-            gfCtx.drawImage(videoEl, sx, sy, sw, sh2, 0, 0, W, H);
-            // Pixel-level grayscale conversion (iOS < 18 has no ctx.filter)
-            const imgData = gfCtx.getImageData(0, 0, W, H);
-            const d = imgData.data;
-            for (let i = 0; i < d.length; i += 4) {
-              const gray = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
-              d[i] = d[i + 1] = d[i + 2] = gray;
-            }
-            gfCtx.putImageData(imgData, 0, 0);
-            grayFrameReady = true;
-            mlog("GRAY", `grayscale frame ready ${W}×${H}`);
-          }
-        } catch (e: any) {
-          mlog("GRAY", `grayscale pre-compute failed: ${e?.message} — INTRO will show black`);
-        }
+        // Mark gray frame as ready — drawn live using canvas compositing (no getImageData)
+        grayFrameReady = videoEl.readyState >= 2;
+        mlog("GRAY", `grayFrameReady=${grayFrameReady} readyState=${videoEl.readyState}`);
       }
 
       setStatus("Initializing encoder…");
