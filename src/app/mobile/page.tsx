@@ -294,16 +294,38 @@ export default function MobilePage() {
     }
 
     // ── File size guard (device-aware) ──────────────────────────────────────────
-    // All limits apply only on /mobile (iOS + Android). Desktop has no limit.
-    // iOS 18+ (A17+ chips, iPhone 15+): 1 GB  — plenty of RAM for encoding
-    // iOS 17.x (A16 chips, iPhone 14+): 1 GB
-    // iOS 16.4–16.x (A14/A15, iPhone 12–13): 500 MB
-    // Android Chrome:                          500 MB
-    const iosVer = mobileCaps?.iosVersion ?? 0;
-    const MAX_VIDEO_MB = iosVer >= 17 ? 1024 : 500;
+    // Desktop: no limit.
+    // File size ≠ RAM usage: the browser streams the blob URL on-demand, decoding
+    // only 3-5 frames at a time. The real memory cost is fixed (~200MB regardless
+    // of file size). Limits here protect against devices with constrained blob URL
+    // handling or insufficient RAM for the concurrent encode+decode pipeline.
+    //
+    // iOS 17+ / iPhone 11+ (A13, 2019) — Premium minimum:
+    //   → 2 GB: iOS 17 memory management + dedicated encode/decode pipelines.
+    // iOS 16.4–16.x / iPhone XR/XS — Warning zone:
+    //   → 500 MB: older Video Toolbox, less stable under memory pressure.
+    // Android 11+ / 4 GB RAM — Premium minimum:
+    //   → 1.5 GB: Android 11 media codec improvements + adequate RAM headroom.
+    // Android 10 / 3 GB RAM — Warning zone:
+    //   → 500 MB: conservative safety net for older OS and lower RAM.
+    const iosVer      = mobileCaps?.iosVersion     ?? 0;
+    const androidVer  = mobileCaps?.androidVersion ?? 0;
+    const isAndroid   = mobileCaps?.isAndroid ?? false;
+
+    let MAX_VIDEO_MB: number;
+    if (isAndroid) {
+      MAX_VIDEO_MB = androidVer >= 11 ? 1536 : 500;        // 1.5 GB / 500 MB
+    } else {
+      MAX_VIDEO_MB = iosVer >= 17 ? 2048 : 500;            // 2 GB / 500 MB
+    }
+
     if (file.size > MAX_VIDEO_MB * 1_048_576) {
-      const fileMB = (file.size / 1_048_576).toFixed(0);
-      setUploadError(`Video too large (${fileMB} MB). Maximum for this device is ${MAX_VIDEO_MB} MB. Trim the clip before uploading.`);
+      const fileMB  = (file.size  / 1_048_576).toFixed(0);
+      const limitGB = (MAX_VIDEO_MB / 1024).toFixed(MAX_VIDEO_MB % 1024 === 0 ? 0 : 1);
+      setUploadError(
+        `Video too large (${fileMB} MB). Maximum for this device is ${MAX_VIDEO_MB >= 1024 ? limitGB + " GB" : MAX_VIDEO_MB + " MB"}. ` +
+        `Trim the clip or open LENS on desktop Chrome (no size limit).`
+      );
       e.target.value = "";
       return;
     }
