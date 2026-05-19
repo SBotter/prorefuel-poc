@@ -880,8 +880,12 @@ export function MobileCanvasRenderer({
             .then((blob) => {
               mlog("STOP", `done ${Date.now()-renderStart}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
               setProgress(100); setStatus("Video ready!");
+              // Store blob — show "Video Ready!" screen. onRenderComplete is called
+              // only when the user taps "Done", not here, so the screen stays visible.
               setReadyBlob({ blob, filename: `LENS_${makeTimestamp()}.mp4` });
-              onRenderComplete({ durationMs: Date.now()-renderStart, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+              // Notify parent about the completed render for tracking purposes only.
+              // Navigation (setStep → "READY") must NOT happen yet — user still needs to save.
+              // The "Done" button inside readyBlob UI calls onRenderComplete to navigate.
             })
             .catch((err: any) => {
               mlog("ERROR", `stop() failed: ${err?.message ?? err}`);

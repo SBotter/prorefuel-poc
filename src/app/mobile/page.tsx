@@ -457,7 +457,12 @@ export default function MobilePage() {
 
   // ── After render complete ───────────────────────────────────────────────────
   const handleRenderComplete = (result: RenderResult) => {
-    // Return to form for both success and error — user taps "Done" or "Try Again"
+    // For success: only navigate when the user explicitly taps "Done — Back to Form"
+    // in the "Video Ready!" screen. That button calls onRenderComplete({ status:"success" })
+    // which triggers this handler. The encoding-complete event inside stop().then() does
+    // NOT call onRenderComplete anymore — it only sets readyBlob to show the save screen.
+    //
+    // For error: navigate immediately so the user can try again.
     setVideoFile(null); setHighlights([]); setStoryPlan(null);
     setVideoLoaded(false); setUploadError(null);
     setProgress(0); setStatusMsg(""); setStep("READY");
