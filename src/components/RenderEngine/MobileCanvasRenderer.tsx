@@ -117,9 +117,11 @@ export function MobileCanvasRenderer({
     let isStopped   = false;
     let recStartMs  = 0;
 
-    // Pre-load ProRefuel logo (same as desktop MapEngine)
+    // Pre-load images (same as desktop MapEngine)
     const logoImg = new Image();
     logoImg.src = "/prorefuel_logo.png";
+    const lensCircleImg = new Image();
+    lensCircleImg.src = "/LENS_circle.png";
     let recorder: MobileRecorder | null = null;
 
     // ── Unit config ─────────────────────────────────────────────────────────
@@ -578,10 +580,13 @@ export function MobileCanvasRenderer({
       // Mini-map — no background box, matches desktop
       drawMiniMap(c, gpsIdx);
 
-      // Altimetry — matches desktop exactly
+      // Altimetry — matches desktop: globalAlpha 0.45 (desktop does the same)
       const altCursorX = altProjX[gpsIdx];
       const altCursorY = altProjY[gpsIdx];
+      c.save();
+      c.globalAlpha = 0.45;
       c.drawImage(altimetryCache, 0, ALT_Y);
+      c.restore();
 
       // Altimetry cursor (current position on the curve)
       c.strokeStyle = "rgba(255,255,255,0.4)"; c.lineWidth = 1.5; c.setLineDash([4, 4]);
@@ -866,14 +871,15 @@ export function MobileCanvasRenderer({
       c.restore();
     }
 
-    // ── LENS watermark (every frame, subtle) ──────────────────────────────────
+    // ── LENS watermark — LENS_circle.png top-right, identical to desktop ─────────
     function drawWatermark(c: CanvasRenderingContext2D) {
-      c.save(); c.globalAlpha = 0.18;
-      c.font = `700 ${Math.round(W * 0.030)}px sans-serif`;
-      c.fillStyle = "#f59e0b"; c.textAlign = "right";
-      sh(c, "rgba(0,0,0,0.7)", 10);
-      c.fillText("LENS", W - Math.round(W * 0.035), H - Math.round(H * 0.025));
-      nosh(c); c.restore();
+      if (lensCircleImg.complete && lensCircleImg.naturalWidth > 0) {
+        const wmSize = Math.round(W * 0.079);
+        c.save();
+        c.globalAlpha = 0.30;
+        c.drawImage(lensCircleImg, W - wmSize - 5, 5, wmSize, wmSize);
+        c.restore();
+      }
     }
 
     // ── Master draw function (called each frame) ───────────────────────────────
@@ -892,27 +898,28 @@ export function MobileCanvasRenderer({
       } else if (seg.type === "ACTION") {
         if (segIdx !== lastSegIdx && typeof seg.videoStartTime === "number") {
           lastSegIdx = segIdx;
-          // ── NO SEEKS during encoding on iOS ────────────────────────────────
-          // Any HTMLVideoElement seek while VideoEncoder is active kills the
-          // encoder ("Encoding task did not complete") because both pipelines
-          // share the same Video Toolbox hardware block on iPhone.
-          // The pre-seek before encoder creation already positioned the video
-          // at the first ACTION segment. Subsequent segments play forward from
-          // wherever the video currently is — telemetry overlay is correct
-          // regardless of exact video position.
           mlog("SEG_START", `seg[${segIdx}] ACTION — no seek (encoder running), video at ${videoEl.currentTime.toFixed(2)}s`);
           if (videoEl.paused) videoEl.play().catch(() => {});
         }
 
         drawVideoFrame(ctx);
 
-        // Soft vignette to make overlay text readable
+        // Soft vignette
         const vig = ctx.createRadialGradient(W / 2, H / 2, H * 0.08, W / 2, H / 2, H * 0.72);
         vig.addColorStop(0, "rgba(0,0,0,0.02)"); vig.addColorStop(1, "rgba(0,0,0,0.58)");
         ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
 
         drawTelemetryHUD(ctx, gpsIdx);
         drawWatermark(ctx);
+
+        // ── Smooth intro→ACTION transition: fade in from black over 0.5s ────────
+        // Covers any black frames while the video element starts playing after
+        // the intro's fadeOut. Creates a clean cinematic color-reveal effect.
+        const actionFadeIn = c01(localTime / 0.5);
+        if (actionFadeIn < 1) {
+          ctx.fillStyle = `rgba(5,5,5,${1 - actionFadeIn})`;
+          ctx.fillRect(0, 0, W, H);
+        }
 
       } else if (seg.type === "BRAND") {
         // Keep last video frame visible while fading in brand screen
