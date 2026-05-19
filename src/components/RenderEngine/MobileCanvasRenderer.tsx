@@ -992,9 +992,29 @@ export function MobileCanvasRenderer({
         // Wait for the video decoder hardware to fully settle before starting
         // the encoder. Both use Video Toolbox on iOS — concurrent init causes
         // the encoder to fail immediately with no error log (muxer-level error).
-        mlog("PRESEEK", "waiting 600ms for Video Toolbox to settle…");
-        await new Promise<void>(r => setTimeout(r, 600));
-        mlog("PRESEEK", "delay done");
+        // ── Pre-warm the iOS video decoder during the settle window ───────────
+        // Without this, the first ~1s of ACTION shows a frozen frame because
+        // the Video Toolbox decoder has a cold-start delay after a long pause.
+        // Strategy: play() for 200ms → pause() → video stays at target position
+        // (±0.2s) and the decoder is warm. When ACTION calls play() later,
+        // the decoder starts immediately with no freeze.
+        mlog("PRESEEK", "pre-warming decoder (play 200ms + pause)…");
+        videoEl.play().catch(() => {});
+        await new Promise<void>(r => setTimeout(r, 200));
+        videoEl.pause();
+        // Let Video Toolbox settle after the pause before encoder init
+        await new Promise<void>(r => setTimeout(r, 400));
+        mlog("PRESEEK", "delay done — decoder warm");
+      } else {
+        // No pre-seek needed (videoStartTime=0), but still pre-warm the decoder
+        // so ACTION starts immediately without the ~1s frozen-frame cold-start.
+        mlog("PRESEEK", "no seek needed — pre-warming decoder at position 0");
+        videoEl.play().catch(() => {});
+        await new Promise<void>(r => setTimeout(r, 200));
+        videoEl.pause();
+        videoEl.currentTime = 0; // reset to beginning (advanced ~0.2s during warm-up)
+        await new Promise<void>(r => setTimeout(r, 300));
+        mlog("PRESEEK", "decoder pre-warmed at position 0");
       }
 
       // Always mark gray frame as ready once the video element has content.
