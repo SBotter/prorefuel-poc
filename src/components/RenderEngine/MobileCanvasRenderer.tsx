@@ -624,6 +624,16 @@ export function MobileCanvasRenderer({
       const grayIntensity = 1 - transOutProg;   // 1=grayscale, 0=full color
       const textAlpha     = 1 - transOutProg;   // 1=visible,   0=transparent
 
+      // ── Start video playing the moment grayscale begins fading to color ──────
+      // videoEl.play() is normally called when ACTION starts, but the color reveal
+      // happens 1.6s before ACTION. Without this, the color frame is frozen until
+      // ACTION begins — the user sees ~1.6s of a colorized but motionless frame.
+      // Starting play() here means the video is already moving when fully revealed.
+      // The decoder is already warm from pre-warm, so this is instant with no OOM risk.
+      if (transOutProg > 0.01 && videoEl.paused) {
+        videoEl.play().catch(() => {});
+      }
+
       c.save();
 
       // ── 0. Video background: grayscale during intro, color during transition ──
