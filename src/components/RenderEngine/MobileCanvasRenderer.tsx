@@ -852,45 +852,83 @@ export function MobileCanvasRenderer({
       c.restore(); // end of outer save
     }
 
-    // ── Drawing: BRAND / outro phase ──────────────────────────────────────────
+    // ── Drawing: BRAND finale — identical to desktop MapEngine drawBrand() ───────
+    // The desktop always calls drawBrand(progress=1) because pre-brand reveals
+    // elements before the BRAND phase. Mobile has no pre-brand, so we animate
+    // elements in using progress = localTime/segDur (0→1 over 3s).
+    // Element timings match desktop exactly (0.22→0.55, 0.33→0.60, 0.42→0.70, 0.60→0.85).
     function drawBrandPhase(c: CanvasRenderingContext2D, localTime: number, segDur: number) {
-      const fadeIn = eOut(pp(localTime, 0, 1.2));
+      const progress = Math.min(localTime / segDur, 1);
+      const eo = (x: number) => 1 - Math.pow(1 - Math.min(Math.max(x, 0), 1), 3);
+      const cl = (x: number) => Math.min(Math.max(x, 0), 1);
 
-      // Fade from black
-      c.fillStyle = `rgba(5,5,5,${fadeIn})`; c.fillRect(0, 0, W, H);
+      // ── Background — same as desktop: solid black ──────────────────────────
+      c.fillStyle = "#050505"; c.fillRect(0, 0, W, H);
 
-      if (fadeIn < 0.05) return;
-      c.save(); c.globalAlpha = fadeIn;
+      c.save();
 
-      // Radial glow
-      const glow = c.createRadialGradient(W / 2, H * 0.40, 0, W / 2, H * 0.40, H * 0.46);
-      glow.addColorStop(0, "rgba(245,158,11,0.12)"); glow.addColorStop(1, "rgba(0,0,0,0)");
-      c.fillStyle = glow; c.fillRect(0, 0, W, H);
+      // ── LENS wordmark: scales 0.55→1.0, fades in at progress 0.22→0.55 ───────
+      const lensProg = eo(cl((progress - 0.22) / 0.33));
+      if (lensProg > 0.01) {
+        const scale = 0.55 + 0.45 * lensProg;
+        c.save();
+        c.globalAlpha = lensProg;
+        sh(c, "rgba(0,0,0,0.9)", 22);
+        c.font = `900 ${Math.round(W * 0.26)}px sans-serif`;
+        c.fillStyle = "rgba(255,255,255,0.97)";
+        c.textAlign = "center";
+        c.translate(W / 2, H * 0.38);
+        c.scale(scale, scale);
+        c.fillText("LENS", 0, 0);
+        c.restore();
+        nosh(c);
+      }
 
-      // LENS wordmark
-      sh(c, "rgba(0,0,0,0.95)", 44);
-      c.font = `900 ${Math.round(W * 0.20)}px sans-serif`;
-      c.fillStyle = "#fff"; c.textAlign = "center"; c.textBaseline = "middle";
-      c.fillText("LENS", W / 2, H * 0.295);
-      c.textBaseline = "alphabetic"; nosh(c);
+      // ── Amber line: draws left→right, progress 0.33→0.60 ──────────────────
+      const lineProg = eo(cl((progress - 0.33) / 0.27));
+      if (lineProg > 0.01) {
+        const maxW = Math.round(W * 0.18);
+        c.globalAlpha = eo(cl(progress / 0.40));
+        c.fillStyle = "#f59e0b";
+        const lw = maxW * lineProg;
+        c.fillRect((W - lw) / 2, H * 0.425, lw, Math.round(H * 0.003));
+        c.globalAlpha = 1;
+      }
 
-      // Amber underline (grows in)
-      const lw = W * 0.48 * c01(fadeIn * 2);
-      c.strokeStyle = "#f59e0b"; c.lineWidth = 5;
-      c.beginPath(); c.moveTo(W / 2 - lw, H * 0.378); c.lineTo(W / 2 + lw, H * 0.378); c.stroke();
+      // ── "DEVELOPED BY" + ProRefuel logo: progress 0.42→0.70 ───────────────
+      const logoProg = eo(cl((progress - 0.42) / 0.28));
+      if (logoProg > 0.01) {
+        const slideY = (1 - logoProg) * 14;
+        c.globalAlpha = logoProg;
+        sh(c, "rgba(0,0,0,0.8)", 12);
+        c.font = `300 ${Math.round(W * 0.032)}px sans-serif`;
+        c.fillStyle = "rgba(170,170,170,0.80)";
+        c.textAlign = "center";
+        c.fillText("DEVELOPED BY", W / 2, H * 0.462 + slideY);
+        nosh(c);
+        if (logoImg.complete && logoImg.naturalWidth > 0) {
+          const lH = Math.round(H * 0.065);
+          const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
+          c.shadowColor = "rgba(245,158,11,0.35)"; c.shadowBlur = 30;
+          c.drawImage(logoImg, (W - lW) / 2, H * 0.484 + slideY, lW, lH);
+          nosh(c);
+        }
+      }
 
-      // Tagline
-      c.font = `500 ${Math.round(W * 0.034)}px sans-serif`;
-      c.fillStyle = "#a1a1aa"; c.textAlign = "center";
-      c.fillText("Cinematic GPS Video", W / 2, H * 0.432);
+      // ── @LENS.video: progress 0.60→0.85 ──────────────────────────────────
+      const igProg = eo(cl((progress - 0.60) / 0.25));
+      if (igProg > 0.01) {
+        const slideY = (1 - igProg) * 10;
+        c.globalAlpha = igProg * 0.90;
+        sh(c, "rgba(0,0,0,0.95)", 16);
+        c.font = `900 italic ${Math.round(W * 0.048)}px sans-serif`;
+        c.fillStyle = "#f59e0b";
+        c.textAlign = "center";
+        c.fillText("@LENS.video", W / 2, H * 0.590 + slideY);
+        nosh(c);
+      }
 
-      // URL (amber)
-      sh(c, "rgba(0,0,0,0.9)", 18);
-      c.font = `700 ${Math.round(W * 0.040)}px sans-serif`;
-      c.fillStyle = "#f59e0b";
-      c.fillText("lens.prorefuel.app", W / 2, H * 0.520);
-      nosh(c);
-
+      c.globalAlpha = 1;
       c.restore();
     }
 
@@ -939,13 +977,8 @@ export function MobileCanvasRenderer({
         // continues from the same frame. Zero black flash between intro and video.
 
       } else if (seg.type === "BRAND") {
-        // Keep last video frame visible while fading in brand screen
-        if (lastSegIdx >= 0) {
-          drawVideoFrame(ctx);
-          const vig2 = ctx.createRadialGradient(W / 2, H / 2, H * 0.08, W / 2, H / 2, H * 0.72);
-          vig2.addColorStop(0, "rgba(0,0,0,0.02)"); vig2.addColorStop(1, "rgba(0,0,0,0.58)");
-          ctx.fillStyle = vig2; ctx.fillRect(0, 0, W, H);
-        }
+        // Desktop fills with solid black then draws brand elements.
+        // No video frame underneath — drawBrandPhase handles the background.
         drawBrandPhase(ctx, localTime, seg.durationSec);
       }
     }
