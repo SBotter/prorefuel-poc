@@ -964,23 +964,31 @@ export function MobileCanvasRenderer({
     const { blob, filename } = readyBlob;
     const handleSave = async () => {
       const file = new File([blob], filename, { type: "video/mp4" });
+      let shared = false;
+
       if (typeof navigator.share === "function" && navigator.canShare?.({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: "LENS Video" });
+          shared = true;
         } catch (e: any) {
-          if (e?.name !== "AbortError") {
-            // Fallback: direct download
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a"); a.href = url; a.download = filename;
-            document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            setTimeout(() => URL.revokeObjectURL(url), 5000);
-          }
+          if (e?.name === "AbortError") return; // user dismissed — stay on screen
+          // Share failed — fall through to direct download
         }
-      } else {
+      }
+
+      if (!shared) {
+        // Fallback: direct download (Android, desktop, or share API unavailable)
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a"); a.href = url; a.download = filename;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 5000);
+        shared = true;
+      }
+
+      // After successful save/share: navigate back to form automatically.
+      // No "Done" button needed — the share sheet closing IS the confirmation.
+      if (shared) {
+        onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
       }
     };
 
@@ -998,10 +1006,10 @@ export function MobileCanvasRenderer({
           {(blob.size / 1_048_576).toFixed(1)} MB · MP4 · {W}×{H}
         </p>
 
-        {/* Save to Photos — primary action (fresh user gesture) */}
+        {/* Save to Photos — only action needed */}
         <button
           onClick={handleSave}
-          className="w-full max-w-[280px] py-5 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-[0.3em] text-sm shadow-[0_10px_30px_rgba(245,158,11,0.35)] active:scale-[0.97] transition-transform flex items-center justify-center gap-3 mb-3"
+          className="w-full max-w-[280px] py-5 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-[0.3em] text-sm shadow-[0_10px_30px_rgba(245,158,11,0.35)] active:scale-[0.97] transition-transform flex items-center justify-center gap-3"
         >
           <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><polyline points="21 15 16 10 5 21"/>
@@ -1009,16 +1017,8 @@ export function MobileCanvasRenderer({
           Save to Photos
         </button>
 
-        {/* Done — return to form */}
-        <button
-          onClick={() => onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" })}
-          className="w-full max-w-[280px] py-3 rounded-2xl bg-zinc-800/80 border border-zinc-700 text-zinc-400 font-black uppercase tracking-[0.2em] text-xs active:bg-zinc-700 transition-colors"
-        >
-          Done — Back to Form
-        </button>
-
-        <p className="text-zinc-700 text-[10px] mt-5 text-center max-w-[220px] leading-relaxed">
-          Tap "Save to Photos" to open the iOS share sheet and save to your Camera Roll.
+        <p className="text-zinc-500 text-[11px] mt-5 text-center max-w-[220px] leading-relaxed">
+          Tap to open the iOS share sheet. After saving, the app returns automatically.
         </p>
       </div>
     );
