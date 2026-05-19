@@ -66,6 +66,8 @@ export interface MobileCanvasRendererProps {
   videoFile: File | null;
   unit: UnitSystem;
   onRenderComplete: (result: RenderResult) => void;
+  /** Activity title shown in the INTRO screen. Defaults to "YOUR RIDE". */
+  activityName?: string;
 }
 
 // ─── Shadow helpers ───────────────────────────────────────────────────────────
@@ -98,6 +100,7 @@ async function shareOrDownload(blob: Blob, filename: string) {
 // ─── Main component ───────────────────────────────────────────────────────────
 export function MobileCanvasRenderer({
   activityPoints, highlights, storyPlan, videoFile, unit, onRenderComplete,
+  activityName = "YOUR RIDE",
 }: MobileCanvasRendererProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status,   setStatus]   = useState("Preparing…");
@@ -672,19 +675,54 @@ export function MobileCanvasRenderer({
         c.globalAlpha = 1; nosh(c);
       }
 
-      // ── 4. Activity title — "YOUR RIDE", italic, scales in at 750ms ─────────
+      // ── 4. Activity title — dynamic font + word-wrap (identical to desktop getTitleLayout) ──
       const titleAlpha = eo(cl((elapsed - 750) / 500));
       if (titleAlpha > 0.01) {
         const titleScale = lp(1.1, 1.0, eo(cl((elapsed - 750) / 600)));
-        const titleFontSize = Math.round(W * 0.19);
+
+        // Dynamic font sizing — shrinks until the longest word fits in W*0.88
+        const maxLineW = W * 0.88;
+        let titleFontSize = Math.round(W * 0.19);
+        const minFontSize  = Math.round(W * 0.055);
+        const longestWord  = activityName.split(/[\s\-]+/).reduce((a, b) => a.length > b.length ? a : b, activityName);
+        c.font = `900 italic ${titleFontSize}px sans-serif`;
+        while (c.measureText(longestWord).width > maxLineW && titleFontSize > minFontSize) {
+          titleFontSize--;
+          c.font = `900 italic ${titleFontSize}px sans-serif`;
+        }
+
+        // Word-wrap at final font size
+        const words = activityName.split(" ");
+        const titleLines: string[] = [];
+        let currentLine = "";
+        for (const word of words) {
+          const test = currentLine ? `${currentLine} ${word}` : word;
+          if (c.measureText(test).width > maxLineW && currentLine) {
+            titleLines.push(currentLine);
+            currentLine = word;
+          } else {
+            currentLine = test;
+          }
+        }
+        if (currentLine) titleLines.push(currentLine);
+
+        const lineH = titleFontSize * 1.08;
+        const blockH = titleLines.length * lineH;
+        const blockCenterY = H * 0.43;
+        const blockTopY = blockCenterY - blockH / 2;
+
         c.save();
         c.globalAlpha = titleAlpha;
         sh(c, "rgba(0,0,0,1)", 60);
         c.font = `900 italic ${titleFontSize}px sans-serif`;
         c.fillStyle = "#ffffff"; c.textAlign = "center";
-        const titleY = H * 0.43 + (1 - titleAlpha) * 18;
-        c.translate(W / 2, titleY); c.scale(titleScale, titleScale);
-        c.fillText("YOUR RIDE", 0, 0);
+        titleLines.forEach((line, i) => {
+          const lineBaseY = blockTopY + lineH * (i + 0.82) + (1 - titleAlpha) * 18;
+          c.save();
+          c.translate(W / 2, lineBaseY); c.scale(titleScale, titleScale);
+          c.fillText(line, 0, 0);
+          c.restore();
+        });
         c.restore(); nosh(c);
       }
 

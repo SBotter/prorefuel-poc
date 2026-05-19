@@ -219,6 +219,7 @@ export default function MobilePage() {
   const [gpxError,       setGpxError]       = useState<string | null>(null);
   const [gpxLoaded,      setGpxLoaded]      = useState(false);
   const [videoLoaded,    setVideoLoaded]    = useState(false);
+  const [activityName,   setActivityName]   = useState("YOUR RIDE");
 
   const gpxNameRef = useRef("");
 
@@ -266,6 +267,19 @@ export default function MobilePage() {
 
     setActivityPoints(pts);
     gpxNameRef.current = file.name;
+
+    // Extract activity name — same logic as desktop page.tsx lines 728-737.
+    // Handles Suunto format: "suuntoapp-Hiking-2026-05-18T17-05-38Z" → "Hiking"
+    const allNameEls   = Array.from(xml.getElementsByTagName("name"));
+    const rawTrackName = allNameEls.find(el => el.parentElement?.localName === "trk")?.textContent?.trim()
+                      || allNameEls.find(el => el.textContent?.trim())?.textContent?.trim()
+                      || "";
+    const suuntoMatch  = rawTrackName.match(/^suuntoapp-([A-Za-z]+(?:[A-Z][a-z]+)*)-\d/);
+    const parsedName   = suuntoMatch
+      ? suuntoMatch[1].replace(/([A-Z])/g, " $1").trim()   // "TrailRunning" → "Trail Running"
+      : rawTrackName || "YOUR RIDE";
+    setActivityName(parsedName);
+
     setGpxLoaded(true);
   };
 
@@ -495,6 +509,7 @@ export default function MobilePage() {
         videoFile={videoFile}
         unit={unit}
         onRenderComplete={handleRenderComplete}
+        activityName={activityName}
       />
     );
   }
