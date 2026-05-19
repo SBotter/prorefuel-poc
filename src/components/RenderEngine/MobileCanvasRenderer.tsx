@@ -113,6 +113,10 @@ export function MobileCanvasRenderer({
     let rafId       = 0;
     let isStopped   = false;
     let recStartMs  = 0;
+
+    // Pre-load ProRefuel logo (same as desktop MapEngine)
+    const logoImg = new Image();
+    logoImg.src = "/prorefuel_logo.png";
     let recorder: MobileRecorder | null = null;
 
     // ── Unit config ─────────────────────────────────────────────────────────
@@ -343,6 +347,24 @@ export function MobileCanvasRenderer({
     // grayFrameReady: set once video element has a valid frame at the seek position
     let grayFrameReady = false;
 
+    // ── Avg speed (for INTRO stats — matches desktop) ────────────────────────
+    const avgSpeedKmh = totalMs > 0
+      ? (totalDistM / 1000) / (totalMs / 1000 / 3600)
+      : 0;
+    const avgSpeedDisp = unit === "metric"
+      ? avgSpeedKmh.toFixed(1)
+      : (avgSpeedKmh * 0.621371).toFixed(1);
+
+    // ── Pre-create intro gradients (desktop pattern: no per-frame allocation) ─
+    const introVignette = ctx.createRadialGradient(W/2, H*0.45, 0, W/2, H*0.45, W*1.2);
+    introVignette.addColorStop(0,   "rgba(0,0,0,0.22)");
+    introVignette.addColorStop(0.6, "rgba(0,0,0,0.48)");
+    introVignette.addColorStop(1,   "rgba(0,0,0,0.88)");
+    const introSepGrad = ctx.createLinearGradient(W/2 - W*0.3, 0, W/2 + W*0.3, 0);
+    introSepGrad.addColorStop(0,   "transparent");
+    introSepGrad.addColorStop(0.5, "#f59e0b");
+    introSepGrad.addColorStop(1,   "transparent");
+
     // ── Segment timeline — cap at 30s and always reserve 3s for BRAND ──────────
     // At 4 Mbps, 30s = ~15 MB. StorytellingProcessor can emit 60+ second plans.
     // We clamp total to 30s BUT guarantee the BRAND screen always renders (3s).
@@ -569,91 +591,190 @@ export function MobileCanvasRenderer({
       c.restore();
     }
 
-    // ── Drawing: INTRO phase ──────────────────────────────────────────────────
-    // Shows the FIRST FRAME of the video (at highlight position), frozen in
-    // black & white. Activity stats overlay animates in. Fades to black before
-    // ACTION starts, which then plays the same frame in full color.
-    function drawIntroPhase(c: CanvasRenderingContext2D, localTime: number, segDur: number) {
+    // ── Drawing: INTRO phase — identical to desktop MapEngine drawIntro() ────────
+    // Background: frozen grayscale video frame (mobile substitute for Mapbox satellite).
+    // All overlay elements match the desktop exactly: timing, layout, animations.
+    function drawIntroPhase(c: CanvasRenderingContext2D, localTime: number, _segDur: number) {
+      const elapsed = localTime * 1000; // ms from intro start (matches desktop timing)
+      const eo = (x: number) => 1 - Math.pow(1 - Math.min(Math.max(x, 0), 1), 3);
+      const cl = (x: number) => Math.min(Math.max(x, 0), 1);
+      const lp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+      c.save();
+
+      // ── 0. Black fill + grayscale frozen video frame (replaces Mapbox satellite) ─
       c.fillStyle = "#050505"; c.fillRect(0, 0, W, H);
-
-      // Fade in from black
-      const fadeIn  = eOut(pp(localTime, 0, 0.4));
-      // Fade out to black at end (so ACTION "color reveal" feels cinematic)
-      const fadeOut = eOut(pp(localTime, segDur * 0.80, segDur));
-
-      // Grayscale frozen video frame — drawn live using canvas 'color' blend mode.
-      // globalCompositeOperation='color' desaturates without getImageData (GPU-side only).
-      // getImageData would force GPU→CPU readback, leaving the hardware decoder in a state
-      // that conflicts with VideoEncoder when playback starts. This avoids that entirely.
-      if (grayFrameReady && fadeIn > 0) {
+      if (grayFrameReady) {
         c.save();
-        c.globalAlpha = fadeIn * (1 - fadeOut) * 0.82;
-        drawVideoFrame(c);                          // draw video at current seek position
-        c.globalCompositeOperation = "color";       // replace hue+sat with gray (sat=0)
-        c.fillStyle = "#808080";
-        c.fillRect(0, 0, W, H);                     // desaturates the video frame above
-        c.restore();                                // restores source-over + globalAlpha
+        c.globalAlpha = 0.82;
+        drawVideoFrame(c);
+        c.globalCompositeOperation = "color"; // GPU-side desaturation (no getImageData)
+        c.fillStyle = "#808080"; c.fillRect(0, 0, W, H);
+        c.restore();
       }
 
-      // Dark vignette to frame the content
-      const vig = c.createRadialGradient(W / 2, H / 2, H * 0.05, W / 2, H / 2, H * 0.70);
-      vig.addColorStop(0, "rgba(0,0,0,0.10)"); vig.addColorStop(1, "rgba(0,0,0,0.78)");
-      c.fillStyle = vig; c.fillRect(0, 0, W, H);
+      // ── 1. Cinematic vignette + bottom contrast overlay ───────────────────────
+      c.fillStyle = introVignette; c.fillRect(0, 0, W, H);
+      const contrastGrad = c.createLinearGradient(0, H*0.30, 0, H);
+      contrastGrad.addColorStop(0,    "rgba(0,0,0,0)");
+      contrastGrad.addColorStop(0.25, "rgba(0,0,0,0.55)");
+      contrastGrad.addColorStop(1,    "rgba(0,0,0,0.82)");
+      c.fillStyle = contrastGrad; c.fillRect(0, H*0.30, W, H*0.70);
 
-      // Fade to black overlay
+      // ── 2. Letterbox bars — retract from 30% → 5px over 700ms ───────────────
+      const barProg = eo(elapsed / 700);
+      const barH    = Math.round(lp(H * 0.3, 5, barProg));
+      c.fillStyle = "#050505";
+      c.fillRect(0, 0, W, barH);           // top bar
+      c.fillRect(0, H - barH, W, barH);    // bottom bar
+      c.fillStyle = "#f59e0b";
+      c.fillRect(0, barH - 4, W, 4);       // amber accent top edge
+      c.fillRect(0, H - barH, W, 4);       // amber accent bottom edge
+
+      // ── 3. LENS wordmark + "DEVELOPED BY" + ProRefuel logo ────────────────
+      const logoAlpha = eo(cl((elapsed - 500) / 400));
+      if (logoAlpha > 0.01) {
+        const slideUp = (1 - logoAlpha) * 14;
+
+        c.globalAlpha = logoAlpha;
+        sh(c, "rgba(0,0,0,0.9)", 25);
+        c.font = `900 ${Math.round(W * 0.18)}px sans-serif`;
+        c.fillStyle = "rgba(255,255,255,0.97)";
+        c.textAlign = "center";
+        c.fillText("LENS", W / 2, H * 0.16 + slideUp);
+
+        // Amber accent line below LENS
+        c.globalAlpha = logoAlpha * 0.6;
+        c.fillStyle = "#f59e0b";
+        const accentW = Math.round(W * 0.12);
+        c.fillRect((W - accentW) / 2, H * 0.185, accentW, Math.round(H * 0.0025));
+
+        // "DEVELOPED BY"
+        nosh(c);
+        c.globalAlpha = logoAlpha * 0.6;
+        c.font = `300 ${Math.round(W * 0.028)}px sans-serif`;
+        c.fillStyle = "rgba(160,160,160,0.9)";
+        c.fillText("DEVELOPED BY", W / 2, H * 0.228 + slideUp);
+
+        // ProRefuel logo
+        if (logoImg.complete && logoImg.naturalWidth > 0) {
+          const lH = Math.round(H * 0.042);
+          const lW = (logoImg.naturalWidth / logoImg.naturalHeight) * lH;
+          c.globalAlpha = logoAlpha * 0.65;
+          c.drawImage(logoImg, (W - lW) / 2, H * 0.248 + slideUp, lW, lH);
+        }
+        c.globalAlpha = 1; nosh(c);
+      }
+
+      // ── 4. Activity title — "YOUR RIDE", italic, scales in at 750ms ─────────
+      const titleAlpha = eo(cl((elapsed - 750) / 500));
+      if (titleAlpha > 0.01) {
+        const titleScale = lp(1.1, 1.0, eo(cl((elapsed - 750) / 600)));
+        const titleFontSize = Math.round(W * 0.19);
+        c.save();
+        c.globalAlpha = titleAlpha;
+        sh(c, "rgba(0,0,0,1)", 60);
+        c.font = `900 italic ${titleFontSize}px sans-serif`;
+        c.fillStyle = "#ffffff"; c.textAlign = "center";
+        const titleY = H * 0.43 + (1 - titleAlpha) * 18;
+        c.translate(W / 2, titleY); c.scale(titleScale, titleScale);
+        c.fillText("YOUR RIDE", 0, 0);
+        c.restore(); nosh(c);
+      }
+
+      // ── 6. Separator line — amber, draws left→right at 1480ms ───────────────
+      const sepProg = eo(cl((elapsed - 1480) / 350));
+      if (sepProg > 0.01) {
+        const sepAlpha = Math.min(sepProg * 2, 1);
+        const sepY = H * 0.535;
+        c.globalAlpha = sepAlpha * 0.7;
+        c.strokeStyle = introSepGrad; c.lineWidth = 2;
+        c.beginPath();
+        c.moveTo(W/2 - W*0.3*sepProg, sepY);
+        c.lineTo(W/2 + W*0.3*sepProg, sepY);
+        c.stroke();
+        c.globalAlpha = 1;
+      }
+
+      // ── 7. Stats rows with count-up — identical to desktop ───────────────────
+      const STAT_START = 1800;
+      const COUNT_DUR  = 700;
+      const finalDistVal = totalDistM / DIST_DIV;
+      const totalSecStat = totalMs / 1000;
+
+      const statRows = [
+        {
+          label: "DISTANCE",
+          delay: STAT_START,
+          countFn: (p: number) => `${(finalDistVal * p).toFixed(1)} ${DIST_UNIT}`,
+        },
+        {
+          label: "DURATION",
+          delay: STAT_START + 140,
+          countFn: (p: number) => {
+            const cs = totalSecStat * p;
+            const ch = Math.floor(cs / 3600);
+            const cm = Math.floor((cs % 3600) / 60).toString().padStart(2, "0");
+            const cse = Math.floor(cs % 60).toString().padStart(2, "0");
+            return totalSecStat >= 3600 ? `${ch.toString().padStart(2,"0")}:${cm}:${cse}` : `${cm}:${cse}`;
+          },
+        },
+        {
+          label: "AVG SPEED",
+          delay: STAT_START + 280,
+          countFn: (p: number) => `${(parseFloat(avgSpeedDisp) * p).toFixed(1)} ${SPEED_UNIT}`,
+        },
+      ];
+
+      const listTop = H * 0.6;
+      const rowH    = Math.round(H * 0.068);
+      const padL    = Math.round(W * 0.15);
+      const padR    = Math.round(W * 0.15);
+      const lblFont = `700 ${Math.round(W * 0.026)}px sans-serif`;
+      const valFont = `900 ${Math.round(W * 0.068)}px sans-serif`;
+
+      statRows.forEach((s, i) => {
+        const alpha = eo(cl((elapsed - s.delay) / 400));
+        if (alpha < 0.01) return;
+        const countProg = eo(cl((elapsed - s.delay) / COUNT_DUR));
+        const rowY = listTop + i * rowH;
+        c.save(); c.globalAlpha = alpha;
+        // Top separator line
+        c.strokeStyle = "rgba(255,255,255,0.10)"; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(padL, rowY); c.lineTo(W - padR, rowY); c.stroke();
+        // Label — left, amber
+        sh(c, "rgba(0,0,0,0.9)", 8);
+        c.font = lblFont; c.fillStyle = "#f59e0b"; c.textAlign = "left";
+        c.fillText(s.label, padL, rowY + rowH * 0.7);
+        // Value — right, large, count-up
+        sh(c, "rgba(0,0,0,1)", 20);
+        c.font = valFont;
+        c.fillStyle = countProg >= 0.98 ? "#ffffff" : "#fbbf24";
+        c.textAlign = "right";
+        c.fillText(s.countFn(countProg), W - padR, rowY + rowH * 0.74);
+        // Bottom separator on last row
+        if (i === statRows.length - 1) {
+          nosh(c); c.strokeStyle = "rgba(255,255,255,0.10)"; c.lineWidth = 1;
+          c.beginPath(); c.moveTo(padL, rowY + rowH); c.lineTo(W - padR, rowY + rowH); c.stroke();
+        }
+        c.restore(); nosh(c);
+      });
+
+      // ── 8. @LENS.video ──────────────────────────────────────────────────────
+      const igAlpha = eo(cl((elapsed - 2200) / 450));
+      if (igAlpha > 0.01) {
+        c.save(); c.globalAlpha = igAlpha * 0.82;
+        sh(c, "rgba(0,0,0,0.9)", 14);
+        c.font = `900 italic ${Math.round(W * 0.040)}px sans-serif`;
+        c.fillStyle = "#f59e0b"; c.textAlign = "center";
+        c.fillText("@LENS.video", W / 2, H * 0.832);
+        c.restore(); nosh(c);
+      }
+
+      // ── Fade to black at end (before ACTION starts) ───────────────────────
+      const fadeOut = eo(cl((elapsed - (_segDur * 1000 * 0.82)) / (_segDur * 1000 * 0.18)));
       if (fadeOut > 0) {
         c.fillStyle = `rgba(5,5,5,${fadeOut})`; c.fillRect(0, 0, W, H);
-      }
-
-      // ── Text elements fade in together ────────────────────────────────────
-      const textA = fadeIn * (1 - fadeOut);
-      if (textA < 0.02) return;
-      c.save(); c.globalAlpha = textA;
-
-      // "YOUR RIDE" title
-      const titleA = eOut(pp(localTime, 0.3, 1.2));
-      if (titleA > 0) {
-        c.globalAlpha = textA * titleA;
-        sh(c, "rgba(0,0,0,0.9)", 28);
-        c.textAlign = "center";
-        c.font = `700 ${Math.round(W * 0.032)}px sans-serif`;
-        c.fillStyle = "#f59e0b";
-        c.fillText("GPS · TELEMETRY · STORY", W / 2, Math.round(H * 0.09));
-        c.font = `900 ${Math.round(W * 0.086)}px sans-serif`;
-        c.fillStyle = "#fff";
-        c.fillText("YOUR RIDE", W / 2, Math.round(H * 0.135));
-        nosh(c);
-      }
-
-      // Stats (distance / time / max speed) — animate in at mid-INTRO
-      const statsA = eOut(pp(localTime, segDur * 0.35, segDur * 0.65));
-      if (statsA > 0) {
-        c.globalAlpha = textA * statsA;
-        const statDefs = [
-          { val: totalDist, unit: DIST_UNIT,       label: "DISTANCE" },
-          { val: timeStr,   unit: "",              label: "TIME" },
-          { val: String(maxSpeedDisp), unit: SPEED_UNIT, label: "MAX SPEED" },
-          ...(hasHR ? [{ val: String(maxHR), unit: "BPM", label: "MAX HR" }]
-                    : [{ val: `+${eleGainDisp}`, unit: ELE_UNIT, label: "ELEVATION" }]),
-        ].slice(0, 3);
-
-        const statY = Math.round(H * 0.77);
-        const SW    = W / statDefs.length;
-        statDefs.forEach((s, i) => {
-          const sx = SW * i + SW / 2;
-          sh(c, "rgba(0,0,0,0.9)", 18);
-          c.textAlign = "center";
-          c.font = `900 ${Math.round(W * 0.082)}px sans-serif`;
-          c.fillStyle = "#f59e0b";
-          c.fillText(`${s.val}${s.unit ? " " + s.unit : ""}`, sx, statY);
-          nosh(c);
-          c.font = `600 ${Math.round(W * 0.027)}px sans-serif`;
-          c.fillStyle = "rgba(180,180,180,0.85)";
-          c.fillText(s.label, sx, statY + Math.round(W * 0.044));
-        });
-        c.fillStyle = "rgba(255,255,255,0.10)";
-        for (let i = 1; i < statDefs.length; i++)
-          c.fillRect(SW * i - 1, statY - Math.round(W * 0.065), 2, Math.round(W * 0.092));
       }
 
       c.restore();
