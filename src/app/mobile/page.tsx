@@ -491,17 +491,16 @@ export default function MobilePage() {
     }
   };
 
-  // ── After render complete ───────────────────────────────────────────────────
-  const handleRenderComplete = (result: RenderResult) => {
-    // For success: only navigate when the user explicitly taps "Done — Back to Form"
-    // in the "Video Ready!" screen. That button calls onRenderComplete({ status:"success" })
-    // which triggers this handler. The encoding-complete event inside stop().then() does
-    // NOT call onRenderComplete anymore — it only sets readyBlob to show the save screen.
-    //
-    // For error: navigate immediately so the user can try again.
-    setVideoFile(null); setHighlights([]); setStoryPlan(null);
-    setVideoLoaded(false); setUploadError(null);
-    setProgress(0); setStatusMsg(""); setStep("READY");
+  // ── After render complete — full form reset ────────────────────────────────
+  // Resets ALL state (GPX + video) so the user sees a completely fresh form,
+  // ready to start a new video creation workflow from scratch.
+  const handleRenderComplete = (_result: RenderResult) => {
+    setVideoFile(null);    setHighlights([]);      setStoryPlan(null);
+    setVideoLoaded(false); setUploadError(null);   setGpxError(null);
+    setGpxLoaded(false);   setActivityPoints([]);  setActivityName("YOUR RIDE");
+    setProgress(0);        setStatusMsg("");
+    gpxNameRef.current = "";
+    setStep("UPLOAD"); // back to the very first step — clean slate
   };
 
   // ── Render: debug panel (overlay — shown on top of any state) ─────────────
