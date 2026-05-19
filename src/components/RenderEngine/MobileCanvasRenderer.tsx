@@ -594,11 +594,17 @@ export function MobileCanvasRenderer({
     // ── Drawing: INTRO phase — identical to desktop MapEngine drawIntro() ────────
     // Background: frozen grayscale video frame (mobile substitute for Mapbox satellite).
     // All overlay elements match the desktop exactly: timing, layout, animations.
+    let introLoggedOnce = false;
     function drawIntroPhase(c: CanvasRenderingContext2D, localTime: number, _segDur: number) {
       const elapsed = localTime * 1000; // ms from intro start (matches desktop timing)
       const eo = (x: number) => 1 - Math.pow(1 - Math.min(Math.max(x, 0), 1), 3);
       const cl = (x: number) => Math.min(Math.max(x, 0), 1);
       const lp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+      if (!introLoggedOnce) {
+        introLoggedOnce = true;
+        mlog("INTRO", `drawIntroPhase called — elapsed=${elapsed.toFixed(0)}ms grayFrameReady=${grayFrameReady} vidW=${videoEl.videoWidth}`);
+      }
 
       c.save();
 
@@ -937,10 +943,14 @@ export function MobileCanvasRenderer({
         mlog("PRESEEK", "waiting 600ms for Video Toolbox to settle…");
         await new Promise<void>(r => setTimeout(r, 600));
         mlog("PRESEEK", "delay done");
-        // Mark gray frame as ready — drawn live using canvas compositing (no getImageData)
-        grayFrameReady = videoEl.readyState >= 2;
-        mlog("GRAY", `grayFrameReady=${grayFrameReady} readyState=${videoEl.readyState}`);
       }
+
+      // Always mark gray frame as ready once the video element has content.
+      // Previously this was inside the if(firstActionSeg) block — videos with
+      // videoStartTime=0 never entered that block and grayFrameReady stayed false,
+      // making the intro background black instead of the frozen grayscale frame.
+      grayFrameReady = videoEl.readyState >= 2 && videoEl.videoWidth > 0;
+      mlog("GRAY", `grayFrameReady=${grayFrameReady} readyState=${videoEl.readyState} videoWidth=${videoEl.videoWidth}`);
 
       setStatus("Initializing encoder…");
       try {
