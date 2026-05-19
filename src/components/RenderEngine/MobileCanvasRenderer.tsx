@@ -614,18 +614,36 @@ export function MobileCanvasRenderer({
         mlog("INTRO", `drawIntroPhase called — elapsed=${elapsed.toFixed(0)}ms grayFrameReady=${grayFrameReady} vidW=${videoEl.videoWidth}`);
       }
 
+      // ── Transition-out parameters ──────────────────────────────────────────────
+      // Starts at 75% of segment duration, completes at 100%.
+      // grayIntensity: 1→0 (grayscale fades to color — NO black flash)
+      // textAlpha:     1→0 (text/overlay elements fade out)
+      // The video frame is ALWAYS visible in color by the time ACTION starts,
+      // so the intro→ACTION cut is seamless.
+      const transOutProg = eo(cl((elapsed - (_segDur * 1000 * 0.75)) / (_segDur * 1000 * 0.25)));
+      const grayIntensity = 1 - transOutProg;   // 1=grayscale, 0=full color
+      const textAlpha     = 1 - transOutProg;   // 1=visible,   0=transparent
+
       c.save();
 
-      // ── 0. Black fill + grayscale frozen video frame (replaces Mapbox satellite) ─
+      // ── 0. Video background: grayscale during intro, color during transition ──
       c.fillStyle = "#050505"; c.fillRect(0, 0, W, H);
       if (grayFrameReady) {
         c.save();
         c.globalAlpha = 0.82;
         drawVideoFrame(c);
-        c.globalCompositeOperation = "color"; // GPU-side desaturation (no getImageData)
-        c.fillStyle = "#808080"; c.fillRect(0, 0, W, H);
+        if (grayIntensity > 0.01) {
+          c.globalCompositeOperation = "color"; // GPU-side desaturation
+          c.globalAlpha = grayIntensity;
+          c.fillStyle = "#808080"; c.fillRect(0, 0, W, H);
+        }
         c.restore();
       }
+
+      // ── All overlay elements — wrapped in textAlpha so they fade out together ─
+      if (textAlpha < 0.01) { c.restore(); return; }
+      c.save();
+      c.globalAlpha = textAlpha;
 
       // ── 1. Cinematic vignette + bottom contrast overlay ───────────────────────
       c.fillStyle = introVignette; c.fillRect(0, 0, W, H);
@@ -820,13 +838,8 @@ export function MobileCanvasRenderer({
         c.restore(); nosh(c);
       }
 
-      // ── Fade to black at end (before ACTION starts) ───────────────────────
-      const fadeOut = eo(cl((elapsed - (_segDur * 1000 * 0.82)) / (_segDur * 1000 * 0.18)));
-      if (fadeOut > 0) {
-        c.fillStyle = `rgba(5,5,5,${fadeOut})`; c.fillRect(0, 0, W, H);
-      }
-
-      c.restore();
+      c.restore(); // end of textAlpha wrapper
+      c.restore(); // end of outer save
     }
 
     // ── Drawing: BRAND / outro phase ──────────────────────────────────────────
@@ -912,14 +925,8 @@ export function MobileCanvasRenderer({
         drawTelemetryHUD(ctx, gpsIdx);
         drawWatermark(ctx);
 
-        // ── Smooth intro→ACTION transition: fade in from black over 0.5s ────────
-        // Covers any black frames while the video element starts playing after
-        // the intro's fadeOut. Creates a clean cinematic color-reveal effect.
-        const actionFadeIn = c01(localTime / 0.5);
-        if (actionFadeIn < 1) {
-          ctx.fillStyle = `rgba(5,5,5,${1 - actionFadeIn})`;
-          ctx.fillRect(0, 0, W, H);
-        }
+        // No black overlay needed — intro ends with color video visible, ACTION
+        // continues from the same frame. Zero black flash between intro and video.
 
       } else if (seg.type === "BRAND") {
         // Keep last video frame visible while fading in brand screen
