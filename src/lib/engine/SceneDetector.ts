@@ -441,7 +441,7 @@ export function detectContrast(
 // Classifies a scene relative to the GoPro recording window.
 // INSIDE: scene overlaps the video → most relevant, no score penalty
 // NEAR:   scene is within VIDEO_MARGIN_MS of the video → slight penalty
-// FAR:    scene is far from the video → strong penalty (still usable for MAP overview)
+// FAR:    scene is far from the video → strong penalty
 
 function classifyScene(
   scene: SceneCandidate,
@@ -518,7 +518,7 @@ export function detectScenes(
 
   // 4. Adjust scores by proximity to the GoPro video window (MUDANÇA 3 + 4)
   // Scenes inside/near the video always win deduplication and act selection.
-  // FAR scenes are kept but penalized — still useful for MAP overview segments.
+  // FAR scenes are kept but penalized — lower priority for selection.
   if (videoStart !== undefined && videoEnd !== undefined && videoStart > 0) {
     const VIDEO_MARGIN_MS = 120_000; // 2-minute tolerance around the video window
     for (const c of candidates) {
