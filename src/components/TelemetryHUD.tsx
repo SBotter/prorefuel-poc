@@ -219,12 +219,12 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores, uni
     // ── Distance ───────────────────────────────────────────────────────────────
     const metY = gCY + gR + Math.round(H * 0.04);
     shadow('rgba(0,0,0,1)', 25);
-    ctx.font      = `900 ${Math.round(W * 0.11)}px sans-serif`;
+    ctx.font      = `900 ${Math.round(W * 0.075)}px sans-serif`;
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'left';
     ctx.fillText(distKm, W * 0.04, metY);
     const dW = ctx.measureText(distKm).width;
-    ctx.font      = `700 ${Math.round(W * 0.035)}px sans-serif`;
+    ctx.font      = `700 ${Math.round(W * 0.026)}px sans-serif`;
     ctx.fillStyle = '#f59e0b';
     ctx.fillText(` ${DIST_LABEL[unit]}`, W * 0.04 + dW, metY - 4);
 

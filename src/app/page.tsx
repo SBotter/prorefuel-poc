@@ -1134,21 +1134,19 @@ export default function ProRefuelPage() {
                           output_size_bytes: result.outputSizeBytes,
                           output_duration_s: storyPlan ? storyPlan.segments.reduce((s, seg) => s + (seg.durationSec ?? 0), 0) : null,
                         });
-                        // After successful download: reset video state so the user can
-                        // generate another video immediately — GPX stays loaded.
+                        // After successful download: full reset to initial state
                         if (result.status === "success") {
                           setTimeout(() => {
-                            setVideoFile(null);
-                            setHighlights([]);
-                            setStoryPlan(null);
-                            setIsMobileVideo(false);
-                            setUploadError(null);
-                            setProgress(0);
-                            setStatusMsg("");
+                            setVideoFile(null);      setHighlights([]);      setStoryPlan(null);
+                            setIsMobileVideo(false); setUploadError(null);   setGpxError(null);
+                            setActivityPoints([]);   setGpxProfile(null);    setProgress(0);
+                            setStatusMsg("");        setActivityMeta({ name: "EPIC RIDE" });
+                            gpxMetricsRef.current          = null;
+                            videoMetricsRef.current        = null;
                             processingSessionIdRef.current = null;
-                            readyStepStartRef.current     = null;
-                            experienceStartRef.current    = null;
-                            setStep("READY");
+                            readyStepStartRef.current      = null;
+                            experienceStartRef.current     = null;
+                            setStep("UPLOAD");
                           }, 2000);
                         }
                       }}

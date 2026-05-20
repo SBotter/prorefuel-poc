@@ -120,8 +120,6 @@ export function MobileCanvasRenderer({
     // Pre-load images (same as desktop MapEngine)
     const logoImg = new Image();
     logoImg.src = "/prorefuel_logo.png";
-    const lensCircleImg = new Image();
-    lensCircleImg.src = "/LENS_circle.png";
     let recorder: MobileRecorder | null = null;
 
     // ── Unit config ─────────────────────────────────────────────────────────
@@ -539,11 +537,11 @@ export function MobileCanvasRenderer({
       // Layer 5: secondary metrics — distance, HR, time
       const metY = G_CY + G_R + Math.round(H * 0.04);
       sh(c, "rgba(0,0,0,1)", 25);
-      c.font = `900 ${Math.round(W * 0.11)}px sans-serif`;
+      c.font = `900 ${Math.round(W * 0.075)}px sans-serif`;
       c.fillStyle = "#fff"; c.textAlign = "left";
       c.fillText(distVal, W * 0.04, metY);
       const dw = c.measureText(distVal).width;
-      c.font = `700 ${Math.round(W * 0.035)}px sans-serif`;
+      c.font = `700 ${Math.round(W * 0.026)}px sans-serif`;
       c.fillStyle = "#f59e0b";
       c.fillText(` ${DIST_UNIT}`, W * 0.04 + dw, metY - 4);
 
@@ -932,15 +930,24 @@ export function MobileCanvasRenderer({
       c.restore();
     }
 
-    // ── LENS watermark — LENS_circle.png top-right, identical to desktop ─────────
+    // ── LENS watermark — black circle with LENS text, top-right corner ───────────
     function drawWatermark(c: CanvasRenderingContext2D) {
-      if (lensCircleImg.complete && lensCircleImg.naturalWidth > 0) {
-        const wmSize = Math.round(W * 0.079);
-        c.save();
-        c.globalAlpha = 0.30;
-        c.drawImage(lensCircleImg, W - wmSize - 5, 5, wmSize, wmSize);
-        c.restore();
-      }
+      const wmSize = Math.round(W * 0.079);
+      const wmR    = wmSize / 2;
+      const wmCX   = W - wmSize - 5 + wmR;
+      const wmCY   = 5 + wmR;
+      c.save();
+      c.globalAlpha = 0.30;
+      c.beginPath();
+      c.arc(wmCX, wmCY, wmR, 0, Math.PI * 2);
+      c.fillStyle = "#000000";
+      c.fill();
+      c.fillStyle = "#ffffff";
+      c.font = `900 ${Math.round(wmSize * 0.30)}px sans-serif`;
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillText("LENS", wmCX, wmCY);
+      c.restore();
     }
 
     // ── Master draw function (called each frame) ───────────────────────────────
@@ -1248,6 +1255,16 @@ export function MobileCanvasRenderer({
 
     return (
       <div className="fixed inset-0 z-[100] bg-[#050505] flex flex-col items-center justify-center p-6">
+
+        {/* Brand header */}
+        <div className="absolute top-0 left-0 right-0 flex flex-col items-center pt-10 pb-3 pointer-events-none">
+          <span className="text-4xl font-black tracking-tight text-white leading-none">LENS</span>
+          <div className="flex items-center gap-1.5 mt-1">
+            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Developed by</span>
+            <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[14px] opacity-55" />
+          </div>
+        </div>
+
         {/* Success icon */}
         <div className="w-16 h-16 rounded-2xl bg-green-500/15 border border-green-500/40 flex items-center justify-center mb-5">
           <svg viewBox="0 0 24 24" className="w-8 h-8 text-green-400" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1283,6 +1300,15 @@ export function MobileCanvasRenderer({
   // ── State: encoding in progress ─────────────────────────────────────────────
   return (
     <div className="fixed inset-0 z-[100] bg-[#050505] flex flex-col items-center justify-center p-4">
+
+      {/* Brand header */}
+      <div className="absolute top-0 left-0 right-0 flex flex-col items-center pt-10 pb-3 pointer-events-none">
+        <span className="text-4xl font-black tracking-tight text-white leading-none">LENS</span>
+        <div className="flex items-center gap-1.5 mt-1">
+          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Developed by</span>
+          <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[14px] opacity-55" />
+        </div>
+      </div>
 
       <div className="text-white text-lg font-black uppercase tracking-[0.2em] mb-0.5 text-center">
         Creating Your Video

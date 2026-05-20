@@ -948,8 +948,6 @@ const MapEngine = forwardRef(
       const logoImg = new Image();
       logoImg.src = "/prorefuel_logo.png";
 
-      const lensCircleImg = new Image();
-      lensCircleImg.src = "/LENS_circle.png";
 
       // Lazy logo cache — loads an SVG/image the first time it's requested.
       // Using a live cache (not captured at effect startup) ensures logos added
@@ -1419,12 +1417,12 @@ const MapEngine = forwardRef(
         // Layer 5: secondary metrics (distance, HR, power, time)
         const metY = gCY + gR + Math.round(H * 0.04);
         shadow("rgba(0,0,0,1)", 25);
-        ctx.font = `900 ${Math.round(W * 0.11)}px sans-serif`;
+        ctx.font = `900 ${Math.round(W * 0.075)}px sans-serif`;
         ctx.fillStyle = "#ffffff";
         ctx.textAlign = "left";
         ctx.fillText(distKm, W * 0.04, metY);
         const dW = ctx.measureText(distKm).width;
-        ctx.font = `700 ${Math.round(W * 0.035)}px sans-serif`;
+        ctx.font = `700 ${Math.round(W * 0.026)}px sans-serif`;
         ctx.fillStyle = "#f59e0b";
         ctx.fillText(` ${DIST_LABEL[unit]}`, W * 0.04 + dW, metY - 4);
 
@@ -1468,12 +1466,23 @@ const MapEngine = forwardRef(
           ctx.fillRect(0, 0, barW, 6);
         }
 
-        // Watermark — LENS_circle.png, top-right corner
-        if (lensCircleImg.complete && lensCircleImg.naturalWidth > 0) {
+        // Watermark — black circle with LENS text, top-right corner
+        {
           const wmSize = Math.round(W * 0.079);
+          const wmR    = wmSize / 2;
+          const wmCX   = W - wmSize - 5 + wmR;
+          const wmCY   = 5 + wmR;
           ctx.save();
           ctx.globalAlpha = 0.30;
-          ctx.drawImage(lensCircleImg, W - wmSize - 5, 5, wmSize, wmSize);
+          ctx.beginPath();
+          ctx.arc(wmCX, wmCY, wmR, 0, Math.PI * 2);
+          ctx.fillStyle = "#000000";
+          ctx.fill();
+          ctx.fillStyle = "#ffffff";
+          ctx.font = `900 ${Math.round(wmSize * 0.30)}px sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("LENS", wmCX, wmCY);
           ctx.restore();
         }
 
