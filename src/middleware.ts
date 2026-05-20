@@ -6,7 +6,9 @@ export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // ── Mobile redirect: / → /mobile ────────────────────────────────────────
-  // Runs only on the root path so it never creates redirect loops.
+  // Serves a lighter, mobile-optimised page instead of the heavy desktop app.
+  // /mobile handles its own capability gate (iOS 16.4+ gets the form,
+  // older devices get the "Update Required" screen).
   if (pathname === "/") {
     const ua = req.headers.get("user-agent") ?? "";
     if (MOBILE_UA.test(ua)) {

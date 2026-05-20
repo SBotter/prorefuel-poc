@@ -204,7 +204,15 @@ function parseMvhd(d: Uint8Array): MvhdResult | null {
   };
 }
 
-interface MetaResult { make: string; model: string; latitude?: number; longitude?: number }
+interface MetaResult {
+  make: string;
+  model: string;
+  latitude?: number;
+  longitude?: number;
+  /** com.apple.quicktime.creationdate — original recording date, preserved through edits.
+   *  Preferred over mvhd CreateDate which is reset on every iOS export/trim. */
+  creationdate?: string;
+}
 
 /**
  * Parse Apple QuickTime metadata (moov/meta) for camera model and GPS.
@@ -267,6 +275,7 @@ function parseMeta(moov: Uint8Array): MetaResult {
 
         if      (key.endsWith('.make'))              result.make  = val.trim() || result.make;
         else if (key.endsWith('.model'))             result.model = val.trim() || result.model;
+        else if (key.endsWith('.creationdate'))      result.creationdate = val.trim();
         else if (key.endsWith('.location.ISO6709')) {
           // ISO 6709: "+49.3227-123.0385+110.600/"
           const m = val.match(/([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)/);
@@ -323,7 +332,8 @@ self.onmessage = async (e: MessageEvent<{ file: File }>) => {
     return;
   }
 
-  const { createDateMs, durationMs } = mvhd;
+  const { durationMs } = mvhd;
+  let { createDateMs } = mvhd;
 
   if (isNaN(createDateMs) || createDateMs < new Date('2000-01-01').getTime()) {
     console.error('[iPhone Worker] CreateDate out of range:', new Date(createDateMs).toISOString());
@@ -339,6 +349,18 @@ self.onmessage = async (e: MessageEvent<{ file: File }>) => {
 
   // ── Step 3: Parse moov/meta → GPS + Make/Model ────────────────────────────
   const meta = parseMeta(moov);
+
+  // ── Prefer com.apple.quicktime.creationdate over mvhd CreateDate ─────────────
+  // mvhd CreateDate is RESET on every iOS export/trim/edit.
+  // com.apple.quicktime.creationdate preserves the original recording date.
+  // Example: user records on May 10, trims on May 15 → mvhd=May 15, .creationdate=May 10.
+  if (meta.creationdate) {
+    const qtDate = new Date(meta.creationdate);
+    if (!isNaN(qtDate.getTime()) && qtDate.getFullYear() >= 2000) {
+      console.log(`[iPhone Worker] Overriding mvhd (${new Date(createDateMs).toISOString()}) with com.apple.quicktime.creationdate: ${meta.creationdate}`);
+      createDateMs = qtDate.getTime();
+    }
+  }
 
   const startLat    = meta.latitude  ?? 0;
   const startLon    = meta.longitude ?? 0;
@@ -360,12 +382,13 @@ self.onmessage = async (e: MessageEvent<{ file: File }>) => {
 
   console.log('[iPhone Worker] Summary:', {
     cameraModel,
-    createDate:  new Date(createDateMs).toISOString(),
-    durationSec: (durationMs / 1000).toFixed(1),
-    endDate:     new Date(endDateMs).toISOString(),
+    createDate:       new Date(createDateMs).toISOString(),
+    qtCreationDate:   meta.creationdate ?? '(not present)',
+    durationSec:      (durationMs / 1000).toFixed(1),
+    endDate:          new Date(endDateMs).toISOString(),
     hasStartGPS,
-    startLat:    startLat.toFixed(6),
-    startLon:    startLon.toFixed(6),
+    startLat:         startLat.toFixed(6),
+    startLon:         startLon.toFixed(6),
   });
 
   self.postMessage({
