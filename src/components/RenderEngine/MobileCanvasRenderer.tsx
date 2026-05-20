@@ -1277,21 +1277,57 @@ export function MobileCanvasRenderer({
           {(blob.size / 1_048_576).toFixed(1)} MB · MP4 · {W}×{H}
         </p>
 
-        {/* Save button — label adapts to platform */}
-        <button
-          onClick={handleSave}
-          className="w-full max-w-[280px] py-5 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-[0.3em] text-sm shadow-[0_10px_30px_rgba(245,158,11,0.35)] active:scale-[0.97] transition-transform flex items-center justify-center gap-3"
-        >
-          <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><polyline points="21 15 16 10 5 21"/>
-          </svg>
-          {isAndroid ? "Save to Gallery" : "Save to Photos"}
-        </button>
+        {/* Buttons */}
+        <div className="w-full max-w-[280px] flex flex-col gap-3">
 
-        <p className="text-zinc-500 text-[11px] mt-5 text-center max-w-[220px] leading-relaxed">
+          {/* Primary: Save to device */}
+          <button
+            onClick={handleSave}
+            className="w-full py-5 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-[0.3em] text-sm shadow-[0_10px_30px_rgba(245,158,11,0.35)] active:scale-[0.97] transition-transform flex items-center justify-center gap-3"
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><polyline points="21 15 16 10 5 21"/>
+            </svg>
+            {isAndroid ? "Save to Gallery" : "Save to Photos"}
+          </button>
+
+          {/* Secondary: Share (Instagram Stories via native share sheet) */}
+          {typeof navigator !== "undefined" && typeof navigator.share === "function" && (
+            <button
+              onClick={async () => {
+                const file = new File([blob], filename, { type: "video/mp4" });
+                if (navigator.canShare?.({ files: [file] })) {
+                  try {
+                    await navigator.share({ files: [file], title: "LENS Video" });
+                  } catch (e: any) {
+                    if (e?.name !== "AbortError") console.warn("Share failed:", e);
+                  }
+                }
+              }}
+              className="w-full py-4 rounded-2xl border border-zinc-700 bg-zinc-900 text-white font-black uppercase tracking-[0.25em] text-sm active:scale-[0.97] transition-transform flex items-center justify-center gap-3"
+            >
+              {/* Instagram gradient icon */}
+              <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="url(#ig-grad)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <defs>
+                  <linearGradient id="ig-grad" x1="0" y1="24" x2="24" y2="0" gradientUnits="userSpaceOnUse">
+                    <stop stopColor="#f9ce34"/>
+                    <stop offset="0.35" stopColor="#ee2a7b"/>
+                    <stop offset="1" stopColor="#6228d7"/>
+                  </linearGradient>
+                </defs>
+                <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/>
+                <circle cx="12" cy="12" r="4"/>
+                <circle cx="17.5" cy="6.5" r="1" fill="#ee2a7b" stroke="none"/>
+              </svg>
+              Share to Instagram
+            </button>
+          )}
+        </div>
+
+        <p className="text-zinc-600 text-[10px] mt-4 text-center max-w-[220px] leading-relaxed">
           {isAndroid
-            ? "Video saves to your Downloads folder and appears in your Gallery automatically."
-            : "Tap to open the share sheet and save to your Camera Roll."}
+            ? "Save to gallery, or share directly via your apps."
+            : "Save to Camera Roll, or share via the sheet — select Instagram to post as a Story."}
         </p>
       </div>
     );

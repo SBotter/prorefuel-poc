@@ -397,6 +397,21 @@ export async function getErrorKPIs() {
   };
 }
 
+// ── Mobile OS breakdown (iOS vs Android) ─────────────────────────────────────
+
+export async function getMobileOsBreakdown() {
+  const { data } = await db()
+    .from("processing_sessions")
+    .select("device_os")
+    .not("device_os", "is", null);
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => { if (r.device_os) map[r.device_os] = (map[r.device_os] ?? 0) + 1; });
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value]) => ({ name, value }));
+}
+
 // ── Device type breakdown (gopro / iphone / android / unknown) ───────────────
 
 export async function getVideoDeviceTypes() {
@@ -485,7 +500,7 @@ export async function getAllDashboardData() {
     topLocations, timeOnReady, processingTime,
     errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
     videoDeviceTypes, videoDeviceMakes, browserOs,
-    gpsDeviceModels, gpsDeviceBrands,
+    gpsDeviceModels, gpsDeviceBrands, mobileOsBreakdown,
   ] = await Promise.all([
     getKPIs(), getSessionsOverTime(), getSessionSuccessOverTime(), getFunnel(), getRenderStatus(),
     getRenderDurationBuckets(), getCameraModels(), getGpsDevices(), getGpsLockStats(),
@@ -493,7 +508,7 @@ export async function getAllDashboardData() {
     getTopLocations(), getTimeOnReady(), getProcessingTimeBuckets(),
     getErrorsByCode(), getErrorsBySource(), getErrorsByDevice(), getErrorsOverTime(), getRecentErrors(), getErrorKPIs(),
     getVideoDeviceTypes(), getVideoDeviceMakes(), getBrowserOsBreakdown(),
-    getGpsDeviceModels(), getGpsDeviceBrands(),
+    getGpsDeviceModels(), getGpsDeviceBrands(), getMobileOsBreakdown(),
   ]);
 
   return {
@@ -502,7 +517,7 @@ export async function getAllDashboardData() {
     syncStrategies, gpxFields, activityTypes, unitSystem,
     topLocations, timeOnReady, processingTime,
     errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
-    videoDeviceTypes, videoDeviceMakes, browserOs,
+    videoDeviceTypes, videoDeviceMakes, browserOs, mobileOsBreakdown,
     gpsDeviceModels, gpsDeviceBrands,
   };
 }

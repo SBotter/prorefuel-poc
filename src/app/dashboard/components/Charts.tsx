@@ -579,6 +579,33 @@ function VideoDevicesTab({ data }: { data: DashboardData }) {
       </section>
 
       <section>
+        <SectionLabel accent="#22c55e">Mobile OS — iOS vs Android</SectionLabel>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <DonutChart
+            data={data.mobileOsBreakdown ?? []}
+            title="Mobile OS (iOS vs Android)"
+            colors={["#f59e0b", "#22c55e", "#3b82f6"]}
+          />
+          {(data.mobileOsBreakdown ?? []).length > 0 && (
+            <Card>
+              <ChartTitle>iOS vs Android — Numbers</ChartTitle>
+              <div className="space-y-3 mt-2">
+                {(data.mobileOsBreakdown ?? []).map((item, i) => (
+                  <div key={item.name} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full" style={{ background: i === 0 ? "#f59e0b" : "#22c55e" }} />
+                      <span className="text-sm font-black text-white">{item.name}</span>
+                    </div>
+                    <span className="text-amber-400 font-black text-sm">{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
+      </section>
+
+      <section>
         <SectionLabel>GPS Quality by Video</SectionLabel>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <DonutChart data={data.gpsLock}        title="GPS Lock (Video)" />

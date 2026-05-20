@@ -11,6 +11,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { mlog, mlogClear } from "@/lib/engine/mobile/mobileDebugLogger";
+import { trackProcessingSession, trackVideoExport } from "@/lib/supabase/tracking";
 import type { ActionSegment }  from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }     from "@/lib/utils/units";
@@ -221,7 +222,10 @@ export default function MobilePage() {
   const [videoLoaded,    setVideoLoaded]    = useState(false);
   const [activityName,   setActivityName]   = useState("YOUR RIDE");
 
-  const gpxNameRef = useRef("");
+  const gpxNameRef             = useRef("");
+  const processingSessionIdRef = useRef<string | null>(null);
+  const experienceStartRef     = useRef<number | null>(null);
+  const storyPlanRef           = useRef<StoryPlan | null>(null);
 
   // ── Capability detection + debug mode ──────────────────────────────────────
   useEffect(() => {
@@ -333,7 +337,8 @@ export default function MobilePage() {
     setLoading(true); setUploadError(null); setProgress(0);
     mlogClear();
     mlog("UPLOAD", `file=${file.name} size=${(file.size/1_048_576).toFixed(1)}MB`);
-    const interval = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
+    const interval       = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
+    const processingStart = Date.now();
 
     try {
       const [
@@ -476,6 +481,37 @@ export default function MobilePage() {
 
       clearInterval(interval);
       setProgress(100);
+      storyPlanRef.current = sp;
+
+      // Track processing session — captures device OS, camera, and activity metadata
+      trackProcessingSession({
+        status:              "success",
+        video_filename:      file.name,
+        video_duration_s:    videoDurationSec || null,
+        camera_model:        cam.model || cam.make || null,
+        device_type:         cam.type as "gopro" | "iphone" | "android" | "unknown",
+        device_make:         cam.make || null,
+        device_model:        cam.model || null,
+        device_os:           isAndroid ? "Android" : "iOS",
+        device_os_version:   isAndroid
+          ? (mobileCaps?.androidVersion?.toString() ?? null)
+          : (mobileCaps?.iosVersion?.toString()     ?? null),
+        browser_os:          isAndroid ? "Android" : "iOS",
+        browser_is_mobile:   true,
+        browser_name:        null,
+        browser_os_version:  null,
+        browser_version:     null,
+        activity_name:       activityName || null,
+        gpx_points_count:    activityPoints.length || null,
+        gps_device:          null,
+        activity_location:   null,
+        sync_strategy:       "timestamp-based",
+        scenes_count:        sp.segments.length || null,
+        unit_system:         unit,
+        processing_time_ms:  Date.now() - processingStart,
+        error_message:       null,
+      }).then(id => { processingSessionIdRef.current = id; });
+
       setHighlights(segments);
       setStoryPlan(sp);
       setVideoFile(file);
@@ -485,22 +521,49 @@ export default function MobilePage() {
       clearInterval(interval);
       mlog("ERROR", `upload failed: ${err.message}`);
       setUploadError(err.message ?? "Processing failed.");
+      trackProcessingSession({
+        status: "error", video_filename: file.name, video_duration_s: null,
+        camera_model: null, activity_name: activityName || null,
+        gpx_points_count: activityPoints.length || null, gps_device: null,
+        activity_location: null, sync_strategy: null, scenes_count: null,
+        unit_system: unit, processing_time_ms: Date.now() - processingStart,
+        error_message: err.message ?? null,
+      });
     } finally {
       setLoading(false);
       setStatusMsg("");
     }
   };
 
-  // ── After render complete — full form reset ────────────────────────────────
-  // Resets ALL state (GPX + video) so the user sees a completely fresh form,
-  // ready to start a new video creation workflow from scratch.
-  const handleRenderComplete = (_result: RenderResult) => {
+  // ── After render complete — track export + full form reset ───────────────────
+  const handleRenderComplete = (result: RenderResult) => {
+    void trackVideoExport({
+      processing_session_id: processingSessionIdRef.current,
+      reached_experience:    true,
+      clicked_record:        true,
+      completed_download:    result.status === "success",
+      time_on_ready_ms:      null,
+      time_to_download_ms:   experienceStartRef.current ? Date.now() - experienceStartRef.current : null,
+      render_duration_ms:    result.durationMs,
+      render_status:         result.status,
+      error_message:         result.errorMessage ?? null,
+      output_format:         result.outputFormat,
+      output_size_bytes:     result.outputSizeBytes,
+      output_duration_s:     storyPlanRef.current
+        ? storyPlanRef.current.segments.reduce((s: number, seg: any) => s + (seg.durationSec ?? 0), 0)
+        : null,
+    });
+
+    // Reset all state — clean slate for next video
     setVideoFile(null);    setHighlights([]);      setStoryPlan(null);
     setVideoLoaded(false); setUploadError(null);   setGpxError(null);
     setGpxLoaded(false);   setActivityPoints([]);  setActivityName("YOUR RIDE");
     setProgress(0);        setStatusMsg("");
-    gpxNameRef.current = "";
-    setStep("UPLOAD"); // back to the very first step — clean slate
+    gpxNameRef.current             = "";
+    processingSessionIdRef.current = null;
+    experienceStartRef.current     = null;
+    storyPlanRef.current           = null;
+    setStep("UPLOAD");
   };
 
   // ── Render: debug panel (overlay — shown on top of any state) ─────────────
@@ -656,7 +719,17 @@ export default function MobilePage() {
           {/* Generate button */}
           <button
             disabled={!videoLoaded}
-            onClick={() => setStep("EXPERIENCE")}
+            onClick={() => {
+              experienceStartRef.current = Date.now();
+              void trackVideoExport({
+                processing_session_id: processingSessionIdRef.current,
+                reached_experience: true, clicked_record: true, completed_download: false,
+                time_on_ready_ms: null, time_to_download_ms: null, render_duration_ms: null,
+                render_status: null, error_message: null, output_format: null,
+                output_size_bytes: null, output_duration_s: null,
+              });
+              setStep("EXPERIENCE");
+            }}
             className={`w-full py-5 rounded-2xl font-black uppercase tracking-[0.3em] text-sm transition-all flex items-center justify-center gap-3 ${
               videoLoaded
                 ? "bg-amber-500 text-black shadow-[0_10px_30px_rgba(245,158,11,0.3)] active:scale-[0.98]"
