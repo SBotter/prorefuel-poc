@@ -379,7 +379,7 @@ export function MobileCanvasRenderer({
 
     const segments = storyPlan.segments;
 
-    // Rebuild a trimmed segment list: keep INTRO/MAP as-is, trim ACTION to fit
+    // Rebuild a trimmed segment list: keep INTRO as-is, trim ACTION to fit
     // within ACTION_CAP_S, then ensure BRAND is appended.
     const trimmedSegments: typeof segments = [];
     let actionBudget = ACTION_CAP_S;
@@ -396,7 +396,7 @@ export function MobileCanvasRenderer({
         trimmedSegments.push({ ...seg, durationSec: dur });
         actionBudget -= dur;
       } else {
-        trimmedSegments.push(seg); // INTRO / MAP: keep as-is
+        trimmedSegments.push(seg); // INTRO: keep as-is
       }
     }
 
@@ -953,7 +953,7 @@ export function MobileCanvasRenderer({
       const { seg, segIdx, localTime } = hit;
       const gpsIdx = getGPSIdxAt(elapsed);
 
-      if (seg.type === "INTRO" || seg.type === "MAP") {
+      if (seg.type === "INTRO") {
         drawIntroPhase(ctx, localTime, seg.durationSec);
 
       } else if (seg.type === "ACTION") {

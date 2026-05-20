@@ -9,7 +9,6 @@
 //   5. ACTION clip selection: uses V2 composite-scored candidates instead of V1's detectAllPeaks
 //
 // WHAT STAYS THE SAME (Phase 1 is low-risk):
-//   - MAP segment structure (NarrativePlanner V1 still drives MAP budget allocation)
 //   - Time budget (59s total: 6.5s INTRO, ~49s ACTION, 3.5s BRAND)
 //   - Output interface (StoryPlan) — fully compatible with MapEngine.tsx
 //
@@ -603,9 +602,8 @@ export class StorytellingProcessorV2 {
 
     console.log(`[ProRefuel V2] Selected clips: ${rawSegments.length} | Editing: ${narrativePlan.editingRhythm}`);
 
-    // ── 9. Segment Assembly (same MAP/ACTION logic as V1) ────────────────────
-    const totalPoints      = activityPoints.length;
-    const isLongActivity   = this.detectLongActivity(activityPoints, rawSegments, ACTION_BUDGET);
+    // ── 9. Segment Assembly ──────────────────────────────────────────────────
+    const totalPoints  = activityPoints.length;
     const segments: StorySegment[] = [];
 
     const firstActionIndex = rawSegments.length > 0
@@ -613,37 +611,17 @@ export class StorytellingProcessorV2 {
       : (videoStartGPS > 0
           ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStartGPS))
           : Math.floor(totalPoints / 2));
-    const lastActionEndIndex = rawSegments.length > 0
-      ? rawSegments[rawSegments.length - 1].endIndex
-      : Math.min(firstActionIndex + 60, totalPoints - 1);
 
-    const preclimaxMapBudget = narrativePlan.acts.reduce((sum, a) => {
-      if (a.act === 'INTRO' || a.act === 'OUTRO' || a.act === 'CLIMAX' || a.act === 'RELIEF') return sum;
-      return sum + a.targetDurationSec;
-    }, 0);
+    let reclaimedBudget = 0;
 
-    let seenClimax        = false;
-    let preclimaxCursor   = 0;
-    let preclimaxFracUsed = 0;
-    let reclaimedMapBudget = 0;
-
-    // INTRO
     segments.push({ type: 'INTRO', startIndex: 0, endIndex: 0, durationSec: INTRO_SEC });
 
     for (const narrativeAct of narrativePlan.acts) {
       if (narrativeAct.act === 'INTRO' || narrativeAct.act === 'OUTRO') continue;
 
       if (narrativeAct.act === 'CLIMAX') {
-        seenClimax = true;
-
         if (rawSegments.length > 0) {
-          // Cap to effective budget — never exceed available video footage.
-          const climaxBudget = isLongActivity
-            ? effectiveActionBudget
-            : Math.min(narrativeAct.targetDurationSec, effectiveActionBudget);
-
-          // Re-scale proportionally. Never scale UP beyond what clips provide
-          // (clips are already capped to video duration inside selectActionClipsV2).
+          const climaxBudget   = Math.min(narrativeAct.targetDurationSec, effectiveActionBudget);
           const totalAllocated = rawSegments.reduce((s, r) => s + r.duration, 0);
           const scale          = totalAllocated > 0 ? Math.min(1, climaxBudget / totalAllocated) : 1;
 
@@ -660,24 +638,16 @@ export class StorytellingProcessorV2 {
           }
         }
       } else {
-        // MAP phase removed — reclaim all MAP budget for ACTION clips.
-        // Only the in-video mini-map widget (shown during ACTION) is used.
-        reclaimedMapBudget += narrativeAct.targetDurationSec;
-        if (!seenClimax) {
-          const actFrac = preclimaxMapBudget > 0
-            ? narrativeAct.targetDurationSec / preclimaxMapBudget : 1;
-          preclimaxFracUsed += actFrac;
-          preclimaxCursor = Math.min(Math.round(firstActionIndex * preclimaxFracUsed), firstActionIndex);
-        }
+        reclaimedBudget += narrativeAct.targetDurationSec;
       }
     }
 
-    // Redistribute reclaimed MAP budget to ACTION clips
-    if (reclaimedMapBudget > 0 && !isLongActivity) {
-      const actionSegs    = segments.filter(s => s.type === 'ACTION');
+    // Redistribute non-CLIMAX act budget proportionally to ACTION clips
+    if (reclaimedBudget > 0) {
+      const actionSegs     = segments.filter(s => s.type === 'ACTION');
       const totalActionDur = actionSegs.reduce((s, seg) => s + seg.durationSec, 0) || 1;
       for (const seg of actionSegs) {
-        seg.durationSec += reclaimedMapBudget * (seg.durationSec / totalActionDur);
+        seg.durationSec += reclaimedBudget * (seg.durationSec / totalActionDur);
       }
     }
 
@@ -718,7 +688,6 @@ export class StorytellingProcessorV2 {
 
     const sensorLimitations = getSensorLimitations(activityPoints, percentiles);
     const actionSegCount    = segments.filter(s => s.type === 'ACTION').length;
-    const mapSegCount       = segments.filter(s => s.type === 'MAP').length;
     const totalDurSec       = segments.reduce((s, seg) => s + seg.durationSec, 0);
     const actionDurSec      = segments.filter(s => s.type === 'ACTION').reduce((s, seg) => s + seg.durationSec, 0);
 
@@ -741,7 +710,6 @@ export class StorytellingProcessorV2 {
       detectionMs,
       totalSegments:       segments.length,
       actionSegments:      actionSegCount,
-      mapSegments:         mapSegCount,
       totalDurationSec:    totalDurSec,
       actionDurationSec:   actionDurSec,
     });
@@ -751,12 +719,11 @@ export class StorytellingProcessorV2 {
     const totalBudgetSec = segments.reduce((s, seg) => s + seg.durationSec, 0);
     return {
       totalBudgetSec,
-      isLongActivity,
       segments,
       activityPoints,
       narrativePlan,
-      intensityScores: intensityV2.masterScore,  // V2: use masterScore for altimetry visualization
-      detectedScenes:  v1Scenes,                  // V1 scenes kept for UI compatibility
+      intensityScores: intensityV2.masterScore,
+      detectedScenes:  v1Scenes,
       v2Debug,
     };
   }
@@ -769,8 +736,6 @@ export class StorytellingProcessorV2 {
     gpsVideoOffsetMs: number,
     videoDurationSec: number,
   ): StoryPlan & { v2Debug?: StorytellingV2Debug } {
-    // MAP phase removed — only the in-video mini-map widget is used.
-    // INTRO_SEC is the same for all devices and video durations (equal treatment).
     const INTRO_SEC     = 6.5;
     const BRAND_SEC     = 3.5;
     const ACTION_BUDGET = 49;
@@ -782,13 +747,9 @@ export class StorytellingProcessorV2 {
     const videoStartGPS = videoLockRTC > 0 ? videoLockRTC - clockOffsetMs : 0;
     const videoEndGPS   = videoEnd     > 0 ? videoEnd     - clockOffsetMs : 0;
 
-    // Run V1 pipeline for MAP budget allocation (lightweight, no V2 detection)
     const v1Intensity   = computeIntensity(activityPoints);
     const v1Scenes      = detectScenes(activityPoints, v1Intensity, videoStartGPS, videoEndGPS);
     const narrativePlan = buildNarrativePlan(v1Scenes, activityPoints, v1Intensity, ACTION_BUDGET);
-
-    // isLongActivity with no highlight clips (full video treated as a single unscored block)
-    const isLongActivity = StorytellingProcessorV2.detectLongActivity(activityPoints, [], ACTION_BUDGET);
 
     const firstActionIndex = videoStartGPS > 0
       ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStartGPS))
@@ -801,35 +762,6 @@ export class StorytellingProcessorV2 {
 
     const segments: StorySegment[] = [];
     segments.push({ type: 'INTRO', startIndex: 0, endIndex: 0, durationSec: INTRO_SEC });
-
-    if (false && !isLongActivity) { // MAP phase removed — mini-map widget used instead
-      const rawMapBudget = narrativePlan.acts.reduce((sum, a) => {
-        if (a.act === 'INTRO' || a.act === 'OUTRO' || a.act === 'CLIMAX' || a.act === 'RELIEF') return sum;
-        return sum + a.targetDurationSec;
-      }, 0);
-      // Cap MAP budget relative to video length (max 15% or 4s).
-      const mapCap = Math.min(videoDurationSec * 0.15, 4.0);
-      const preclimaxMapBudget = Math.min(rawMapBudget, mapCap);
-      const mapScale = rawMapBudget > 0 ? preclimaxMapBudget / rawMapBudget : 1;
-
-      let preclimaxCursor   = 0;
-      let preclimaxFracUsed = 0;
-      for (const act of narrativePlan.acts) {
-        if (act.act === 'INTRO' || act.act === 'OUTRO' || act.act === 'CLIMAX' || act.act === 'RELIEF') continue;
-        const scaledDur = act.targetDurationSec * mapScale;
-        const actFrac   = preclimaxMapBudget > 0 ? scaledDur / preclimaxMapBudget : 1;
-        const cumFrac   = preclimaxFracUsed + actFrac;
-        const segStart  = preclimaxCursor;
-        const segEnd    = Math.min(Math.round(firstActionIndex * cumFrac), firstActionIndex);
-        preclimaxFracUsed = cumFrac;
-        preclimaxCursor   = segEnd;
-        if (segEnd - segStart < 2 || scaledDur < 0.5) continue;
-        const realSec        = (activityPoints[segEnd].time - activityPoints[segStart].time) / 1000;
-        const mapSpeedFactor = realSec > 0 ? realSec / scaledDur : 1;
-        segments.push({ type: 'MAP', startIndex: segStart, endIndex: segEnd, durationSec: scaledDur, mapSpeedFactor });
-      }
-    }
-
     segments.push({
       type:           'ACTION',
       startIndex:     firstActionIndex,
@@ -842,29 +774,15 @@ export class StorytellingProcessorV2 {
     segments.push({ type: 'BRAND', startIndex: totalPoints - 1, endIndex: totalPoints - 1, durationSec: BRAND_SEC });
 
     const totalBudgetSec = segments.reduce((s, seg) => s + seg.durationSec, 0);
-    console.log(`[ProRefuel V2] Short-video path: video=${videoDurationSec.toFixed(1)}s → output=${totalBudgetSec.toFixed(1)}s map=${segments.some(s => s.type === 'MAP')}`);
+    console.log(`[ProRefuel V2] Short-video path: video=${videoDurationSec.toFixed(1)}s → output=${totalBudgetSec.toFixed(1)}s`);
 
     return {
       totalBudgetSec,
-      isLongActivity,
       segments,
       activityPoints,
       narrativePlan,
       intensityScores: new Float32Array(totalPoints),
       detectedScenes:  v1Scenes,
     };
-  }
-
-  private static detectLongActivity(
-    activityPoints: EnhancedGPSPoint[],
-    rawSegments:    ScoredActionSegmentV2[],
-    actionBudget:   number,
-  ): boolean {
-    const totalPoints          = activityPoints.length;
-    const highlightPointsCount = rawSegments.reduce((acc, s) => acc + (s.endIndex - s.startIndex), 0);
-    const mapPointsCount       = Math.max(0, totalPoints - highlightPointsCount);
-    const availableMapTime     = actionBudget - highlightPointsCount;
-    const mapSpeed             = availableMapTime > 0 ? mapPointsCount / availableMapTime : 100;
-    return mapSpeed > 10;
   }
 }

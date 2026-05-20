@@ -15,19 +15,17 @@ export const STORYTELLING_VERSION: "V1" | "V2" =
     : "V2"; // V2 is now the default
 
 export interface StorySegment {
-  type: "INTRO" | "ACTION" | "MAP" | "BRAND";
+  type: "INTRO" | "ACTION" | "BRAND";
   startIndex: number;
   endIndex: number;
   videoStartTime?: number;  // In seconds relative to MP4
   durationSec: number;      // How long this segment stays on screen
-  mapSpeedFactor?: number;  // realDurationSec / durationSec — how fast the map must fly
   title?: string;
   value?: string;
 }
 
 export interface StoryPlan {
   totalBudgetSec: number;
-  isLongActivity: boolean;
   segments: StorySegment[];
   activityPoints: EnhancedGPSPoint[];
   narrativePlan: NarrativePlan;
@@ -71,7 +69,6 @@ export class StorytellingProcessor {
       const intensity     = computeIntensity(activityPoints);
       const scenes        = detectScenes(activityPoints, intensity, videoStartGPS, videoEndGPS);
       const narrativePlan = buildNarrativePlan(scenes, activityPoints, intensity, ACTION_BUDGET);
-      const isLongActivity = (totalPoints / ACTION_BUDGET) > 10;
 
       const firstActionIndex = videoStartGPS > 0
         ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStartGPS))
@@ -85,8 +82,6 @@ export class StorytellingProcessor {
       const segments: StorySegment[] = [];
       segments.push({ type: 'INTRO', startIndex: 0, endIndex: 0, durationSec: INTRO_SEC });
 
-      // MAP phase removed — mini-map widget used instead during ACTION
-
       segments.push({
         type: 'ACTION', startIndex: firstActionIndex, endIndex: vidEndIdx,
         videoStartTime: 0, durationSec: Math.min(videoDurationSec, ACTION_BUDGET),
@@ -96,7 +91,7 @@ export class StorytellingProcessor {
 
       const totalBudgetSec = segments.reduce((s, seg) => s + seg.durationSec, 0);
       console.log(`[ProRefuel] Short-video path: video=${videoDurationSec.toFixed(1)}s → output=${totalBudgetSec.toFixed(1)}s`);
-      return { totalBudgetSec, isLongActivity, segments, activityPoints, narrativePlan, intensityScores: intensity.scores, detectedScenes: scenes };
+      return { totalBudgetSec, segments, activityPoints, narrativePlan, intensityScores: intensity.scores, detectedScenes: scenes };
     }
 
     if (activityPoints.length === 0) {
@@ -129,12 +124,6 @@ export class StorytellingProcessor {
     // 3. BUDGET ALLOCATION & STRATEGY SELECTION
     // Calculate required travel speed for a continuous journey
     const totalPoints = activityPoints.length;
-    const highlightPointsCount = rawSegments.reduce((acc, s) => acc + (s.endIndex - s.startIndex), 0);
-    const mapPointsCount = Math.max(0, totalPoints - highlightPointsCount);
-    const availableMapTime = ACTION_BUDGET - (highlightPointsCount / 1); // assumes 1Hz action
-    const mapSpeed = availableMapTime > 0 ? (mapPointsCount / availableMapTime) : 100;
-    
-    const isLongActivity = mapSpeed > 10;
     const segments: StorySegment[] = [];
 
     // Helper: derive display value from scene metadata
@@ -152,57 +141,24 @@ export class StorytellingProcessor {
       }
     };
 
-    // --- SEGMENT 0: INTRO (unchanged) ---
-    segments.push({
-      type: "INTRO",
-      startIndex: 0,
-      endIndex: 0,
-      durationSec: INTRO_SEC
-    });
+    segments.push({ type: "INTRO", startIndex: 0, endIndex: 0, durationSec: INTRO_SEC });
 
-    // --- JOURNEY ANCHORS for MAP segments ---
-    // firstActionIndex: activity point where the first video clip begins
-    // lastActionEndIndex: activity point where the last video clip ends
-    // MAP acts before CLIMAX fly the map 0 → firstActionIndex (approaching the video)
-    // MAP acts after CLIMAX fly the map lastActionEndIndex → end (riding away)
     const firstActionIndex = rawSegments.length > 0
       ? rawSegments[0].startIndex
       : (videoStart > 0
           ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStart))
           : Math.floor(totalPoints / 2));
-    const lastActionEndIndex = rawSegments.length > 0
-      ? rawSegments[rawSegments.length - 1].endIndex
-      : Math.min(firstActionIndex + 60, totalPoints - 1);
 
-    // Total budget of MAP acts before CLIMAX — drives proportional journey slicing
-    const preclimaxMapBudget = narrativePlan.acts.reduce((sum, a) => {
-      if (a.act === "INTRO" || a.act === "OUTRO" || a.act === "CLIMAX" || a.act === "RELIEF") return sum;
-      return sum + a.targetDurationSec;
-    }, 0);
+    let reclaimedBudget = 0;
 
-    let seenClimax           = false;
-    let preclimaxCursor      = 0;   // running start index within 0→firstActionIndex
-    let preclimaxFracUsed    = 0;   // cumulative fraction of preclimaxMapBudget consumed
-    // MAP segments skipped due to isLongActivity — budget returned to ACTION clips
-    let reclaimedMapBudget   = 0;
-
-    // --- NARRATIVE ACTS → StorySegments ---
-    // MAP acts: journey-based linear fly-through toward/away from the video
-    // CLIMAX:   rawSegments from detectAllPeaks (guaranteed inside video window)
     for (const narrativeAct of narrativePlan.acts) {
       if (narrativeAct.act === "INTRO" || narrativeAct.act === "OUTRO") continue;
 
       if (narrativeAct.act === "CLIMAX") {
-        seenClimax = true;
-
-        // ACTION clips from detectAllPeaks — within video window, budget-aware
         if (rawSegments.length > 0) {
           const MIN_CLIP_SEC = 3;
-          const MAX_CLIP_SEC = isLongActivity ? Number.MAX_SAFE_INTEGER : 12;
-          // When video is short, CLIMAX budget is capped to available footage.
-          const climaxBudget = isLongActivity
-            ? effectiveActionBudget
-            : Math.min(narrativeAct.targetDurationSec, effectiveActionBudget);
+          const MAX_CLIP_SEC = 12;
+          const climaxBudget = Math.min(narrativeAct.targetDurationSec, effectiveActionBudget);
 
           // Budget is the only hard cap — use all detected peaks, best scores first
           const selectedSegs = [...rawSegments]
@@ -257,43 +213,29 @@ export class StorytellingProcessor {
             });
           }
         }
-        // If rawSegments is empty, the fallback below handles it
-
       } else {
-        // MAP phase removed — reclaim all MAP budget for ACTION clips.
-        // The in-video mini-map widget (shown during ACTION) provides route context.
-        reclaimedMapBudget += narrativeAct.targetDurationSec;
-        if (!seenClimax) {
-          const actFrac = preclimaxMapBudget > 0
-            ? narrativeAct.targetDurationSec / preclimaxMapBudget : 1;
-          preclimaxFracUsed += actFrac;
-          preclimaxCursor = Math.min(Math.round(firstActionIndex * preclimaxFracUsed), firstActionIndex);
-        }
+        reclaimedBudget += narrativeAct.targetDurationSec;
       }
     }
 
-    // Redistribute MAP budget reclaimed from long-activity skips → ACTION clips get more screen time
-    // isLongActivity: CLIMAX already claimed ACTION_BUDGET directly, nothing to redistribute
-    if (reclaimedMapBudget > 0 && !isLongActivity) {
+    // Redistribute non-CLIMAX act budget proportionally to ACTION clips
+    if (reclaimedBudget > 0) {
       const actionSegs = segments.filter(s => s.type === "ACTION");
       const totalActionDur = actionSegs.reduce((s, seg) => s + seg.durationSec, 0) || 1;
       for (const seg of actionSegs) {
-        seg.durationSec += reclaimedMapBudget * (seg.durationSec / totalActionDur);
+        seg.durationSec += reclaimedBudget * (seg.durationSec / totalActionDur);
       }
-      console.log(`[ProRefuel] Redistributed ${reclaimedMapBudget.toFixed(1)}s from MAP → ${actionSegs.length} ACTION clips`);
     }
 
-    // Fallback: no ACTION segments (rawSegments empty = no video GPS or no peaks found)
+    // Fallback: no ACTION segments
     if (segments.filter(s => s.type === "ACTION").length === 0 && videoPoints.length > 0) {
       const vidIdx = videoStart > 0
         ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStart))
         : Math.floor(activityPoints.length / 2);
-      const fallbackDur = isLongActivity
-        ? effectiveActionBudget
-        : Math.min(
-            narrativePlan.acts.find(a => a.act === "CLIMAX")?.targetDurationSec ?? Math.round(effectiveActionBudget * 0.60),
-            effectiveActionBudget,
-          );
+      const fallbackDur = Math.min(
+        narrativePlan.acts.find(a => a.act === "CLIMAX")?.targetDurationSec ?? Math.round(effectiveActionBudget * 0.60),
+        effectiveActionBudget,
+      );
       segments.push({
         type: "ACTION",
         startIndex: vidIdx,
@@ -316,7 +258,6 @@ export class StorytellingProcessor {
     const totalBudgetSec = segments.reduce((s, seg) => s + seg.durationSec, 0);
     return {
       totalBudgetSec,
-      isLongActivity,
       segments,
       activityPoints,
       narrativePlan,

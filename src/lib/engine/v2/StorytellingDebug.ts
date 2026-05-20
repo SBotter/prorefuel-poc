@@ -92,7 +92,6 @@ export interface StorytellingV2Debug {
   plan: {
     totalSegments:    number;
     actionSegments:   number;
-    mapSegments:      number;
     totalDurationSec: number;
     actionDurationSec: number;
   };
@@ -137,7 +136,6 @@ export function buildStorytellingDebug(params: {
   detectionMs:        number;
   totalSegments:      number;
   actionSegments:     number;
-  mapSegments:        number;
   totalDurationSec:   number;
   actionDurationSec:  number;
 }): StorytellingV2Debug {
@@ -146,7 +144,7 @@ export function buildStorytellingDebug(params: {
     percentiles, missingSensors, videoStartMs, videoEndMs,
     allCandidates, selectedCandidates, rejectedCandidates,
     sensorLimitations, thresholdRelaxations, fallbacksUsed, detectionMs,
-    totalSegments, actionSegments, mapSegments, totalDurationSec, actionDurationSec,
+    totalSegments, actionSegments, totalDurationSec, actionDurationSec,
   } = params;
 
   const videoDurationSec = (videoEndMs - videoStartMs) / 1000;
@@ -256,7 +254,6 @@ export function buildStorytellingDebug(params: {
     plan: {
       totalSegments,
       actionSegments,
-      mapSegments,
       totalDurationSec:  +totalDurationSec.toFixed(1),
       actionDurationSec: +actionDurationSec.toFixed(1),
     },

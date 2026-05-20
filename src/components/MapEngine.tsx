@@ -63,7 +63,7 @@ interface MapEngineProps {
   onDownloadReady?: (blob: Blob, filename: string) => void;
   /** When true, renders only raw video cuts — no telemetry, no map widget, no branding. Default false. */
   hideOverlay?: boolean;
-  /** When true: skips INTRO/MAP phases and stops recording before the BRAND screen.
+  /** When true: skips INTRO and stops recording before the BRAND screen.
    *  Used by the render-engine tool to export clean highlight reels without intro/brand. */
   skipIntroAndBrand?: boolean;
   /** When true: video is from iPhone — enables safe seek clamping. */
@@ -160,7 +160,7 @@ const MapEngine = forwardRef(
     const activityMetaRef = useRef(activityMeta);
 
     const [viewMode, setViewMode] = useState<
-      "INTRO" | "MAP" | "ACTION" | "BRAND"
+      "INTRO" | "ACTION" | "BRAND"
     >("BRAND");
     const [preBrandFade, setPreBrandFade] = useState(0);
     const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -176,8 +176,6 @@ const MapEngine = forwardRef(
       message: string;
       isOOM: boolean;
     } | null>(null);
-    const [isLongActivity, setIsLongActivity] = useState(false);
-
     const state = useRef({
       virtualIndex: 0,
       startTime: 0,
@@ -185,13 +183,10 @@ const MapEngine = forwardRef(
       isStarted: false,
 
       currentBearing: 0,
-      viewMode: "BRAND" as "INTRO" | "MAP" | "ACTION" | "BRAND",
+      viewMode: "BRAND" as "INTRO" | "ACTION" | "BRAND",
       pitch: 60,
       zoom: 18,
-      activeHighlightIndex: -1, // Tracks which highlight block is currently playing (if any)
-      mapPointsPerSec: 10,
-      isLongActivity: false,
-      marathonSegments: [] as any[],
+      activeHighlightIndex: -1,
       lastHighlightSyncIndex: -1,
       lastPreSeekTarget: -1, // videoStartTime we last pre-seeked to (avoids repeat seeks)
       lastHudUpdateTime: 0, // throttle setCurrentIndex React re-renders to ~10fps
@@ -359,14 +354,6 @@ const MapEngine = forwardRef(
       state.current.startTime = performance.now();
       state.current.isStarted = true;
       state.current.lastHighlightSyncIndex = -1;
-      state.current.isLongActivity = storyPlan.isLongActivity;
-      setIsLongActivity(storyPlan.isLongActivity);
-
-      // MUDANÇA 1: map flight speed driven by editingRhythm
-      const rhythm = storyPlan.narrativePlan?.editingRhythm ?? "MEDIUM";
-      state.current.mapPointsPerSec =
-        rhythm === "FAST" ? 14 : rhythm === "SLOW" ? 6 : 10;
-
       setViewMode("INTRO");
       state.current.viewMode = "INTRO";
 
@@ -572,7 +559,7 @@ const MapEngine = forwardRef(
               });
             }
           } else {
-            // Non-ACTION (INTRO/MAP/BRAND): pause video and pre-seek to the NEXT action segment
+            // Non-ACTION (INTRO/BRAND): pause video and pre-seek to the NEXT action segment
             // so the decoder is ready and playback starts instantly with no freeze
             if (!vid.paused) vid.pause();
             const nextAction = storyPlan.segments
@@ -2457,9 +2444,7 @@ const MapEngine = forwardRef(
           // Scenario A: Short Activity or INTRO — frozen video frame as background
           if (!hideOverlayRef.current) {
             ctx.drawImage(frozenFrameCanvas, 0, 0, W, H);
-            // MAP phase removed — vm==="MAP" treated as extended INTRO.
-            // Only the mini-map widget (in ACTION) shows route context.
-            if (vm === "INTRO" || vm === "MAP") {
+            if (vm === "INTRO") {
               if (introStartTime === 0) introStartTime = performance.now();
               drawIntro(performance.now() - introStartTime);
             }
@@ -2529,7 +2514,7 @@ const MapEngine = forwardRef(
       currentIndex >= activityPoints.length - 20;
 
     return (
-      <div className="relative w-full h-full bg-[#050505] overflow-hidden mapbox-wrapper-hack">
+      <div className="relative w-full h-full bg-[#050505] overflow-hidden">
         {/* TRANSCODING OVERLAY */}
         {isTranscoding && (
           <div className="absolute inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center gap-4">
