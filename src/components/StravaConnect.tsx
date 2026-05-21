@@ -21,8 +21,6 @@ type State = "idle" | "loading_activities" | "picker" | "loading_gpx" | "error";
 
 interface StravaConnectProps {
   onGpxLoaded: (gpxText: string) => Promise<void>;
-  /** When true (GPX already loaded), hide the component entirely */
-  gpxLoaded?: boolean;
   /** "desktop" or "mobile" — determines where to redirect back after OAuth */
   origin?: "desktop" | "mobile";
 }
@@ -58,7 +56,7 @@ function formatDate(iso: string): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function StravaConnect({ onGpxLoaded, gpxLoaded, origin = "desktop" }: StravaConnectProps) {
+export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnectProps) {
   const [state,      setState]      = useState<State>("idle");
   const [activities, setActivities] = useState<StravaActivity[]>([]);
   const [error,      setError]      = useState<string | null>(null);
@@ -84,9 +82,6 @@ export function StravaConnect({ onGpxLoaded, gpxLoaded, origin = "desktop" }: St
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // If GPX is already loaded from any source, hide entirely
-  if (gpxLoaded) return null;
 
   const fetchActivities = async () => {
     setState("loading_activities");
@@ -115,7 +110,8 @@ export function StravaConnect({ onGpxLoaded, gpxLoaded, origin = "desktop" }: St
       const d   = await res.json();
       if (!res.ok) throw new Error(d.error || "Failed to load activity data");
       await onGpxLoaded(d.gpx);
-      // Success — parent shows green checkmark, this component hides (gpxLoaded=true)
+      // Reset to idle — component stays visible so user can switch activity anytime
+      setState("idle");
     } catch (e: any) {
       setError(e.message ?? "Failed to load activity");
       setState("picker"); // go back to picker so user can choose another

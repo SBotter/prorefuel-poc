@@ -1161,7 +1161,6 @@ export default function ProRefuelPage() {
                     </label>
 
                     <StravaConnect
-                      gpxLoaded={activityPoints.length > 0}
                       onGpxLoaded={async (text) => { await processGpxText(text); }}
                       origin="desktop"
                     />

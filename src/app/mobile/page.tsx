@@ -741,7 +741,6 @@ export default function MobilePage() {
           </label>
 
           <StravaConnect
-            gpxLoaded={gpxLoaded}
             onGpxLoaded={async (text) => { await processGpxText(text); }}
             origin="mobile"
           />
