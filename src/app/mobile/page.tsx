@@ -21,6 +21,7 @@ import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }     from "@/lib/utils/units";
 import type { MobileCapabilities } from "@/lib/engine/mobile/mobileCapabilities";
 import type { RenderResult }   from "@/components/MapEngine";
+import { StravaConnect }        from "@/components/StravaConnect";
 
 // MobileCanvasRenderer — only loaded when user reaches the EXPERIENCE step
 const MobileCanvasRenderer = dynamic(
@@ -245,17 +246,9 @@ export default function MobilePage() {
     }
   }, []);
 
-  // ── GPX upload ──────────────────────────────────────────────────────────────
-  const handleGPXUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".gpx")) {
-      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}". Only .gpx files are accepted.`, "gpx_upload");
-      setGpxError("Only .gpx files are accepted."); e.target.value = ""; return;
-    }
+  // ── Core GPX processing — called by file upload AND Strava import ──────────
+  const processGpxText = async (text: string) => {
     setGpxError(null);
-
-    const text = await file.text();
     const xml  = new DOMParser().parseFromString(text, "text/xml");
     const creatorRaw = xml.documentElement.getAttribute("creator") || "";
 
@@ -276,14 +269,12 @@ export default function MobilePage() {
       pts = rtepts;
     }
     if (pts.length === 0) {
-      void trackError("NO_GPS_TRACK", `No GPS track found in file: "${file.name}".`, "gpx_upload");
+      void trackError("NO_GPS_TRACK", `No GPS track found in GPX.`, "gpx_upload");
       setGpxError("No GPS track found in this file."); return;
     }
 
     setActivityPoints(pts);
-    gpxNameRef.current = file.name;
 
-    // Extract activity name — handles Suunto format: "suuntoapp-Hiking-2026-05-18T..." → "Hiking"
     const allNameEls   = Array.from(xml.getElementsByTagName("name"));
     const rawTrackName = allNameEls.find(el => el.parentElement?.localName === "trk")?.textContent?.trim()
                       || allNameEls.find(el => el.textContent?.trim())?.textContent?.trim()
@@ -294,12 +285,10 @@ export default function MobilePage() {
       : rawTrackName || "YOUR RIDE";
     setActivityName(parsedName);
 
-    // Extract activity type (same 4-layer strategy as desktop)
     const activityType = xml.querySelector("trk > type")?.textContent?.trim()
       || (suuntoMatch ? suuntoMatch[1].replace(/([A-Z])/g, " $1").trim() : undefined)
       || undefined;
 
-    // Geocode first point for location
     let resolvedLocation: string | undefined;
     try {
       const { lat, lon } = pts[0];
@@ -317,7 +306,6 @@ export default function MobilePage() {
       }
     } catch { /* geocoding optional */ }
 
-    // Store GPX metrics for trackGpxSession (called after video processing succeeds)
     gpxMetricsRef.current = computeGpxMetrics(pts, {
       creator: creatorRaw || undefined,
       activityType,
@@ -326,6 +314,18 @@ export default function MobilePage() {
     });
 
     setGpxLoaded(true);
+  };
+
+  // ── GPX file upload ──────────────────────────────────────────────────────────
+  const handleGPXUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".gpx")) {
+      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}". Only .gpx files are accepted.`, "gpx_upload");
+      setGpxError("Only .gpx files are accepted."); e.target.value = ""; return;
+    }
+    gpxNameRef.current = file.name;
+    await processGpxText(await file.text());
   };
 
   // ── Video upload ────────────────────────────────────────────────────────────
@@ -739,6 +739,12 @@ export default function MobilePage() {
             </div>
             <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
           </label>
+
+          <StravaConnect
+            gpxLoaded={gpxLoaded}
+            onGpxLoaded={async (text) => { await processGpxText(text); }}
+            origin="mobile"
+          />
 
           {/* Step 2 — Video */}
           <label className={`flex items-center gap-4 p-4 rounded-2xl border-2 transition-all ${
