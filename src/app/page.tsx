@@ -26,6 +26,7 @@ import type { StoryPlan }       from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }      from "@/lib/utils/units";
 import type { GPXProfile }      from "@/lib/engine/GPXAnalyzer";
 import type { VideoGPSProfile } from "@/lib/engine/VideoGPSAnalyzer";
+import { StravaConnect }         from "@/components/StravaConnect";
 // Engine modules are loaded on-demand inside the upload handlers (never on mobile)
 
 // ── Instagram icon (inline SVG — lucide-react may not export it) ─────────
@@ -745,17 +746,9 @@ export default function ProRefuelPage() {
     }
   };
 
-  // ── GPX upload ────────────────────────────────────────────────────────
-  const handleGPXUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".gpx")) {
-      const ext = file.name.split(".").pop() ?? file.type;
-      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}" (.${ext}). Only .gpx files are accepted.`, "gpx_upload");
-      setGpxError("Only .gpx files are accepted. Export your activity as GPX from Strava, Garmin Connect, Wahoo, or Komoot."); e.target.value = ""; return;
-    }
+  // ── Core GPX text processing — called by file upload AND Strava import ──
+  const processGpxText = async (text: string) => {
     setGpxError(null);
-    const text = await file.text();
     const { GPXAnalyzer } = await import("@/lib/engine/GPXAnalyzer");
     const profile = GPXAnalyzer.analyze(text);
     setGpxProfile(profile);
@@ -800,7 +793,7 @@ export default function ProRefuelPage() {
               ? "This is a Suunto route file, not a recording. Please upload the track file (*-track.gpx) instead — it has timestamps and heart rate data."
               : "This file contains route waypoints but no timestamps. Please export your recorded activity (not a planned route)."
           );
-          e.target.value = ""; return;
+          return;
         }
         // rtept with timestamps → parse them the same way as trkpt
         pts = withTime.map(parsePoint);
@@ -810,13 +803,13 @@ export default function ProRefuelPage() {
     if (pts.length === 0) {
       const deviceHint = creatorRaw ? ` Device: "${creatorRaw}".` : "";
       void trackError("NO_GPS_TRACK", `No GPS track found in this file.${deviceHint}`, "gpx_upload");
-      setGpxError("No GPS track found in this file. Make sure your .gpx file contains valid location data."); e.target.value = ""; return;
+      setGpxError("No GPS track found in this file. Make sure your .gpx file contains valid location data."); return;
     }
     // Filter points with invalid timestamps (NaN) — can corrupt sync
     const validPts = pts.filter(p => isFinite(p.time) && p.time > 0);
     if (validPts.length === 0) {
       void trackError("NO_GPS_TRACK", `All points have invalid timestamps. Creator: "${creatorRaw}".`, "gpx_upload");
-      setGpxError("No GPS track found in this file. Make sure your .gpx file contains valid location data."); e.target.value = ""; return;
+      setGpxError("No GPS track found in this file. Make sure your .gpx file contains valid location data."); return;
     }
 
     setActivityPoints(validPts);
@@ -856,6 +849,18 @@ export default function ProRefuelPage() {
       } catch { /* geocoding is optional */ }
     }
     gpxMetricsRef.current = computeGpxMetrics(validPts, { creator: gpsDevice?.label ?? creatorRaw ?? undefined, activityType, activityName: trackName, activityLocation: resolvedLocation });
+  };
+
+  // ── GPX file upload ───────────────────────────────────────────────────────
+  const handleGPXUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".gpx")) {
+      const ext = file.name.split(".").pop() ?? file.type;
+      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}" (.${ext}). Only .gpx files are accepted.`, "gpx_upload");
+      setGpxError("Only .gpx files are accepted. Export your activity as GPX from Strava, Garmin Connect, Wahoo, or Komoot."); e.target.value = ""; return;
+    }
+    await processGpxText(await file.text());
   };
 
   const jsonLd = {
@@ -965,7 +970,7 @@ export default function ProRefuelPage() {
         </a>
         <div className="flex items-center gap-1 sm:gap-2">
           <a href="/how-it-works" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">How It Works</a>
-          <a href="/privacidade" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">Privacy</a>
+          <a href="/privacy" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">Privacy</a>
           <div className="ml-2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/15 border border-amber-500/30">
             <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
             <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Free Beta</span>
@@ -1154,6 +1159,11 @@ export default function ProRefuelPage() {
                       </div>
                       <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
                     </label>
+
+                    <StravaConnect
+                      onGpxLoaded={async (text) => { await processGpxText(text); }}
+                      origin="desktop"
+                    />
 
                     <label className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all cursor-pointer ${uploadError ? "border-red-500 bg-red-500/8" : highlights.length > 0 ? "border-green-500 bg-green-500/8" : activityPoints.length === 0 ? "border-zinc-800 bg-zinc-900/40 cursor-not-allowed opacity-60" : "border-amber-500 bg-amber-500/5 hover:bg-amber-500/10"}`}>
                       <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${highlights.length > 0 ? "bg-green-500 text-black" : activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" : "bg-amber-500 text-black shadow-lg"}`}>
@@ -1438,7 +1448,7 @@ export default function ProRefuelPage() {
               <span className="text-[11px] font-black uppercase tracking-widest">Contact · @LENS.video</span>
             </a>
             <a href="/how-it-works" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
-            <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
+            <a href="/privacy" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
           </div>
           <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">© {new Date().getFullYear()} ProRefuel.app</p>
         </div>

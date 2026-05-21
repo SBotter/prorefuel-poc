@@ -25,7 +25,7 @@ export default function PrivacyPage() {
           <Link href="/how-it-works" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">
             How It Works
           </Link>
-          <Link href="/privacidade" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-amber-400">
+          <Link href="/privacy" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-amber-400">
             Privacy
           </Link>
         </div>
@@ -55,13 +55,55 @@ export default function PrivacyPage() {
           <PrivacyCard
             icon="🔒"
             title="100% Local Processing"
-            body="All video and activity file processing happens directly on your device — inside your browser. This applies to both desktop (Chrome) and mobile (Safari on iPhone). No file is ever uploaded, transmitted, or sent to any server, anywhere."
+            body="All video processing happens directly on your device — inside your browser. Your GoPro, iPhone, or Android video and your manually uploaded GPX file never leave your machine. No file is uploaded, transmitted, or sent to any server, anywhere."
           />
           <PrivacyCard
             icon="🚫"
-            title="Zero Data Transmission"
-            body="Your GoPro videos, iPhone MOV files, GPX files, GPS coordinates, and location data never leave your machine. LENS has no way to access them remotely — and never will."
+            title="Zero Data Transmission — Your Files"
+            body="Your video files, GPS coordinates, location data, heart rate, and telemetry are processed entirely in your browser. LENS has no way to access them remotely — and never will. The only exception is the optional Strava integration below."
           />
+
+          {/* Strava integration card */}
+          <div className="flex gap-5 p-6 rounded-2xl bg-zinc-900/50 border border-[#FC4C02]/25 hover:border-[#FC4C02]/40 transition-colors">
+            <div className="shrink-0 mt-0.5 w-9 h-9 rounded-xl bg-[#FC4C02] flex items-center justify-center">
+              <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169"/></svg>
+            </div>
+            <div>
+              <h3 className="font-black text-white text-sm uppercase tracking-wide mb-2">Strava Integration — Optional</h3>
+              <p className="text-zinc-400 text-sm leading-relaxed mb-3">
+                If you choose to connect Strava, here is exactly what happens — and what does not:
+              </p>
+              <ul className="space-y-2 text-sm">
+                <li className="flex items-start gap-2">
+                  <span className="text-green-400 font-black shrink-0 mt-0.5">✓</span>
+                  <span className="text-zinc-300">You authorise LENS with <strong className="text-white">read-only</strong> scope (<code className="text-[#FC4C02]">activity:read</code>) — LENS cannot modify, post, or delete anything on your Strava account.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-green-400 font-black shrink-0 mt-0.5">✓</span>
+                  <span className="text-zinc-300">Your Strava access token is <strong className="text-white">encrypted</strong> (AES-256) and stored in an <strong className="text-white">httpOnly cookie</strong> on your browser — it is never stored in a database or transmitted to a third party.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-green-400 font-black shrink-0 mt-0.5">✓</span>
+                  <span className="text-zinc-300">When you pick an activity, LENS fetches the GPS data from Strava and processes it <strong className="text-white">in your browser</strong> — identically to a manual GPX upload. The GPS data is not stored on any server.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-green-400 font-black shrink-0 mt-0.5">✓</span>
+                  <span className="text-zinc-300">The cookie expires automatically after <strong className="text-white">6 hours</strong>. Closing the browser tab or session also clears the connection.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-red-400 font-black shrink-0 mt-0.5">✗</span>
+                  <span className="text-zinc-500">LENS does not store your Strava ID, athlete profile, activity list, or any Strava data beyond the single GPS stream used for the video you are generating.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-red-400 font-black shrink-0 mt-0.5">✗</span>
+                  <span className="text-zinc-500">LENS does not share your Strava data with any third party.</span>
+                </li>
+              </ul>
+              <p className="text-zinc-600 text-[11px] mt-3 leading-relaxed">
+                Strava integration is entirely optional. You can always use LENS by uploading a GPX file manually — no connection to Strava required.
+              </p>
+            </div>
+          </div>
           <PrivacyCard
             icon="🧠"
             title="No Personal Information Collected"
