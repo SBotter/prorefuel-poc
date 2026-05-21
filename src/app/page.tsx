@@ -476,6 +476,35 @@ export default function ProRefuelPage() {
       return;
     }
 
+    // ── HEVC / H.265 detection ────────────────────────────────────────────────
+    // Google Pixel records in H.265 (HEVC) by default in many modes (.TS, .MV,
+    // some 4K30 and higher). Chrome on Windows and Linux does NOT support H.265
+    // playback without an OS-level codec pack. MacOS Chrome 107+ supports it.
+    // We check via canPlayType() before starting heavy processing so the user
+    // gets an actionable message instead of a silent failure later.
+    if (isMP4) {
+      const testVid = document.createElement("video");
+      const canHevc = testVid.canPlayType('video/mp4; codecs="hvc1"') ||
+                      testVid.canPlayType('video/mp4; codecs="hev1"');
+      if (!canHevc && /^PXL_/i.test(file.name)) {
+        void trackError(
+          "WRONG_VIDEO_FORMAT",
+          `[${file.name}] HEVC/H.265 video — not supported in Chrome on Windows/Linux. ` +
+          `Fix: Camera app → Settings → Video quality → disable "Efficient video format" (HEVC) to record in H.264.`,
+          "video_upload",
+        );
+        setUploadError(
+          "⚠ H.265 (HEVC) video detected — not supported in Chrome on Windows.\n\n" +
+          "Your Google Pixel recorded this video in H.265 (HEVC), which Chrome on Windows cannot play.\n\n" +
+          "Fix on your Pixel:\n" +
+          "Camera app → Settings → Video quality → disable \"Efficient video format\" → record a new clip in H.264.\n\n" +
+          "Alternative: convert this video to H.264 with HandBrake (free) or any video converter before importing."
+        );
+        e.target.value = "";
+        return;
+      }
+    }
+
     setLoading(true);
     setUploadError(null);
     setProgress(0);
@@ -1173,7 +1202,7 @@ export default function ProRefuelPage() {
                         <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${uploadError ? "text-red-400" : activityPoints.length === 0 ? "text-zinc-600" : "text-amber-500"}`}>Step 02</span>
                         <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>Import Video</p>
                         {uploadError ? (
-                          <p className="text-[11px] font-semibold mt-1 text-red-400">{uploadError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>
+                          <p className="text-[11px] font-semibold mt-1 text-red-400 whitespace-pre-line leading-relaxed">{uploadError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>
                         ) : loading ? (
                           <p className="text-[11px] font-semibold mt-1 text-zinc-500">{statusMsg}</p>
                         ) : activityPoints.length === 0 ? (

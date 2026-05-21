@@ -382,7 +382,8 @@ export default function HowItWorksPage() {
           <Row label="Sync method" value="Recording timestamp from video metadata" neutral />
           <Row label="Minimum Android" value="Android 11+ (recommended) · Android 10 (minimum)" neutral />
           <Row label="Minimum RAM" value="4 GB+ (recommended) · 3 GB (minimum)" neutral />
-          <Row label="Browser" value="Chrome 114+ (Chrome auto-updates)" neutral />
+          <Row label="Browser" value="Chrome 94+ required (Chromium-based: Edge, Brave also work)" neutral />
+          <Row label="Required codec" value="H.264 (HEVC/H.265 not supported in Chrome on Windows)" neutral />
           <Row label="Audio in output (desktop)" value="Original video audio + cinematic music" good />
           <Row label="Audio in output (mobile)" value="Chrome 94+: coming soon · currently silent" neutral />
           <p className="text-[11px] text-zinc-500 mt-3 leading-relaxed">
@@ -391,6 +392,17 @@ export default function HowItWorksPage() {
           <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
             <strong className="text-zinc-300">Saves to Gallery:</strong> On Android, the video downloads to your Downloads folder. Your Gallery app automatically detects new videos there within seconds.
           </p>
+          <div className="mt-3 p-3 rounded-xl bg-amber-500/8 border border-amber-500/20">
+            <p className="text-amber-400 text-[11px] font-bold leading-relaxed">
+              <span className="font-black">⚠ Google Pixel — H.265 (HEVC) recording:</span> Pixel phones record in HEVC by default in several modes (4K, Top Shot, Night Sight). Chrome on Windows/Linux cannot play H.265 files. To fix:
+            </p>
+            <ol className="mt-2 space-y-1 text-zinc-400 text-[11px]">
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> Camera app → <strong className="text-white">Settings</strong> → <strong className="text-white">Video quality</strong></li>
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> Disable <strong className="text-white">&ldquo;Efficient video format&rdquo;</strong> — this forces H.264</li>
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> Record a new clip and use that file in LENS</li>
+            </ol>
+            <p className="text-zinc-600 text-[11px] mt-2">Alternative: convert the existing video to H.264 with HandBrake (free, cross-platform).</p>
+          </div>
         </DeviceCard>
 
         {/* ── GPS TRACKERS ──────────────────────────────────────────────────── */}
@@ -527,6 +539,19 @@ export default function HowItWorksPage() {
             <HelpItem error="GPS signal too weak — no valid fix was recorded." title="GPS signal too weak (GoPro)">
               Recording started before GPS lock. Wait until the GPS icon is <strong className="text-white">solid (not blinking)</strong> — 10–30 seconds outdoors.
             </HelpItem>
+            <HelpItem error="H.265 (HEVC) video detected — not supported in Chrome on Windows." title="Pixel phone — H.265 video (HEVC)">
+              Google Pixel records in H.265 (HEVC) by default in several modes — Top Shot (<code className="text-amber-400">.TS.mp4</code>), 4K30+, Night Sight, and Motion Video.
+              Chrome on <strong className="text-white">Windows and Linux cannot play H.265</strong> without an OS-level codec. Chrome on macOS supports it.
+              <br /><br />
+              <strong className="text-zinc-300">Fix on your Pixel:</strong>
+              <ol className="mt-2 space-y-1 list-none">
+                <ExportStep>Camera app → <strong className="text-white">Settings</strong> → <strong className="text-white">Video quality</strong></ExportStep>
+                <ExportStep>Disable <strong className="text-white">&ldquo;Efficient video format&rdquo;</strong> (the HEVC option)</ExportStep>
+                <ExportStep>Record a new clip — it will now use H.264, which LENS supports fully</ExportStep>
+              </ol>
+              <p className="mt-3 text-zinc-500">Already recorded in HEVC? Convert to H.264 with <strong className="text-white">HandBrake</strong> (free): File → Open Source → Presets → Fast 1080p30 → Start Encode.</p>
+            </HelpItem>
+
             <HelpItem error="This video and GPX file don't match." title="Video and GPX from different sessions">
               Timestamps don't overlap. Ensure the GPX is from the same activity during which the video was recorded. For iPhone/Android, verify your device clock is set to automatic.
             </HelpItem>

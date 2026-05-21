@@ -26,11 +26,15 @@ export interface CameraDetection {
 // ── Filename pattern registry ─────────────────────────────────────────────────
 // Each entry is [regex, CameraType]. First match wins.
 const FILENAME_PATTERNS: [RegExp, CameraType][] = [
-  [/^(GH|GX|GL|GOPR|GP)\d/i,           'gopro'],
-  [/^IMG_\d{4}\.(MOV|mov)$/,            'iphone'],
-  // Android / Samsung: YYYYMMDD_HHMMSS.mp4 or VID_YYYYMMDD_HHMMSS.mp4
-  [/^\d{8}_\d{6}\.(mp4|MP4)$/,          'android'],
-  [/^VID_\d{8}_\d{6}\.(mp4|MP4)$/,      'android'],
+  [/^(GH|GX|GL|GOPR|GP)\d/i,                    'gopro'],
+  [/^IMG_\d{4}\.(MOV|mov)$/,                     'iphone'],
+  // Google Pixel: PXL_YYYYMMDD_HHMMSSMMM[.SUFFIX].mp4
+  // Covers standard (.mp4), Top Shot (.TS.mp4), Motion (.MV.mp4),
+  // Portrait (.PORTRAIT.mp4), Panorama (.PANO.mp4), Night Sight (.NIGHT.mp4)
+  [/^PXL_\d{8}_\d+(\.[A-Z]+)*\.mp4$/i,           'android'],
+  // Samsung / generic Android: YYYYMMDD_HHMMSS.mp4 or VID_YYYYMMDD_HHMMSS.mp4
+  [/^\d{8}_\d{6}\.(mp4|MP4)$/,                   'android'],
+  [/^VID_\d{8}_\d{6}\.(mp4|MP4)$/,               'android'],
 ];
 
 // Extension-based fallback (lower confidence than filename pattern)
