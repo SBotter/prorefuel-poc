@@ -346,23 +346,22 @@ export default function MobilePage() {
     // of file size). Limits here protect against devices with constrained blob URL
     // handling or insufficient RAM for the concurrent encode+decode pipeline.
     //
-    // iOS 17+ / iPhone 11+ (A13, 2019) — Premium minimum:
-    //   → 2 GB: iOS 17 memory management + dedicated encode/decode pipelines.
-    // iOS 16.4–16.x / iPhone XR/XS — Warning zone:
-    //   → 500 MB: older Video Toolbox, less stable under memory pressure.
-    // Android 11+ / 4 GB RAM — Premium minimum:
-    //   → 1.5 GB: Android 11 media codec improvements + adequate RAM headroom.
-    // Android 10 / 3 GB RAM — Warning zone:
-    //   → 500 MB: conservative safety net for older OS and lower RAM.
+    // iOS 17+ / iPhone 11+ (A13, 2019):  2 GB
+    // iOS 16.4–16.x / older iPhones:     500 MB
+    // Android 11+ (most modern phones):  1.5 GB
+    // Android 10 (typical 4-6 GB RAM):   1 GB  ← raised from 500 MB (was too conservative)
+    // Android 9 and older:               500 MB
     const iosVer      = mobileCaps?.iosVersion     ?? 0;
     const androidVer  = mobileCaps?.androidVersion ?? 0;
     const isAndroid   = mobileCaps?.isAndroid ?? false;
 
     let MAX_VIDEO_MB: number;
     if (isAndroid) {
-      MAX_VIDEO_MB = androidVer >= 11 ? 1536 : 500;        // 1.5 GB / 500 MB
+      MAX_VIDEO_MB = androidVer >= 11 ? 1536          // 1.5 GB
+                   : androidVer >= 10 ? 1024          // 1 GB
+                   : 500;                             // 500 MB
     } else {
-      MAX_VIDEO_MB = iosVer >= 17 ? 2048 : 500;            // 2 GB / 500 MB
+      MAX_VIDEO_MB = iosVer >= 17 ? 2048 : 500;
     }
 
     if (file.size > MAX_VIDEO_MB * 1_048_576) {
