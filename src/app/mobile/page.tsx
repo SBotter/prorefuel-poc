@@ -234,6 +234,11 @@ export default function MobilePage() {
   const gpxMetricsRef          = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
   const videoMetricsRef        = useRef<Omit<VideoUploadInsert, "app_version" | "processing_session_id"> | null>(null);
 
+  // H.265 pre-transcoding state — only active when an HEVC video is detected
+  const [hevcConverting, setHevcConverting] = useState(false);
+  const [hevcProgress,   setHevcProgress]   = useState(0);
+  const [hevcStatus,     setHevcStatus]     = useState("");
+
   // ── Capability detection + debug mode ──────────────────────────────────────
   useEffect(() => {
     setMounted(true);
@@ -263,14 +268,22 @@ export default function MobilePage() {
       return { lat, lon, ele, time, ...(hr !== undefined && { hr }), ...(cad !== undefined && { cad }), ...(spd !== undefined && { speed: spd }) };
     };
 
-    let pts = Array.from(xml.querySelectorAll("trkpt")).map(parsePoint).filter(p => isFinite(p.time));
+    // Parse all trkpts (unfiltered) to detect timestamp-less files
+    const allTrkpts = Array.from(xml.querySelectorAll("trkpt")).map(parsePoint);
+    let pts = allTrkpts.filter(p => isFinite(p.time));
     if (pts.length === 0) {
       const rtepts = Array.from(xml.querySelectorAll("rtept")).map(parsePoint).filter(p => isFinite(p.time));
       pts = rtepts;
     }
     if (pts.length === 0) {
-      void trackError("NO_GPS_TRACK", `[${gpxNameRef.current || "gpx"}] No GPS track found — file has no <trkpt> or <rtept> elements, or all timestamps are invalid.`, "gpx_upload");
-      setGpxError("No GPS track found in this file."); return;
+      const isStravaNoTs = creatorRaw.toLowerCase().includes("strava") && allTrkpts.length > 0;
+      const msg = isStravaNoTs
+        ? "This Strava GPX has no timestamps — exported from a public URL which strips timing data.\n\nUse \"Import from Strava\" button (recommended) or log into Strava → activity → ⋯ → Export GPX."
+        : "No GPS track found in this file.";
+      void trackError("NO_GPS_TRACK",
+        `[${gpxNameRef.current || "gpx"}] ${isStravaNoTs ? `Strava public URL export — ${allTrkpts.length} points but all timestamps stripped.` : "No <trkpt>/<rtept> elements or all timestamps invalid."}`,
+        "gpx_upload");
+      setGpxError(msg); return;
     }
 
     setActivityPoints(pts);
@@ -375,9 +388,47 @@ export default function MobilePage() {
       return;
     }
 
+    // ── H.265 / HEVC pre-transcoding ─────────────────────────────────────────────
+    // Detect H.265 by reading the MP4 container headers (fast, no server needed).
+    // Only activates for HEVC files — GoPro, iPhone, and H.264 Android pass through
+    // immediately with zero overhead. The rest of the pipeline is unchanged.
+    let processFile = file;
+    try {
+      const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
+      const hevc = await isHevcVideo(file);
+      if (hevc) {
+        mlog("HEVC", `detected H.265 in ${file.name} (${(file.size/1024/1024).toFixed(1)}MB) — transcoding to H.264`);
+        setHevcConverting(true);
+        setHevcProgress(0);
+        setHevcStatus("Loading converter…");
+        processFile = await transcodeHevcToH264(file, (pct, status) => {
+          setHevcProgress(pct);
+          setHevcStatus(status);
+        });
+        mlog("HEVC", `transcoding done — new file size: ${(processFile.size/1024/1024).toFixed(1)}MB`);
+        setHevcConverting(false);
+        setHevcProgress(0);
+        setHevcStatus("");
+      }
+    } catch (err: any) {
+      setHevcConverting(false);
+      setHevcProgress(0);
+      setHevcStatus("");
+      mlog("HEVC", `transcoding failed: ${err.message}`);
+      void trackError("WRONG_VIDEO_FORMAT",
+        `[${file.name}] H.265 transcoding failed: ${err.message}`,
+        "video_upload");
+      setUploadError(
+        "Failed to convert H.265 video. " +
+        "Try recording in H.264: Camera app → Settings → Video quality → disable \"Efficient video format\"."
+      );
+      e.target.value = "";
+      return;
+    }
+
     setLoading(true); setUploadError(null); setProgress(0);
     mlogClear();
-    mlog("UPLOAD", `file=${file.name} size=${(file.size/1_048_576).toFixed(1)}MB`);
+    mlog("UPLOAD", `file=${processFile.name} size=${(processFile.size/1_048_576).toFixed(1)}MB`);
     const interval        = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
     const processingStart = Date.now();
     let   errorTracked    = false; // prevents double-tracking in the catch block
@@ -405,7 +456,7 @@ export default function MobilePage() {
       ]);
 
       setStatusMsg("Identifying camera…");
-      const cam = await CameraDetector.detect(file);
+      const cam = await CameraDetector.detect(processFile);
       camResult = cam; // expose to catch block for richer error messages
       const isIPhone  = cam.type === "iphone";
       const isAndroid = cam.type === "android";
@@ -421,8 +472,8 @@ export default function MobilePage() {
       if (isMobile) {
         setStatusMsg(isAndroid ? "Reading Android metadata…" : "Reading iPhone metadata…");
         const result = isAndroid
-          ? await AndroidEngineClient.extractTelemetry(file)
-          : await iPhoneEngineClient.extractTelemetry(file);
+          ? await AndroidEngineClient.extractTelemetry(processFile)
+          : await iPhoneEngineClient.extractTelemetry(processFile);
 
         // ── Critical: use ALL result fields, same as desktop page ──────────────
         vpts               = result.points as any[];
@@ -466,7 +517,7 @@ export default function MobilePage() {
         }
       } else {
         setStatusMsg("Extracting GoPro telemetry…");
-        const result = await GoProEngineClient.extractTelemetry(file);
+        const result = await GoProEngineClient.extractTelemetry(processFile);
         vpts             = result.points as any[];
         gpsVideoOffsetMs = result.gpsVideoOffsetMs;
         mlog("PARSE", `gopro vpts=${vpts.length} offset=${gpsVideoOffsetMs}ms`);
@@ -539,7 +590,7 @@ export default function MobilePage() {
       const resolvedCamera = cam.model || cam.make || null;
       const deviceOs       = isAndroid ? "Android" : (isMobile ? "iOS" : null);
       videoMetricsRef.current = {
-        filename: file.name, file_size_bytes: file.size, camera_model: resolvedCamera,
+        filename: processFile.name, file_size_bytes: processFile.size, camera_model: resolvedCamera,
         device_type: cam.type as any, device_make: cam.make || null,
         device_model: cam.model || null, device_os: deviceOs, device_os_version: null,
         has_gps: isMobile ? iPhoneHasStartGPS : vpts.length > 0, gps_points_count: vpts.length,
@@ -556,7 +607,7 @@ export default function MobilePage() {
       // Track processing session
       trackProcessingSession({
         status:              "success",
-        video_filename:      file.name,
+        video_filename:      processFile.name,
         video_duration_s:    videoDurationSec || null,
         camera_model:        resolvedCamera,
         device_type:         cam.type as "gopro" | "iphone" | "android" | "unknown",
@@ -590,7 +641,7 @@ export default function MobilePage() {
 
       setHighlights(segments);
       setStoryPlan(sp);
-      setVideoFile(file);
+      setVideoFile(processFile);
       setVideoLoaded(true);
       setStep("READY");
     } catch (err: any) {
@@ -653,6 +704,47 @@ export default function MobilePage() {
     videoMetricsRef.current        = null;
     setStep("UPLOAD");
   };
+
+  // ── Render: H.265 conversion overlay ────────────────────────────────────────
+  if (hevcConverting) {
+    return (
+      <div className="fixed inset-0 z-[200] bg-[#050505] flex flex-col items-center justify-center p-8 text-white">
+        {/* Brand */}
+        <div className="flex flex-col items-center mb-10">
+          <span className="text-4xl font-black tracking-tight leading-none mb-1">LENS</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Developed by</span>
+            <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[13px] opacity-50" />
+          </div>
+        </div>
+
+        {/* Icon */}
+        <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mb-6">
+          <svg viewBox="0 0 24 24" className="w-8 h-8 text-amber-400 animate-spin" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 12a9 9 0 11-6.219-8.56"/>
+          </svg>
+        </div>
+
+        <p className="text-lg font-black uppercase tracking-[0.15em] mb-1">Preparing Video</p>
+        <p className="text-amber-500 font-black text-sm uppercase tracking-widest mb-6 animate-pulse">
+          {hevcStatus || "Converting…"}
+        </p>
+
+        {/* Progress bar */}
+        <div className="w-full max-w-[280px] h-2 bg-zinc-800 rounded-full overflow-hidden mb-3">
+          <div
+            className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out"
+            style={{ width: `${hevcProgress}%` }}
+          />
+        </div>
+        <p className="text-zinc-500 font-black text-sm mb-8">{hevcProgress}%</p>
+
+        <p className="text-zinc-600 text-[11px] text-center max-w-[240px] leading-relaxed">
+          Your video uses H.265 encoding. Converting to a compatible format — this happens only once per clip.
+        </p>
+      </div>
+    );
+  }
 
   // ── Render: debug panel (overlay — shown on top of any state) ─────────────
   if (showDebug) return <DebugPanel />;

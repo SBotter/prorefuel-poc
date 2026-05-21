@@ -487,19 +487,25 @@ export default function ProRefuelPage() {
       const testVid = document.createElement("video");
       const canHevc = testVid.canPlayType('video/mp4; codecs="hvc1"') ||
                       testVid.canPlayType('video/mp4; codecs="hev1"');
-      if (!canHevc && /^PXL_/i.test(file.name)) {
+      // Detect likely HEVC Android files by filename pattern or lack of canPlay
+      // Google Pixel: PXL_*.mp4 — Samsung/generic Android: YYYYMMDD_HHMMSS.mp4, VID_*.mp4
+      const looksAndroid = /^PXL_/i.test(file.name) || /^\d{8}_\d{6}/i.test(file.name) || /^VID_\d/i.test(file.name);
+      if (!canHevc && looksAndroid) {
+        const isPixel   = /^PXL_/i.test(file.name);
+        const isSamsung = /^\d{8}_\d{6}/i.test(file.name);
+        const brand = isPixel ? "Google Pixel" : isSamsung ? "Samsung" : "Android";
         void trackError(
           "WRONG_VIDEO_FORMAT",
-          `[${file.name}] HEVC/H.265 video — not supported in Chrome on Windows/Linux. ` +
-          `Fix: Camera app → Settings → Video quality → disable "Efficient video format" (HEVC) to record in H.264.`,
+          `[${file.name}] HEVC/H.265 video from ${brand} — not supported in Chrome on Windows/Linux. ` +
+          `Fix: Camera app → Settings → Video quality → disable "Efficient video format" or select H.264.`,
           "video_upload",
         );
         setUploadError(
-          "⚠ H.265 (HEVC) video detected — not supported in Chrome on Windows.\n\n" +
-          "Your Google Pixel recorded this video in H.265 (HEVC), which Chrome on Windows cannot play.\n\n" +
-          "Fix on your Pixel:\n" +
-          "Camera app → Settings → Video quality → disable \"Efficient video format\" → record a new clip in H.264.\n\n" +
-          "Alternative: convert this video to H.264 with HandBrake (free) or any video converter before importing."
+          `⚠ H.265 (HEVC) video detected — not supported in Chrome on Windows.\n\n` +
+          `Your ${brand} device recorded this video in H.265 (HEVC), which Chrome on Windows cannot play.\n\n` +
+          `Fix on your ${brand}:\n` +
+          `Camera app → Settings → Video quality → disable "Efficient video format" → record a new clip in H.264.\n\n` +
+          `Alternative: convert to H.264 with HandBrake (free) before importing.`
         );
         e.target.value = "";
         return;
@@ -868,8 +874,16 @@ export default function ProRefuelPage() {
     // Filter points with invalid timestamps (NaN) — can corrupt sync
     const validPts = pts.filter(p => isFinite(p.time) && p.time > 0);
     if (validPts.length === 0) {
-      void trackError("NO_GPS_TRACK", `All points have invalid timestamps. Creator: "${creatorRaw}".`, "gpx_upload");
-      setGpxError("No GPS track found in this file. Make sure your .gpx file contains valid location data."); return;
+      // Detect the specific Strava public URL export — strips timestamps
+      const isStravaPublicExport = creatorRaw.toLowerCase().includes("strava") && pts.length > 0;
+      const msg = isStravaPublicExport
+        ? "This Strava GPX has no timestamps — it was exported from a public URL which strips timing data.\n\nHow to fix:\n• Use LENS's \"Import from Strava\" button to connect directly (recommended)\n• Or: log into Strava → open the activity → ⋯ menu → Export GPX"
+        : "No GPS track found in this file. Make sure your .gpx file contains valid location data.";
+      void trackError("NO_GPS_TRACK",
+        `All ${pts.length} points have no timestamps. Creator: "${creatorRaw}". ` +
+        `${isStravaPublicExport ? "Strava public URL export strips timestamps — use authenticated export or Strava API integration." : ""}`,
+        "gpx_upload");
+      setGpxError(msg); return;
     }
 
     setActivityPoints(validPts);
