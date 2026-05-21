@@ -924,7 +924,9 @@ const MapEngine = forwardRef(
 
           void trackError(
             isOOM ? "RENDER_OOM" : "RENDER_FAILED",
-            isOOM ? "Not enough memory to export." : "Export failed.",
+            isOOM
+              ? `Out of memory during FFmpeg transcode. Chunks recorded: ${chunks.length}, fallback blob: ${(fallbackBlob.size/1024/1024).toFixed(1)}MB. Browser: ${navigator.userAgent.slice(0,80)}. Cause: too many open tabs, large file, or insufficient RAM.`
+              : `FFmpeg export failed after ${((Date.now()-renderStart)/1000).toFixed(1)}s. Error: ${err?.message ?? "unknown"}. Chunks: ${chunks.length}.`,
             "render"
           );
           setRenderError({

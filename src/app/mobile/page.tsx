@@ -269,7 +269,7 @@ export default function MobilePage() {
       pts = rtepts;
     }
     if (pts.length === 0) {
-      void trackError("NO_GPS_TRACK", `No GPS track found in GPX.`, "gpx_upload");
+      void trackError("NO_GPS_TRACK", `[${gpxNameRef.current || "gpx"}] No GPS track found — file has no <trkpt> or <rtept> elements, or all timestamps are invalid.`, "gpx_upload");
       setGpxError("No GPS track found in this file."); return;
     }
 
@@ -335,7 +335,8 @@ export default function MobilePage() {
 
     const nameLc = file.name.toLowerCase();
     if (!nameLc.endsWith(".mp4") && !nameLc.endsWith(".mov")) {
-      void trackError("WRONG_VIDEO_FORMAT", `Unsupported format: "${file.name}"`, "video_upload");
+      const mobileExt = file.name.split(".").pop()?.toLowerCase() ?? "unknown";
+      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${mobileExt}" on mobile. LENS mobile accepts .mp4 and .mov only. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload");
       setUploadError("Only .mp4 and .mov files are supported."); e.target.value = ""; return;
     }
 
@@ -380,6 +381,7 @@ export default function MobilePage() {
     const interval        = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
     const processingStart = Date.now();
     let   errorTracked    = false; // prevents double-tracking in the catch block
+    let   camResult: { type: string; make: string; model: string } | null = null;
 
     try {
       const [
@@ -404,6 +406,7 @@ export default function MobilePage() {
 
       setStatusMsg("Identifying camera…");
       const cam = await CameraDetector.detect(file);
+      camResult = cam; // expose to catch block for richer error messages
       const isIPhone  = cam.type === "iphone";
       const isAndroid = cam.type === "android";
       const isMobile  = isIPhone || isAndroid;
@@ -488,7 +491,12 @@ export default function MobilePage() {
           const vidDate = new Date(vidT0).toLocaleDateString();
           const actDate = new Date(actT0).toLocaleDateString();
           mlog("ERROR", `no temporal overlap: video=${vidDate} gpx=${actDate}`);
-          void trackError("VIDEO_GPX_MISMATCH", `[${file.name}] Video date (${vidDate}) ≠ GPX date (${actDate}).`, "video_upload");
+          void trackError("VIDEO_GPX_MISMATCH",
+            `[${file.name}] Date mismatch — video: ${vidDate}, GPX: ${actDate}. ` +
+            `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""}. ` +
+            `Activity: "${activityName}". ` +
+            `Cause: different days/sessions, wrong files paired, or phone clock not on auto.`,
+            "video_upload");
           errorTracked = true;
           throw new Error(`This video and GPX are from different days — video: ${vidDate}, GPX: ${actDate}. Please use files from the same ride.`);
         }
@@ -591,7 +599,12 @@ export default function MobilePage() {
       setUploadError(err.message ?? "Processing failed.");
       if (!errorTracked) {
         // Unknown/unexpected error — not already tracked at its source
-        void trackError("NO_SCENES", `[${file.name}] ${err.message ?? "Processing failed"}`, "video_upload");
+        void trackError("NO_SCENES",
+        `[${file.name}] ${err.message ?? "Processing failed"}. ` +
+        `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""}. ` +
+        `GPX points: ${activityPoints.length}. ` +
+        `Activity: "${activityName}".`,
+        "video_upload");
       }
       trackProcessingSession({
         status: "error", video_filename: file.name, video_duration_s: null,

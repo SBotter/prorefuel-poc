@@ -470,7 +470,8 @@ export default function ProRefuelPage() {
     const isMP4  = nameLc.endsWith(".mp4") || file.type === "video/mp4";
     const isMOV  = nameLc.endsWith(".mov") || file.type === "video/quicktime";
     if (!isMP4 && !isMOV) {
-      void trackError("WRONG_VIDEO_FORMAT", "Unsupported file format. Only .mp4 and .mov are accepted.", "video_upload");
+      const ext = file.name.split(".").pop()?.toLowerCase() ?? "unknown";
+      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${ext}" — LENS only accepts .mp4 (GoPro/Android) and .mov (iPhone). File size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload");
       setUploadError("Unsupported format. Use GoPro .mp4, iPhone .mov, or Android .mp4.");
       e.target.value = "";
       return;
@@ -545,12 +546,16 @@ export default function ProRefuelPage() {
       if (!isMobile) setVideoFile(file);
 
       if (cameraDetection.type === "unknown") {
-        const detected = [cameraDetection.make, cameraDetection.model].filter(Boolean).join(" ") || "unknown";
-        void trackError("UNSUPPORTED_CAMERA", `Unsupported camera: "${detected}". File: "${file.name}".`, "video_upload", {
-          device_type: "unknown", device_make: cameraDetection.make || null,
-          device_model: cameraDetection.model || null,
-          file_extension: "." + (file.name.split(".").pop() ?? ""),
-        });
+        const detected = [cameraDetection.make, cameraDetection.model].filter(Boolean).join(" ") || "unrecognised";
+        const ext = "." + (file.name.split(".").pop()?.toLowerCase() ?? "");
+        void trackError("UNSUPPORTED_CAMERA",
+          `[${file.name}] Camera not supported — detected: "${detected}" (${ext}, ${(file.size/1024/1024).toFixed(1)}MB). ` +
+          `LENS supports: GoPro MP4, iPhone MOV, Android MP4 (Samsung/Pixel/etc). ` +
+          `This may be a DJI, Insta360, dashcam, or re-encoded file. ` +
+          `Re-encoding removes telemetry — always use original files.`,
+          "video_upload",
+          { device_type: "unknown", device_make: cameraDetection.make || null, device_model: cameraDetection.model || null, file_extension: ext },
+        );
         throw new Error("Unsupported camera. Supported: GoPro, iPhone, and Android phones.");
       }
 
@@ -621,7 +626,11 @@ export default function ProRefuelPage() {
       }
 
       if (!isMobile && vpts.length === 0) {
-        void trackError("NO_GPS_VIDEO", "No GPS data found in this video.", "video_upload");
+        void trackError("NO_GPS_VIDEO",
+          `[${file.name}] No GPS telemetry found. Camera: "${resolvedModel || cameraDetection.make || "unknown"}". ` +
+          `Likely causes: GPS not enabled before recording, GPS never locked (recording started indoors/immediately), ` +
+          `or file was re-encoded (removes GPMF track). Clip duration: ${(file.size/1024/1024).toFixed(1)}MB.`,
+          "video_upload");
         throw new Error("No GPS data found in this video. Make sure GPS is enabled on your GoPro and that you waited for GPS lock before starting recording.");
       }
 
@@ -630,7 +639,12 @@ export default function ProRefuelPage() {
         : VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
 
       if (!isMobile && (!videoProfile.hasGPSLock || videoProfile.postLockPoints === 0)) {
-        void trackError("GPS_WEAK", "GPS signal too weak — no valid fix was recorded.", "video_upload");
+        void trackError("GPS_WEAK",
+          `[${file.name}] GPS lock never acquired. Camera: "${resolvedModel || cameraDetection.make || "unknown"}". ` +
+          `Pre-lock points: ${videoProfile.preLockPoints}, post-lock points: ${videoProfile.postLockPoints}. ` +
+          `Lock latency: ${videoProfile.lockLatencySec?.toFixed(1) ?? "n/a"}s. ` +
+          `Recording must start AFTER the solid GPS icon (10-30s outdoors).`,
+          "video_upload");
         throw new Error("GPS signal too weak — no valid fix was recorded. Wait for the GPS lock icon on your GoPro before starting your activity.");
       }
 
@@ -698,7 +712,15 @@ export default function ProRefuelPage() {
           };
           const spatialOverlap = postLock.some((vp: any) => actSample.some(ap => hav(vp, ap) < 2_000));
           if (!spatialOverlap) {
-            void trackError("VIDEO_GPX_MISMATCH", "This video and GPX file don't match.", "video_upload");
+            const vidT0 = vpts.length > 0 ? new Date((vpts[0] as any).time).toISOString() : "n/a";
+            const actT0 = activityPoints.length > 0 ? new Date(activityPoints[0].time).toISOString() : "n/a";
+            void trackError("VIDEO_GPX_MISMATCH",
+              `[${file.name}] GPS positions don't overlap within 2km. ` +
+              `Video GPS start: ${vidT0}, Activity start: ${actT0}. ` +
+              `Camera: "${resolvedModel || cameraDetection.make || "unknown"}". ` +
+              `Activity: "${activityMeta.name}". ` +
+              `Cause: different rides/days, wrong file, or phone clock not synced to auto.`,
+              "video_upload");
             throw new Error("This video and GPX file don't match. Make sure both files are from the same ride.");
           }
         }
@@ -715,7 +737,16 @@ export default function ProRefuelPage() {
       const clockOffsetMs = 0;
       const segments = TelemetryCrossRef.findHighlights(activityPoints, vpts as any, unit, clockOffsetMs, gpsVideoOffsetMs);
       if (!segments || segments.length === 0) {
-        void trackError("NO_SCENES", "No highlight scenes detected.", "video_upload");
+        const actDurMin = activityPoints.length > 1
+          ? ((activityPoints[activityPoints.length-1].time - activityPoints[0].time) / 60_000).toFixed(0)
+          : "?";
+        void trackError("NO_SCENES",
+          `[${file.name}] No highlight scenes found. ` +
+          `Camera: "${resolvedModel || cameraDetection.make || "unknown"}". ` +
+          `Activity: "${activityMeta.name}" (${actDurMin} min, ${activityPoints.length} GPX points). ` +
+          `Video GPS points: ${vpts.length}. ` +
+          `Causes: activity too flat/short, video window doesn't overlap activity, or insufficient speed/elevation variation.`,
+          "video_upload");
         throw new Error("No highlight scenes detected. Your activity may be too short or lack speed and elevation variation.");
       }
 
