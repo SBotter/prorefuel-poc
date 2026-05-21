@@ -57,10 +57,13 @@ function formatDate(iso: string): string {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnectProps) {
-  const [state,      setState]      = useState<State>("idle");
-  const [activities, setActivities] = useState<StravaActivity[]>([]);
-  const [error,      setError]      = useState<string | null>(null);
-  const [loadingId,  setLoadingId]  = useState<number | null>(null);
+  const [state,        setState]        = useState<State>("idle");
+  const [activities,   setActivities]   = useState<StravaActivity[]>([]);
+  const [error,        setError]        = useState<string | null>(null);
+  const [loadingId,    setLoadingId]    = useState<number | null>(null);
+  const [page,         setPage]         = useState(1);
+  const [loadingMore,  setLoadingMore]  = useState(false);
+  const [hasMore,      setHasMore]      = useState(true);
 
   // Detect return from OAuth (?strava=connected) and auto-fetch activities
   useEffect(() => {
@@ -86,18 +89,42 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
   const fetchActivities = async () => {
     setState("loading_activities");
     setError(null);
+    setPage(1);
+    setHasMore(true);
     try {
-      const res = await fetch("/api/strava/activities");
+      const res = await fetch("/api/strava/activities?page=1");
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.error || "Failed to fetch activities");
       }
       const data: StravaActivity[] = await res.json();
       setActivities(data);
+      setHasMore(data.length === 10);
       setState("picker");
     } catch (e: any) {
       setError(e.message ?? "Failed to connect to Strava");
       setState("error");
+    }
+  };
+
+  const loadMore = async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    const nextPage = page + 1;
+    try {
+      const res = await fetch(`/api/strava/activities?page=${nextPage}`);
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Failed to load more");
+      }
+      const data: StravaActivity[] = await res.json();
+      setActivities(prev => [...prev, ...data]);
+      setPage(nextPage);
+      setHasMore(data.length === 10);
+    } catch (e: any) {
+      setError(e.message ?? "Failed to load more activities");
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -252,8 +279,24 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
             )}
           </div>
 
+          {/* Load more */}
+          {hasMore && (
+            <div className="px-4 py-2.5 border-t border-zinc-800/60">
+              <button
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="w-full text-[11px] font-black uppercase tracking-wider text-zinc-400 hover:text-white transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {loadingMore
+                  ? <><div className="w-3 h-3 border-2 border-zinc-500 border-t-transparent rounded-full animate-spin" /> Loading…</>
+                  : "Load 10 more ↓"
+                }
+              </button>
+            </div>
+          )}
+
           {/* Footer: use manual upload */}
-          <div className="px-4 py-2.5 border-t border-zinc-800/60">
+          <div className={`px-4 py-2.5 ${hasMore ? "" : "border-t border-zinc-800/60"}`}>
             <button
               onClick={reset}
               className="text-[11px] font-black uppercase tracking-wider text-zinc-500 hover:text-zinc-300 transition-colors"

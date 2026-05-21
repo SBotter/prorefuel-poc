@@ -33,9 +33,9 @@ async function stravaFetch(path: string, accessToken: string): Promise<Response>
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export async function fetchActivities(accessToken: string): Promise<StravaActivity[]> {
+export async function fetchActivities(accessToken: string, page = 1): Promise<StravaActivity[]> {
   const res = await stravaFetch(
-    "/athlete/activities?per_page=10&page=1",
+    `/athlete/activities?per_page=10&page=${page}`,
     accessToken,
   );
   if (!res.ok) {
