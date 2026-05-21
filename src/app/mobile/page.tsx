@@ -378,8 +378,9 @@ export default function MobilePage() {
     setLoading(true); setUploadError(null); setProgress(0);
     mlogClear();
     mlog("UPLOAD", `file=${file.name} size=${(file.size/1_048_576).toFixed(1)}MB`);
-    const interval       = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
+    const interval        = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
     const processingStart = Date.now();
+    let   errorTracked    = false; // prevents double-tracking in the catch block
 
     try {
       const [
@@ -488,7 +489,9 @@ export default function MobilePage() {
           const vidDate = new Date(vidT0).toLocaleDateString();
           const actDate = new Date(actT0).toLocaleDateString();
           mlog("ERROR", `no temporal overlap: video=${vidDate} gpx=${actDate}`);
-          throw new Error(`Video (${vidDate}) and GPX (${actDate}) appear to be from different days. Please use files from the same ride.`);
+          void trackError("VIDEO_GPX_MISMATCH", `[${file.name}] Video date (${vidDate}) ≠ GPX date (${actDate}).`, "video_upload");
+          errorTracked = true;
+          throw new Error(`This video and GPX are from different days — video: ${vidDate}, GPX: ${actDate}. Please use files from the same ride.`);
         }
       }
 
@@ -508,6 +511,7 @@ export default function MobilePage() {
         const diffMin = Math.round((vidT0 - actT0) / 60_000);
         mlog("ERROR", `no highlights. vpts[0].time=${new Date(vidT0).toISOString()} actPts[0].time=${new Date(actT0).toISOString()} diff=${diffMin}min`);
         void trackError("NO_SCENES", `No highlight scenes detected. Time diff: ${Math.abs(diffMin)} min. File: "${file.name}".`, "video_upload");
+        errorTracked = true;
         throw new Error(`No highlight scenes detected. Video and GPX may not overlap in time (diff: ${Math.abs(diffMin)} min). Make sure both files are from the same ride.`);
       }
 
@@ -586,7 +590,10 @@ export default function MobilePage() {
       clearInterval(interval);
       mlog("ERROR", `upload failed: ${err.message}`);
       setUploadError(err.message ?? "Processing failed.");
-      void trackError("NO_SCENES", `[${file.name}] ${err.message ?? "Processing failed"}`, "video_upload");
+      if (!errorTracked) {
+        // Unknown/unexpected error — not already tracked at its source
+        void trackError("NO_SCENES", `[${file.name}] ${err.message ?? "Processing failed"}`, "video_upload");
+      }
       trackProcessingSession({
         status: "error", video_filename: file.name, video_duration_s: null,
         camera_model: null, activity_name: activityName || null,
