@@ -129,7 +129,7 @@ function buildGpx(activity: StravaActivity, streams: StravaStream[]): string {
   const sportType = (activity.sport_type || activity.type || "cycling").toLowerCase();
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="LENS by ProRefuel — Strava import"
+<gpx version="1.1" creator="Strava"
      xmlns="http://www.topografix.com/GPX/1/1"
      xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
   <trk>
