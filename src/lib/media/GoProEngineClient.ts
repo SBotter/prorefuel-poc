@@ -55,7 +55,10 @@ export class GoProEngineClient {
         } else {
           const errMsg: string = e.data.error ?? "Worker returned no data.";
           console.warn("[GoProEngineClient] Worker error:", errMsg);
-          void trackError("WORKER_ERROR", `[${file.name}] ${errMsg}`, "worker");
+          void trackError("WORKER_ERROR", `[${file.name}] ${errMsg}`, "worker", {
+            device_type:    "gopro",
+            file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "mp4"),
+          });
           reject(new Error(errMsg));
         }
 
@@ -63,9 +66,12 @@ export class GoProEngineClient {
       };
 
       worker.onerror = (e) => {
-        const errMsg = e.message ?? "Unknown worker crash.";
-        console.error("[GoProEngineClient] Worker crash:", errMsg);
-        void trackError("WORKER_ERROR", `[${file.name}] Worker crash: ${errMsg}`, "worker");
+        const errMsg = e.message || e.error?.message || "Unknown worker crash.";
+        console.error("[GoProEngineClient] Worker crash:", { message: e.message, filename: e.filename, lineno: e.lineno, error: e.error });
+        void trackError("WORKER_ERROR", `[${file.name}] Worker crash: ${errMsg}`, "worker", {
+          device_type:    "gopro",
+          file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "mp4"),
+        });
         reject(new Error("Failed to read GoPro telemetry. Make sure the file is a valid, unmodified GoPro MP4."));
         worker.terminate();
       };

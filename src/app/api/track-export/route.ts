@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import type { VideoExportInsert } from "@/lib/supabase/types";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    const record: VideoExportInsert = {
+    const record: Record<string, unknown> = {
+      // Core columns — always present in schema
       processing_session_id: body.processing_session_id ?? null,
       reached_experience:    body.reached_experience    ?? false,
       clicked_record:        body.clicked_record        ?? false,
-      completed_download:    body.completed_download     ?? false,
+      completed_download:    body.completed_download    ?? false,
       time_on_ready_ms:      body.time_on_ready_ms      ?? null,
       time_to_download_ms:   body.time_to_download_ms   ?? null,
       render_duration_ms:    body.render_duration_ms    ?? null,
@@ -21,6 +21,10 @@ export async function POST(req: NextRequest) {
       output_duration_s:     body.output_duration_s     ?? null,
       app_version:           body.app_version           ?? null,
     };
+
+    // Optional extended columns — only included when non-null
+    // Requires: ALTER TABLE video_exports ADD COLUMN IF NOT EXISTS download_action text;
+    if (body.download_action != null) record.download_action = body.download_action;
 
     const supabase = createServerClient();
     const { error } = await supabase.from("video_exports").insert(record);

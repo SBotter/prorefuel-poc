@@ -120,8 +120,6 @@ export function MobileCanvasRenderer({
     // Pre-load images (same as desktop MapEngine)
     const logoImg = new Image();
     logoImg.src = "/prorefuel_logo.png";
-    const lensCircleImg = new Image();
-    lensCircleImg.src = "/LENS_circle.png";
     let recorder: MobileRecorder | null = null;
 
     // ── Unit config ─────────────────────────────────────────────────────────
@@ -539,11 +537,11 @@ export function MobileCanvasRenderer({
       // Layer 5: secondary metrics — distance, HR, time
       const metY = G_CY + G_R + Math.round(H * 0.04);
       sh(c, "rgba(0,0,0,1)", 25);
-      c.font = `900 ${Math.round(W * 0.11)}px sans-serif`;
+      c.font = `900 ${Math.round(W * 0.075)}px sans-serif`;
       c.fillStyle = "#fff"; c.textAlign = "left";
       c.fillText(distVal, W * 0.04, metY);
       const dw = c.measureText(distVal).width;
-      c.font = `700 ${Math.round(W * 0.035)}px sans-serif`;
+      c.font = `700 ${Math.round(W * 0.026)}px sans-serif`;
       c.fillStyle = "#f59e0b";
       c.fillText(` ${DIST_UNIT}`, W * 0.04 + dw, metY - 4);
 
@@ -932,15 +930,24 @@ export function MobileCanvasRenderer({
       c.restore();
     }
 
-    // ── LENS watermark — LENS_circle.png top-right, identical to desktop ─────────
+    // ── LENS watermark — black circle with LENS text, top-right corner ───────────
     function drawWatermark(c: CanvasRenderingContext2D) {
-      if (lensCircleImg.complete && lensCircleImg.naturalWidth > 0) {
-        const wmSize = Math.round(W * 0.079);
-        c.save();
-        c.globalAlpha = 0.30;
-        c.drawImage(lensCircleImg, W - wmSize - 5, 5, wmSize, wmSize);
-        c.restore();
-      }
+      const wmSize = Math.round(W * 0.079);
+      const wmR    = wmSize / 2;
+      const wmCX   = W - wmSize - 5 + wmR;
+      const wmCY   = 5 + wmR;
+      c.save();
+      c.globalAlpha = 0.30;
+      c.beginPath();
+      c.arc(wmCX, wmCY, wmR, 0, Math.PI * 2);
+      c.fillStyle = "#000000";
+      c.fill();
+      c.fillStyle = "#ffffff";
+      c.font = `900 ${Math.round(wmSize * 0.30)}px sans-serif`;
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillText("LENS", wmCX, wmCY);
+      c.restore();
     }
 
     // ── Master draw function (called each frame) ───────────────────────────────
@@ -1215,14 +1222,11 @@ export function MobileCanvasRenderer({
 
       if (isAndroid) {
         // ── Android: direct download → /sdcard/Downloads → Media Scanner → Gallery ──
-        // navigator.share() on Android opens a general share sheet (no "Save to Gallery").
-        // A direct <a download> saves to Downloads; the Android Media Scanner detects
-        // new MP4 files there and automatically adds them to the Gallery app.
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a"); a.href = url; a.download = filename;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 5000);
-        onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+        onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
         return;
       }
 
@@ -1230,7 +1234,7 @@ export function MobileCanvasRenderer({
       if (typeof navigator.share === "function" && navigator.canShare?.({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: "LENS Video" });
-          onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+          onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
           return;
         } catch (e: any) {
           if (e?.name === "AbortError") return; // user dismissed — stay on screen
@@ -1243,11 +1247,21 @@ export function MobileCanvasRenderer({
       const a = document.createElement("a"); a.href = url; a.download = filename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-      onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+      onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
     };
 
     return (
       <div className="fixed inset-0 z-[100] bg-[#050505] flex flex-col items-center justify-center p-6">
+
+        {/* Brand header */}
+        <div className="absolute top-0 left-0 right-0 flex flex-col items-center pt-10 pb-3 pointer-events-none">
+          <span className="text-4xl font-black tracking-tight text-white leading-none">LENS</span>
+          <div className="flex items-center gap-1.5 mt-1">
+            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Developed by</span>
+            <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[14px] opacity-55" />
+          </div>
+        </div>
+
         {/* Success icon */}
         <div className="w-16 h-16 rounded-2xl bg-green-500/15 border border-green-500/40 flex items-center justify-center mb-5">
           <svg viewBox="0 0 24 24" className="w-8 h-8 text-green-400" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1260,21 +1274,59 @@ export function MobileCanvasRenderer({
           {(blob.size / 1_048_576).toFixed(1)} MB · MP4 · {W}×{H}
         </p>
 
-        {/* Save button — label adapts to platform */}
-        <button
-          onClick={handleSave}
-          className="w-full max-w-[280px] py-5 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-[0.3em] text-sm shadow-[0_10px_30px_rgba(245,158,11,0.35)] active:scale-[0.97] transition-transform flex items-center justify-center gap-3"
-        >
-          <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><polyline points="21 15 16 10 5 21"/>
-          </svg>
-          {isAndroid ? "Save to Gallery" : "Save to Photos"}
-        </button>
+        {/* Buttons */}
+        <div className="w-full max-w-[280px] flex flex-col gap-3">
 
-        <p className="text-zinc-500 text-[11px] mt-5 text-center max-w-[220px] leading-relaxed">
+          {/* Primary: Save to device */}
+          <button
+            onClick={handleSave}
+            className="w-full py-5 rounded-2xl bg-amber-500 text-black font-black uppercase tracking-[0.3em] text-sm shadow-[0_10px_30px_rgba(245,158,11,0.35)] active:scale-[0.97] transition-transform flex items-center justify-center gap-3"
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><polyline points="21 15 16 10 5 21"/>
+            </svg>
+            {isAndroid ? "Save to Gallery" : "Save to Photos"}
+          </button>
+
+          {/* Secondary: Share (Instagram Stories via native share sheet) */}
+          {typeof navigator !== "undefined" && typeof navigator.share === "function" && (
+            <button
+              onClick={async () => {
+                const file = new File([blob], filename, { type: "video/mp4" });
+                if (navigator.canShare?.({ files: [file] })) {
+                  try {
+                    await navigator.share({ files: [file], title: "LENS Video" });
+                    // Track share action — triggers state reset same as save
+                    onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "share" });
+                  } catch (e: any) {
+                    if (e?.name !== "AbortError") console.warn("Share failed:", e);
+                  }
+                }
+              }}
+              className="w-full py-4 rounded-2xl border border-zinc-700 bg-zinc-900 text-white font-black uppercase tracking-[0.25em] text-sm active:scale-[0.97] transition-transform flex items-center justify-center gap-3"
+            >
+              {/* Instagram gradient icon */}
+              <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="url(#ig-grad)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <defs>
+                  <linearGradient id="ig-grad" x1="0" y1="24" x2="24" y2="0" gradientUnits="userSpaceOnUse">
+                    <stop stopColor="#f9ce34"/>
+                    <stop offset="0.35" stopColor="#ee2a7b"/>
+                    <stop offset="1" stopColor="#6228d7"/>
+                  </linearGradient>
+                </defs>
+                <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/>
+                <circle cx="12" cy="12" r="4"/>
+                <circle cx="17.5" cy="6.5" r="1" fill="#ee2a7b" stroke="none"/>
+              </svg>
+              Share to Instagram
+            </button>
+          )}
+        </div>
+
+        <p className="text-zinc-600 text-[10px] mt-4 text-center max-w-[220px] leading-relaxed">
           {isAndroid
-            ? "Video saves to your Downloads folder and appears in your Gallery automatically."
-            : "Tap to open the share sheet and save to your Camera Roll."}
+            ? "Save to gallery, or share directly via your apps."
+            : "Save to Camera Roll, or share via the sheet — select Instagram to post as a Story."}
         </p>
       </div>
     );
@@ -1283,6 +1335,15 @@ export function MobileCanvasRenderer({
   // ── State: encoding in progress ─────────────────────────────────────────────
   return (
     <div className="fixed inset-0 z-[100] bg-[#050505] flex flex-col items-center justify-center p-4">
+
+      {/* Brand header */}
+      <div className="absolute top-0 left-0 right-0 flex flex-col items-center pt-10 pb-3 pointer-events-none">
+        <span className="text-4xl font-black tracking-tight text-white leading-none">LENS</span>
+        <div className="flex items-center gap-1.5 mt-1">
+          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Developed by</span>
+          <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[14px] opacity-55" />
+        </div>
+      </div>
 
       <div className="text-white text-lg font-black uppercase tracking-[0.2em] mb-0.5 text-center">
         Creating Your Video

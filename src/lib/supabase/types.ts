@@ -154,6 +154,10 @@ export interface VideoExport {
   output_size_bytes: number | null;
   output_duration_s: number | null;
 
+  // Mobile action: which button the user tapped after the video was ready
+  // Requires column: ALTER TABLE video_exports ADD COLUMN download_action text;
+  download_action?: "save" | "share" | null;
+
   app_version: string | null;
 }
 

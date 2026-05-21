@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import type { GpxSessionInsert } from "@/lib/supabase/types";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    const session: GpxSessionInsert = {
+    const record: Record<string, unknown> = {
+      // Core columns — always present in schema
       creator:               body.creator               ?? null,
-      gps_device_brand:      body.gps_device_brand      ?? null,
-      gps_device_model:      body.gps_device_model      ?? null,
       activity_type:         body.activity_type         ?? null,
       activity_name:         body.activity_name         ?? null,
       activity_start_at:     body.activity_start_at     ?? null,
@@ -37,8 +35,18 @@ export async function POST(req: NextRequest) {
       app_version:           body.app_version           ?? null,
     };
 
+    // Optional extended columns — only included when non-null
+    // Requires: ALTER TABLE gpx_sessions ADD COLUMN IF NOT EXISTS <col> text;
+    const optional: Record<string, unknown> = {
+      gps_device_brand: body.gps_device_brand,
+      gps_device_model: body.gps_device_model,
+    };
+    for (const [k, v] of Object.entries(optional)) {
+      if (v != null) record[k] = v;
+    }
+
     const supabase = createServerClient();
-    const { error } = await supabase.from("gpx_sessions").insert(session);
+    const { error } = await supabase.from("gpx_sessions").insert(record);
 
     if (error) {
       console.error("[track-gpx] Supabase insert error:", error.message);

@@ -1,22 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import type { VideoUploadInsert } from "@/lib/supabase/types";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    const record: VideoUploadInsert = {
+    const record: Record<string, unknown> = {
+      // Core columns — always present in schema
       processing_session_id:    body.processing_session_id    ?? null,
       filename:                 body.filename                 ?? null,
       file_size_bytes:          body.file_size_bytes          ?? null,
       camera_model:             body.camera_model             ?? null,
-      // Recording device details
-      device_type:              body.device_type              ?? null,
-      device_make:              body.device_make              ?? null,
-      device_model:             body.device_model             ?? null,
-      device_os:                body.device_os                ?? null,
-      device_os_version:        body.device_os_version        ?? null,
       has_gps:                  body.has_gps                  ?? null,
       gps_points_count:         body.gps_points_count         ?? null,
       gps_duration_s:           body.gps_duration_s           ?? null,
@@ -36,6 +30,19 @@ export async function POST(req: NextRequest) {
       fix_pct_3d:               body.fix_pct_3d               ?? null,
       app_version:              body.app_version              ?? null,
     };
+
+    // Optional extended columns — only included when non-null
+    // Requires: ALTER TABLE video_uploads ADD COLUMN IF NOT EXISTS <col> ...
+    const optional: Record<string, unknown> = {
+      device_type:       body.device_type,
+      device_make:       body.device_make,
+      device_model:      body.device_model,
+      device_os:         body.device_os,
+      device_os_version: body.device_os_version,
+    };
+    for (const [k, v] of Object.entries(optional)) {
+      if (v != null) record[k] = v;
+    }
 
     const supabase = createServerClient();
     const { error } = await supabase.from("video_uploads").insert(record);

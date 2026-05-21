@@ -61,7 +61,12 @@ export async function getFunnel() {
   const client = db();
   const [uploads, reached, downloaded] = await Promise.all([
     client.from("processing_sessions").select("id", { count: "exact", head: true }),
-    client.from("video_exports").select("id", { count: "exact", head: true }).eq("reached_experience", true),
+    // Count only the "click Generate" record (completed_download=false) to avoid
+    // double-counting: each completed download creates 2 records with reached_experience=true
+    // (one at click time, one at completion). Counting the click record gives unique sessions.
+    client.from("video_exports").select("id", { count: "exact", head: true })
+      .eq("clicked_record", true)
+      .eq("completed_download", false),
     client.from("video_exports").select("id", { count: "exact", head: true }).eq("completed_download", true),
   ]);
 
@@ -118,24 +123,23 @@ export async function getCameraModels() {
 }
 
 export async function getGpsDevices() {
-  // Prefer gps_device_model when available (direct device export), fall back to brand/creator
+  // Fetch all sessions — filter empty/null in JS to avoid missing entries
+  // stored as empty string "" (not SQL NULL) when GPX has no creator attribute.
   const { data } = await db()
     .from("gpx_sessions")
-    .select("creator, gps_device_brand, gps_device_model")
-    .not("creator", "is", null);
+    .select("creator, gps_device_brand, gps_device_model");
 
-  // Key priority: "Brand Model" when model known, "Brand (via app)" when app-only, raw creator fallback
   const map: Record<string, number> = {};
   (data ?? []).forEach((r) => {
-    let key: string;
+    let key: string | null = null;
     if (r.gps_device_brand && r.gps_device_model) {
       key = `${r.gps_device_brand} ${r.gps_device_model}`;   // e.g. "Garmin Edge 530"
     } else if (r.gps_device_brand) {
       key = r.gps_device_brand;                               // e.g. "Garmin"
-    } else {
-      key = r.creator!;                                       // raw fallback for old data
+    } else if (r.creator?.trim()) {
+      key = r.creator.trim();                                 // raw creator fallback
     }
-    map[key] = (map[key] ?? 0) + 1;
+    if (key) map[key] = (map[key] ?? 0) + 1;                 // skip null/empty — no info to show
   });
   return Object.entries(map)
     .sort((a, b) => b[1] - a[1])
@@ -355,16 +359,20 @@ export async function getErrorsOverTime() {
 export async function getRecentErrors() {
   const { data } = await db()
     .from("error_events")
-    .select("created_at, error_code, error_message, error_source, app_version")
+    .select("created_at, error_code, error_message, error_source, app_version, device_type, device_make, device_model, file_extension")
     .order("created_at", { ascending: false })
     .limit(50);
 
   return (data ?? []).map((r) => ({
-    date:    r.created_at,
-    code:    r.error_code,
-    message: r.error_message ?? "",
-    source:  r.error_source ?? "",
-    version: r.app_version ?? "",
+    date:           r.created_at,
+    code:           r.error_code,
+    message:        r.error_message ?? "",
+    source:         r.error_source ?? "",
+    version:        r.app_version ?? "",
+    device_type:    (r as any).device_type    ?? null,
+    device_make:    (r as any).device_make    ?? null,
+    device_model:   (r as any).device_model   ?? null,
+    file_extension: (r as any).file_extension ?? null,
   }));
 }
 
@@ -395,6 +403,43 @@ export async function getErrorKPIs() {
     totalSessions, successCount, errorCount,
     successRate, errorSessionRate,
   };
+}
+
+// ── Mobile download action: Save vs Share to Instagram ───────────────────────
+// Requires column: ALTER TABLE video_exports ADD COLUMN download_action text;
+
+export async function getMobileDownloadActions() {
+  const { data } = await db()
+    .from("video_exports")
+    .select("download_action")
+    .eq("completed_download", true)
+    .not("download_action", "is", null);
+
+  const map: Record<string, number> = { save: 0, share: 0 };
+  (data ?? []).forEach(r => {
+    const k = r.download_action as string;
+    if (k === "save" || k === "share") map[k]++;
+  });
+
+  return [
+    { name: "Save to Photos / Gallery", value: map.save },
+    { name: "Share to Instagram",       value: map.share },
+  ].filter(d => d.value > 0);
+}
+
+// ── Mobile OS breakdown (iOS vs Android) ─────────────────────────────────────
+
+export async function getMobileOsBreakdown() {
+  const { data } = await db()
+    .from("processing_sessions")
+    .select("device_os")
+    .not("device_os", "is", null);
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r) => { if (r.device_os) map[r.device_os] = (map[r.device_os] ?? 0) + 1; });
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value]) => ({ name, value }));
 }
 
 // ── Device type breakdown (gopro / iphone / android / unknown) ───────────────
@@ -475,6 +520,130 @@ export async function getProcessingTimeBuckets() {
   return Object.entries(buckets).map(([name, value]) => ({ name, value }));
 }
 
+// ── Content volume stats (for investor KPIs) ──────────────────────────────────
+
+export async function getContentStats() {
+  const [gpxRes, sessionRes, exportRes] = await Promise.all([
+    db().from("gpx_sessions").select("distance_m, elevation_gain_m, duration_s"),
+    db().from("processing_sessions").select("video_duration_s, scenes_count").eq("status", "success"),
+    db().from("video_exports").select("output_duration_s, output_size_bytes").eq("completed_download", true),
+  ]);
+
+  const gpxRows     = gpxRes.data    ?? [];
+  const sessionRows = sessionRes.data ?? [];
+  const exportRows  = exportRes.data  ?? [];
+
+  const totalKm        = Math.round(gpxRows.reduce((s, r) => s + (r.distance_m ?? 0), 0) / 1000);
+  const totalElevM     = Math.round(gpxRows.reduce((s, r) => s + (r.elevation_gain_m ?? 0), 0));
+  const totalActivityH = Math.round(gpxRows.reduce((s, r) => s + (r.duration_s ?? 0), 0) / 3600 * 10) / 10;
+  // Cap at 12h (43200s) to filter historical rows that were stored with an
+  // absolute Unix timestamp instead of duration (bug fixed 2026-05-21).
+  const MAX_VIDEO_S    = 43_200;
+  const totalVideoH    = Math.round(
+    sessionRows
+      .filter(r => (r.video_duration_s ?? 0) > 0 && (r.video_duration_s ?? 0) <= MAX_VIDEO_S)
+      .reduce((s, r) => s + (r.video_duration_s ?? 0), 0) / 3600 * 10
+  ) / 10;
+
+  const sceneValues    = sessionRows.map(r => r.scenes_count).filter((v): v is number => v !== null);
+  const avgScenes      = sceneValues.length ? Math.round(sceneValues.reduce((s, v) => s + v, 0) / sceneValues.length * 10) / 10 : 0;
+
+  const outDurValues   = exportRows.map(r => r.output_duration_s).filter((v): v is number => v !== null && v > 0);
+  const avgOutputSec   = outDurValues.length ? Math.round(outDurValues.reduce((s, v) => s + v, 0) / outDurValues.length) : 0;
+
+  return { totalKm, totalElevM, totalActivityH, totalVideoH, avgScenes, avgOutputSec };
+}
+
+// ── Render time percentiles (P50 / P90 / P99) ─────────────────────────────────
+
+export async function getRenderTimePercentiles() {
+  const { data } = await db()
+    .from("video_exports")
+    .select("render_duration_ms")
+    .eq("render_status", "success")
+    .not("render_duration_ms", "is", null);
+
+  const times = (data ?? []).map(r => r.render_duration_ms ?? 0).sort((a, b) => a - b);
+  if (times.length === 0) return { p50: 0, p90: 0, p99: 0, count: 0 };
+
+  const p = (pct: number) => times[Math.min(Math.floor(times.length * pct), times.length - 1)];
+  return {
+    p50:   Math.round(p(0.50) / 1000),
+    p90:   Math.round(p(0.90) / 1000),
+    p99:   Math.round(p(0.99) / 1000),
+    count: times.length,
+  };
+}
+
+// ── Render success rate by device type ────────────────────────────────────────
+// Uses video_exports.render_status joined via processing_sessions.
+// This reflects actual video render outcomes, not just upload processing.
+
+export async function getSuccessRateByDevice() {
+  // Fetch exports with render_status, joined via processing_session_id
+  const { data: exports_ } = await db()
+    .from("video_exports")
+    .select("render_status, processing_session_id")
+    .not("render_status", "is", null);
+
+  if (!exports_ || exports_.length === 0) return [];
+
+  // Fetch session device types for the session IDs we have
+  const sessionIds = [...new Set(exports_.map(e => e.processing_session_id).filter(Boolean))];
+  const { data: sessions } = await db()
+    .from("processing_sessions")
+    .select("id, device_type")
+    .in("id", sessionIds.slice(0, 500)); // cap to avoid oversized IN clause
+
+  const sessionMap = new Map((sessions ?? []).map(s => [s.id, s.device_type]));
+
+  const map: Record<string, { success: number; total: number }> = {};
+  exports_.forEach(e => {
+    const raw = sessionMap.get(e.processing_session_id ?? "") ?? "unknown";
+    const k = raw === "gopro"   ? "GoPro"
+            : raw === "iphone"  ? "iPhone"
+            : raw === "android" ? "Android"
+            : "Unknown";
+    if (!map[k]) map[k] = { success: 0, total: 0 };
+    map[k].total++;
+    if (e.render_status === "success") map[k].success++;
+  });
+
+  return Object.entries(map)
+    .filter(([, v]) => v.total >= 2)
+    .map(([device, v]) => ({
+      name:        device,
+      successRate: Math.round(v.success / v.total * 100),
+      total:       v.total,
+    }))
+    .sort((a, b) => b.total - a.total);
+}
+
+// ── Video input duration distribution ─────────────────────────────────────────
+
+export async function getVideoDurationDistribution() {
+  const { data } = await db()
+    .from("processing_sessions")
+    .select("video_duration_s")
+    .not("video_duration_s", "is", null)
+    .gt("video_duration_s", 0);
+
+  const buckets: Record<string, number> = {
+    "< 1 min": 0, "1–5 min": 0, "5–15 min": 0,
+    "15–30 min": 0, "30–60 min": 0, "> 1 hour": 0,
+  };
+  (data ?? []).forEach(r => {
+    const s = r.video_duration_s ?? 0;
+    if      (s < 60)   buckets["< 1 min"]++;
+    else if (s < 300)  buckets["1–5 min"]++;
+    else if (s < 900)  buckets["5–15 min"]++;
+    else if (s < 1800) buckets["15–30 min"]++;
+    else if (s < 3600) buckets["30–60 min"]++;
+    else               buckets["> 1 hour"]++;
+  });
+  return Object.entries(buckets).map(([name, value]) => ({ name, value }));
+}
+
 export type DashboardData = Awaited<ReturnType<typeof getAllDashboardData>>;
 
 export async function getAllDashboardData() {
@@ -485,7 +654,8 @@ export async function getAllDashboardData() {
     topLocations, timeOnReady, processingTime,
     errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
     videoDeviceTypes, videoDeviceMakes, browserOs,
-    gpsDeviceModels, gpsDeviceBrands,
+    gpsDeviceModels, gpsDeviceBrands, mobileOsBreakdown, mobileDownloadActions,
+    contentStats, renderPercentiles, successByDevice, videoDuration,
   ] = await Promise.all([
     getKPIs(), getSessionsOverTime(), getSessionSuccessOverTime(), getFunnel(), getRenderStatus(),
     getRenderDurationBuckets(), getCameraModels(), getGpsDevices(), getGpsLockStats(),
@@ -493,7 +663,8 @@ export async function getAllDashboardData() {
     getTopLocations(), getTimeOnReady(), getProcessingTimeBuckets(),
     getErrorsByCode(), getErrorsBySource(), getErrorsByDevice(), getErrorsOverTime(), getRecentErrors(), getErrorKPIs(),
     getVideoDeviceTypes(), getVideoDeviceMakes(), getBrowserOsBreakdown(),
-    getGpsDeviceModels(), getGpsDeviceBrands(),
+    getGpsDeviceModels(), getGpsDeviceBrands(), getMobileOsBreakdown(), getMobileDownloadActions(),
+    getContentStats(), getRenderTimePercentiles(), getSuccessRateByDevice(), getVideoDurationDistribution(),
   ]);
 
   return {
@@ -502,7 +673,8 @@ export async function getAllDashboardData() {
     syncStrategies, gpxFields, activityTypes, unitSystem,
     topLocations, timeOnReady, processingTime,
     errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
-    videoDeviceTypes, videoDeviceMakes, browserOs,
+    videoDeviceTypes, videoDeviceMakes, browserOs, mobileOsBreakdown, mobileDownloadActions,
     gpsDeviceModels, gpsDeviceBrands,
+    contentStats, renderPercentiles, successByDevice, videoDuration,
   };
 }

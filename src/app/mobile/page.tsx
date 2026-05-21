@@ -11,6 +11,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { mlog, mlogClear } from "@/lib/engine/mobile/mobileDebugLogger";
+import {
+  trackProcessingSession, trackVideoExport, trackError,
+  trackGpxSession, trackVideoUpload, computeGpxMetrics,
+} from "@/lib/supabase/tracking";
+import type { VideoUploadInsert } from "@/lib/supabase/types";
 import type { ActionSegment }  from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }     from "@/lib/utils/units";
@@ -221,7 +226,12 @@ export default function MobilePage() {
   const [videoLoaded,    setVideoLoaded]    = useState(false);
   const [activityName,   setActivityName]   = useState("YOUR RIDE");
 
-  const gpxNameRef = useRef("");
+  const gpxNameRef             = useRef("");
+  const processingSessionIdRef = useRef<string | null>(null);
+  const experienceStartRef     = useRef<number | null>(null);
+  const storyPlanRef           = useRef<StoryPlan | null>(null);
+  const gpxMetricsRef          = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
+  const videoMetricsRef        = useRef<Omit<VideoUploadInsert, "app_version" | "processing_session_id"> | null>(null);
 
   // ── Capability detection + debug mode ──────────────────────────────────────
   useEffect(() => {
@@ -240,12 +250,14 @@ export default function MobilePage() {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".gpx")) {
+      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}". Only .gpx files are accepted.`, "gpx_upload");
       setGpxError("Only .gpx files are accepted."); e.target.value = ""; return;
     }
     setGpxError(null);
 
     const text = await file.text();
     const xml  = new DOMParser().parseFromString(text, "text/xml");
+    const creatorRaw = xml.documentElement.getAttribute("creator") || "";
 
     const parsePoint = (pt: Element) => {
       const lat  = parseFloat(pt.getAttribute("lat") || "0");
@@ -263,22 +275,55 @@ export default function MobilePage() {
       const rtepts = Array.from(xml.querySelectorAll("rtept")).map(parsePoint).filter(p => isFinite(p.time));
       pts = rtepts;
     }
-    if (pts.length === 0) { setGpxError("No GPS track found in this file."); return; }
+    if (pts.length === 0) {
+      void trackError("NO_GPS_TRACK", `No GPS track found in file: "${file.name}".`, "gpx_upload");
+      setGpxError("No GPS track found in this file."); return;
+    }
 
     setActivityPoints(pts);
     gpxNameRef.current = file.name;
 
-    // Extract activity name — same logic as desktop page.tsx lines 728-737.
-    // Handles Suunto format: "suuntoapp-Hiking-2026-05-18T17-05-38Z" → "Hiking"
+    // Extract activity name — handles Suunto format: "suuntoapp-Hiking-2026-05-18T..." → "Hiking"
     const allNameEls   = Array.from(xml.getElementsByTagName("name"));
     const rawTrackName = allNameEls.find(el => el.parentElement?.localName === "trk")?.textContent?.trim()
                       || allNameEls.find(el => el.textContent?.trim())?.textContent?.trim()
                       || "";
     const suuntoMatch  = rawTrackName.match(/^suuntoapp-([A-Za-z]+(?:[A-Z][a-z]+)*)-\d/);
     const parsedName   = suuntoMatch
-      ? suuntoMatch[1].replace(/([A-Z])/g, " $1").trim()   // "TrailRunning" → "Trail Running"
+      ? suuntoMatch[1].replace(/([A-Z])/g, " $1").trim()
       : rawTrackName || "YOUR RIDE";
     setActivityName(parsedName);
+
+    // Extract activity type (same 4-layer strategy as desktop)
+    const activityType = xml.querySelector("trk > type")?.textContent?.trim()
+      || (suuntoMatch ? suuntoMatch[1].replace(/([A-Z])/g, " $1").trim() : undefined)
+      || undefined;
+
+    // Geocode first point for location
+    let resolvedLocation: string | undefined;
+    try {
+      const { lat, lon } = pts[0];
+      const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+      const resp = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${lon},${lat}.json?types=place,region&access_token=${token}`);
+      if (resp.ok) {
+        const geo  = await resp.json();
+        const feat = geo.features?.[0];
+        if (feat) {
+          const city  = feat.text || "";
+          const ctx   = (feat.context as any[])?.find((c: any) => c.id?.startsWith("region"));
+          const state = (ctx?.short_code ?? ctx?.text ?? "").split("-").pop() ?? "";
+          resolvedLocation = state ? `${city}, ${state}` : city;
+        }
+      }
+    } catch { /* geocoding optional */ }
+
+    // Store GPX metrics for trackGpxSession (called after video processing succeeds)
+    gpxMetricsRef.current = computeGpxMetrics(pts, {
+      creator: creatorRaw || undefined,
+      activityType,
+      activityName: parsedName,
+      activityLocation: resolvedLocation,
+    });
 
     setGpxLoaded(true);
   };
@@ -290,6 +335,7 @@ export default function MobilePage() {
 
     const nameLc = file.name.toLowerCase();
     if (!nameLc.endsWith(".mp4") && !nameLc.endsWith(".mov")) {
+      void trackError("WRONG_VIDEO_FORMAT", `Unsupported format: "${file.name}"`, "video_upload");
       setUploadError("Only .mp4 and .mov files are supported."); e.target.value = ""; return;
     }
 
@@ -322,10 +368,9 @@ export default function MobilePage() {
     if (file.size > MAX_VIDEO_MB * 1_048_576) {
       const fileMB  = (file.size  / 1_048_576).toFixed(0);
       const limitGB = (MAX_VIDEO_MB / 1024).toFixed(MAX_VIDEO_MB % 1024 === 0 ? 0 : 1);
-      setUploadError(
-        `Video too large (${fileMB} MB). Maximum for this device is ${MAX_VIDEO_MB >= 1024 ? limitGB + " GB" : MAX_VIDEO_MB + " MB"}. ` +
-        `Trim the clip or open LENS on desktop Chrome (no size limit).`
-      );
+      const msg = `Video too large (${fileMB} MB). Maximum for this device is ${MAX_VIDEO_MB >= 1024 ? limitGB + " GB" : MAX_VIDEO_MB + " MB"}. Trim the clip or open LENS on desktop Chrome (no size limit).`;
+      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] File too large: ${fileMB}MB > ${MAX_VIDEO_MB}MB limit.`, "video_upload");
+      setUploadError(msg);
       e.target.value = "";
       return;
     }
@@ -333,7 +378,9 @@ export default function MobilePage() {
     setLoading(true); setUploadError(null); setProgress(0);
     mlogClear();
     mlog("UPLOAD", `file=${file.name} size=${(file.size/1_048_576).toFixed(1)}MB`);
-    const interval = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
+    const interval        = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
+    const processingStart = Date.now();
+    let   errorTracked    = false; // prevents double-tracking in the catch block
 
     try {
       const [
@@ -442,7 +489,9 @@ export default function MobilePage() {
           const vidDate = new Date(vidT0).toLocaleDateString();
           const actDate = new Date(actT0).toLocaleDateString();
           mlog("ERROR", `no temporal overlap: video=${vidDate} gpx=${actDate}`);
-          throw new Error(`Video (${vidDate}) and GPX (${actDate}) appear to be from different days. Please use files from the same ride.`);
+          void trackError("VIDEO_GPX_MISMATCH", `[${file.name}] Video date (${vidDate}) ≠ GPX date (${actDate}).`, "video_upload");
+          errorTracked = true;
+          throw new Error(`This video and GPX are from different days — video: ${vidDate}, GPX: ${actDate}. Please use files from the same ride.`);
         }
       }
 
@@ -457,11 +506,12 @@ export default function MobilePage() {
       });
 
       if (!segments?.length) {
-        // Provide diagnostic info in the error
         const vidT0 = vpts[0]?.time ?? iPhoneVideoStartMs;
         const actT0 = activityPoints[0]?.time ?? 0;
         const diffMin = Math.round((vidT0 - actT0) / 60_000);
         mlog("ERROR", `no highlights. vpts[0].time=${new Date(vidT0).toISOString()} actPts[0].time=${new Date(actT0).toISOString()} diff=${diffMin}min`);
+        void trackError("NO_SCENES", `No highlight scenes detected. Time diff: ${Math.abs(diffMin)} min. File: "${file.name}".`, "video_upload");
+        errorTracked = true;
         throw new Error(`No highlight scenes detected. Video and GPX may not overlap in time (diff: ${Math.abs(diffMin)} min). Make sure both files are from the same ride.`);
       }
 
@@ -476,6 +526,61 @@ export default function MobilePage() {
 
       clearInterval(interval);
       setProgress(100);
+      storyPlanRef.current = sp;
+
+      // Build video upload metrics for trackVideoUpload
+      const resolvedCamera = cam.model || cam.make || null;
+      const deviceOs       = isAndroid ? "Android" : (isMobile ? "iOS" : null);
+      videoMetricsRef.current = {
+        filename: file.name, file_size_bytes: file.size, camera_model: resolvedCamera,
+        device_type: cam.type as any, device_make: cam.make || null,
+        device_model: cam.model || null, device_os: deviceOs, device_os_version: null,
+        has_gps: isMobile ? iPhoneHasStartGPS : vpts.length > 0, gps_points_count: vpts.length,
+        gps_duration_s: videoProfile.durationSec, gps_sampling_interval_ms: videoProfile.samplingIntervalMs,
+        gps_start_utc: vpts.length > 0 ? new Date(vpts[0].time).toISOString() : null,
+        gps_end_utc:   vpts.length > 0 ? new Date(vpts[vpts.length - 1].time).toISOString() : null,
+        gps_video_offset_ms: gpsVideoOffsetMs, has_gps_lock: videoProfile.hasGPSLock,
+        gps_lock_latency_s: videoProfile.lockLatencySec, pre_lock_points: videoProfile.preLockPoints,
+        post_lock_points: videoProfile.postLockPoints, speed_avg_kmh: null, speed_max_kmh: null,
+        distance_m: Math.round(videoProfile.postLockDistanceM),
+        fix_pct_no_fix: 0, fix_pct_2d: 0, fix_pct_3d: 100,
+      };
+
+      // Track processing session
+      trackProcessingSession({
+        status:              "success",
+        video_filename:      file.name,
+        video_duration_s:    videoDurationSec || null,
+        camera_model:        resolvedCamera,
+        device_type:         cam.type as "gopro" | "iphone" | "android" | "unknown",
+        device_make:         cam.make || null,
+        device_model:        cam.model || null,
+        device_os:           deviceOs,
+        device_os_version:   isAndroid
+          ? (mobileCaps?.androidVersion?.toString() ?? null)
+          : (mobileCaps?.iosVersion?.toString()     ?? null),
+        browser_os:          deviceOs,
+        browser_is_mobile:   true,
+        browser_name:        null,
+        browser_os_version:  null,
+        browser_version:     null,
+        activity_name:       activityName || null,
+        gpx_points_count:    activityPoints.length || null,
+        gps_device:          gpxMetricsRef.current?.gps_device_brand ?? null,
+        activity_location:   gpxMetricsRef.current?.activity_location ?? null,
+        sync_strategy:       "timestamp-based",
+        scenes_count:        sp.segments.filter(s => s.type === 'ACTION').length || null,
+        unit_system:         unit,
+        processing_time_ms:  Date.now() - processingStart,
+        error_message:       null,
+      }).then(id => {
+        processingSessionIdRef.current = id;
+        if (id) {
+          if (gpxMetricsRef.current)   trackGpxSession({ ...gpxMetricsRef.current, processing_session_id: id });
+          if (videoMetricsRef.current) trackVideoUpload({ ...videoMetricsRef.current, processing_session_id: id });
+        }
+      });
+
       setHighlights(segments);
       setStoryPlan(sp);
       setVideoFile(file);
@@ -485,22 +590,56 @@ export default function MobilePage() {
       clearInterval(interval);
       mlog("ERROR", `upload failed: ${err.message}`);
       setUploadError(err.message ?? "Processing failed.");
+      if (!errorTracked) {
+        // Unknown/unexpected error — not already tracked at its source
+        void trackError("NO_SCENES", `[${file.name}] ${err.message ?? "Processing failed"}`, "video_upload");
+      }
+      trackProcessingSession({
+        status: "error", video_filename: file.name, video_duration_s: null,
+        camera_model: null, activity_name: activityName || null,
+        gpx_points_count: activityPoints.length || null, gps_device: null,
+        activity_location: null, sync_strategy: null, scenes_count: null,
+        unit_system: unit, processing_time_ms: Date.now() - processingStart,
+        error_message: err.message ?? null,
+      });
     } finally {
       setLoading(false);
       setStatusMsg("");
     }
   };
 
-  // ── After render complete — full form reset ────────────────────────────────
-  // Resets ALL state (GPX + video) so the user sees a completely fresh form,
-  // ready to start a new video creation workflow from scratch.
-  const handleRenderComplete = (_result: RenderResult) => {
+  // ── After render complete — track export + full form reset ───────────────────
+  const handleRenderComplete = (result: RenderResult) => {
+    void trackVideoExport({
+      processing_session_id: processingSessionIdRef.current,
+      reached_experience:    true,
+      clicked_record:        true,
+      completed_download:    result.status === "success",
+      time_on_ready_ms:      null,
+      time_to_download_ms:   experienceStartRef.current ? Date.now() - experienceStartRef.current : null,
+      render_duration_ms:    result.durationMs,
+      render_status:         result.status,
+      error_message:         result.errorMessage ?? null,
+      output_format:         result.outputFormat,
+      output_size_bytes:     result.outputSizeBytes,
+      output_duration_s:     storyPlanRef.current
+        ? storyPlanRef.current.segments.reduce((s: number, seg: any) => s + (seg.durationSec ?? 0), 0)
+        : null,
+      download_action:       result.downloadAction ?? null,
+    });
+
+    // Reset all state — clean slate for next video
     setVideoFile(null);    setHighlights([]);      setStoryPlan(null);
     setVideoLoaded(false); setUploadError(null);   setGpxError(null);
     setGpxLoaded(false);   setActivityPoints([]);  setActivityName("YOUR RIDE");
     setProgress(0);        setStatusMsg("");
-    gpxNameRef.current = "";
-    setStep("UPLOAD"); // back to the very first step — clean slate
+    gpxNameRef.current             = "";
+    processingSessionIdRef.current = null;
+    experienceStartRef.current     = null;
+    storyPlanRef.current           = null;
+    gpxMetricsRef.current          = null;
+    videoMetricsRef.current        = null;
+    setStep("UPLOAD");
   };
 
   // ── Render: debug panel (overlay — shown on top of any state) ─────────────
@@ -656,7 +795,17 @@ export default function MobilePage() {
           {/* Generate button */}
           <button
             disabled={!videoLoaded}
-            onClick={() => setStep("EXPERIENCE")}
+            onClick={() => {
+              experienceStartRef.current = Date.now();
+              void trackVideoExport({
+                processing_session_id: processingSessionIdRef.current,
+                reached_experience: true, clicked_record: true, completed_download: false,
+                time_on_ready_ms: null, time_to_download_ms: null, render_duration_ms: null,
+                render_status: null, error_message: null, output_format: null,
+                output_size_bytes: null, output_duration_s: null,
+              });
+              setStep("EXPERIENCE");
+            }}
             className={`w-full py-5 rounded-2xl font-black uppercase tracking-[0.3em] text-sm transition-all flex items-center justify-center gap-3 ${
               videoLoaded
                 ? "bg-amber-500 text-black shadow-[0_10px_30px_rgba(245,158,11,0.3)] active:scale-[0.98]"

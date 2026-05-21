@@ -132,25 +132,118 @@ function VBarChart({ data, title, color = AMBER }: { data: { name: string; value
 
 // ── KPI Cards ─────────────────────────────────────────────────────────────────
 
-export function KpiCards({ data }: { data: DashboardData["kpis"] }) {
-  const cards = [
-    { label: "Total Uploads",     value: data.totalUploads,   unit: "" },
-    { label: "Videos Downloaded", value: data.totalDownloads, unit: "" },
-    { label: "Conversion Rate",   value: data.conversionRate, unit: "%" },
-    { label: "Avg Render Time",   value: data.avgRenderSec,   unit: "s" },
-    { label: "Avg Process Time",  value: data.avgProcessSec,  unit: "s" },
-  ];
+function KpiCard({ label, value, unit, accent = AMBER, sub }: {
+  label: string; value: number | string; unit?: string; accent?: string; sub?: string;
+}) {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
-      {cards.map((c) => (
-        <div key={c.label} className="bg-zinc-900 border border-zinc-800 rounded-2xl px-5 py-4">
-          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1">{c.label}</p>
-          <p className="text-3xl font-black text-white">
-            {c.value}<span className="text-amber-500 text-lg">{c.unit}</span>
-          </p>
-        </div>
-      ))}
+    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl px-5 py-4">
+      <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1">{label}</p>
+      <p className="text-3xl font-black text-white leading-none">
+        {value}<span className="text-lg" style={{ color: accent }}>{unit}</span>
+      </p>
+      {sub && <p className="text-[10px] text-zinc-600 mt-1 uppercase tracking-widest font-bold">{sub}</p>}
     </div>
+  );
+}
+
+export function KpiCards({ data }: { data: DashboardData }) {
+  const { kpis, contentStats, renderPercentiles } = data;
+  return (
+    <div className="space-y-4 mb-8">
+      {/* Row 1 — Core business metrics */}
+      <div>
+        <p className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-600 mb-2">Core Metrics</p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+          <KpiCard label="Total Uploads"     value={kpis.totalUploads}   />
+          <KpiCard label="Videos Generated"  value={kpis.totalDownloads} accent="#22c55e" />
+          <KpiCard label="Conversion Rate"   value={kpis.conversionRate} unit="%" />
+          <KpiCard label="Avg Render Time"   value={kpis.avgRenderSec}   unit="s" />
+          <KpiCard label="P90 Render Time"   value={renderPercentiles.p90} unit="s" sub="90% of renders finish within" />
+        </div>
+      </div>
+
+      {/* Row 2 — Content volume (investor deck) */}
+      <div>
+        <p className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-600 mb-2">Content Volume — All Time</p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+          <KpiCard label="KM Analyzed"       value={contentStats.totalKm.toLocaleString()}         unit=" km"  accent="#22d3ee" />
+          <KpiCard label="Elevation Gained"  value={contentStats.totalElevM.toLocaleString()}       unit=" m"   accent="#a855f7" />
+          <KpiCard label="Activity Hours"    value={contentStats.totalActivityH}                    unit=" h"   accent="#22d3ee" />
+          <KpiCard label="Video Hours In"    value={contentStats.totalVideoH}                       unit=" h"   accent="#78716c" />
+          <KpiCard label="Avg Clips/Video"    value={contentStats.avgScenes}                         sub="action clips per video" />
+          <KpiCard label="Avg Output Length" value={contentStats.avgOutputSec}                      unit=" s"   sub="final video duration" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Render Time Percentiles widget ────────────────────────────────────────────
+
+function RenderPercentilesWidget({ data }: { data: DashboardData["renderPercentiles"] }) {
+  const bars = [
+    { label: "P50 — half of renders finish within",     value: data.p50, color: "#22c55e" },
+    { label: "P90 — 90% of renders finish within",      value: data.p90, color: AMBER },
+    { label: "P99 — worst 1% of renders takes up to",   value: data.p99, color: "#ef4444" },
+  ];
+  const max = Math.max(...bars.map(b => b.value), 1);
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-4">
+        <ChartTitle>Render Time Percentiles</ChartTitle>
+        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">{data.count} renders</span>
+      </div>
+      {data.count === 0 ? <EmptyState /> : (
+        <div className="space-y-4">
+          {bars.map(b => (
+            <div key={b.label}>
+              <div className="flex justify-between text-xs mb-1.5">
+                <span className="text-zinc-400 font-medium">{b.label}</span>
+                <span className="font-black text-white">{b.value}<span className="text-zinc-500 font-normal">s</span></span>
+              </div>
+              <div className="h-3 bg-zinc-800 rounded-full overflow-hidden">
+                <div className="h-full rounded-full transition-all"
+                  style={{ width: `${Math.round(b.value / max * 100)}%`, background: b.color }} />
+              </div>
+            </div>
+          ))}
+          <p className="text-[10px] text-zinc-600 pt-1">SLA target: P90 &lt; 120s</p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ── Success Rate by Device ────────────────────────────────────────────────────
+
+function SuccessRateByDeviceChart({ data }: { data: DashboardData["successByDevice"] }) {
+  return (
+    <Card>
+      <ChartTitle>Render Success Rate by Device</ChartTitle>
+      {data.length === 0 ? <EmptyState /> : (
+        <div className="space-y-3 mt-1">
+          {data.map(d => (
+            <div key={d.name}>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-zinc-400 font-medium flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full inline-block"
+                    style={{ background: DEVICE_COLORS[d.name] ?? "#78716c" }} />
+                  {d.name}
+                </span>
+                <span className="font-black" style={{ color: d.successRate >= 90 ? "#22c55e" : d.successRate >= 70 ? AMBER : "#ef4444" }}>
+                  {d.successRate}%
+                  <span className="text-zinc-600 font-normal text-[10px] ml-1">({d.total})</span>
+                </span>
+              </div>
+              <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                <div className="h-full rounded-full"
+                  style={{ width: `${d.successRate}%`, background: DEVICE_COLORS[d.name] ?? "#78716c" }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -443,60 +536,131 @@ function ErrorsOverTimeChart({ data }: { data: DashboardData["errorsOverTime"] }
 
 // ── Recent Errors Table ───────────────────────────────────────────────────────
 
+const ERRORS_PER_PAGE = 10;
+
 function RecentErrorsTable({ data }: { data: DashboardData["recentErrors"] }) {
+  const [page, setPage] = useState(0);
+
+  const totalPages = Math.ceil(data.length / ERRORS_PER_PAGE);
+  const slice      = data.slice(page * ERRORS_PER_PAGE, (page + 1) * ERRORS_PER_PAGE);
+
   return (
     <Card>
       <div className="flex items-center justify-between mb-4">
         <ChartTitle>Recent Error Events</ChartTitle>
-        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">{data.length} shown</span>
+        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
+          {data.length} total
+        </span>
       </div>
       {data.length === 0 ? <EmptyState /> : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-zinc-500 border-b border-zinc-800">
-                {["Date", "Code", "Source", "v", "Message / Device"].map(h => (
-                  <th key={h} className="text-left py-2 pr-3 font-black uppercase tracking-widest whitespace-nowrap">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((e, i) => {
-                const deviceMatch = e.message.match(/Device:\s*"([^"]+)"/);
-                const cameraMatch = e.message.match(/Unsupported camera:\s*"([^"]+)"/);
-                const deviceHint  = deviceMatch?.[1] ?? cameraMatch?.[1] ?? null;
-                const cleanMsg    = e.message.replace(/\s*Device:\s*"[^"]+"\./g, "").replace(/\s*File:\s*"[^"]+"\./g, "");
-                return (
-                  <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/20 transition-colors">
-                    <td className="py-2 pr-3 text-zinc-500 whitespace-nowrap font-mono text-[10px]">
-                      {new Date(e.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{" "}
-                      <span className="text-zinc-700">{new Date(e.date).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</span>
-                    </td>
-                    <td className="py-2 pr-3">
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide whitespace-nowrap"
-                        style={{ background: `${ERROR_COLORS[e.code] ?? ERROR_RED}20`, color: ERROR_COLORS[e.code] ?? ERROR_RED }}>
-                        {e.code}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-3">
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black capitalize whitespace-nowrap"
-                        style={{ background: `${SOURCE_COLORS[e.source] ?? "#52525b"}20`, color: SOURCE_COLORS[e.source] ?? "#71717a" }}>
-                        {e.source.replace("_", " ")}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-3 text-zinc-600 font-mono text-[10px] whitespace-nowrap">{e.version || "—"}</td>
-                    <td className="py-2 max-w-sm">
-                      {deviceHint && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-400 text-[10px] font-black mr-2 whitespace-nowrap">{deviceHint}</span>
-                      )}
-                      <span className="text-zinc-400 text-[11px] break-all">{cleanMsg}</span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-zinc-500 border-b border-zinc-800">
+                  {["Date", "Code", "Source", "v", "Message / Device"].map(h => (
+                    <th key={h} className="text-left py-2 pr-3 font-black uppercase tracking-widest whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {slice.map((e, i) => {
+                  const dbDevice    = [e.device_make, e.device_model].filter(Boolean).join(" ") || null;
+                  const msgCamera   = e.message.match(/Unsupported camera:\s*"([^"]+)"/)?.[1] ?? null;
+                  const msgDevice   = e.message.match(/Device:\s*"([^"]+)"/)?.[1] ?? null;
+                  const deviceLabel = dbDevice ?? msgCamera ?? msgDevice ?? null;
+                  const deviceColor = e.device_type === "gopro"   ? "#3b82f6"
+                                    : e.device_type === "iphone"  ? "#f59e0b"
+                                    : e.device_type === "android" ? "#22c55e"
+                                    : "#a855f7";
+                  const cleanMsg = e.message
+                    .replace(/\s*Device:\s*"[^"]+"\./g, "")
+                    .replace(/\s*File:\s*"[^"]+"\./g, "")
+                    .replace(/Unsupported camera:\s*"[^"]+"\.?\s*/g, "");
+                  return (
+                    <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/20 transition-colors">
+                      <td className="py-2 pr-3 text-zinc-500 whitespace-nowrap font-mono text-[10px]">
+                        {new Date(e.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{" "}
+                        <span className="text-zinc-700">{new Date(e.date).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</span>
+                      </td>
+                      <td className="py-2 pr-3">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide whitespace-nowrap"
+                          style={{ background: `${ERROR_COLORS[e.code] ?? ERROR_RED}20`, color: ERROR_COLORS[e.code] ?? ERROR_RED }}>
+                          {e.code}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black capitalize whitespace-nowrap"
+                          style={{ background: `${SOURCE_COLORS[e.source] ?? "#52525b"}20`, color: SOURCE_COLORS[e.source] ?? "#71717a" }}>
+                          {e.source.replace("_", " ")}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3 text-zinc-600 font-mono text-[10px] whitespace-nowrap">{e.version || "—"}</td>
+                      <td className="py-2 max-w-sm">
+                        <div className="flex flex-wrap gap-1 items-start">
+                          {deviceLabel && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap"
+                              style={{ background: `${deviceColor}15`, color: deviceColor }}>
+                              {deviceLabel}
+                            </span>
+                          )}
+                          {e.file_extension && (
+                            <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 text-[10px] font-mono whitespace-nowrap">
+                              {e.file_extension}
+                            </span>
+                          )}
+                          {cleanMsg && (
+                            <span className="text-zinc-400 text-[11px] break-all">{cleanMsg}</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination controls */}
+          <div className="flex items-center justify-between mt-4 pt-3 border-t border-zinc-800/60">
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
+              {page * ERRORS_PER_PAGE + 1}–{Math.min((page + 1) * ERRORS_PER_PAGE, data.length)} of {data.length}
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPage(0)}
+                disabled={page === 0}
+                className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors disabled:text-zinc-700 disabled:cursor-not-allowed text-zinc-400 hover:text-white hover:bg-zinc-800"
+              >«</button>
+              <button
+                onClick={() => setPage(p => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors disabled:text-zinc-700 disabled:cursor-not-allowed text-zinc-400 hover:text-white hover:bg-zinc-800"
+              >‹</button>
+              {Array.from({ length: totalPages }, (_, i) => i).map(i => (
+                <button
+                  key={i}
+                  onClick={() => setPage(i)}
+                  className={`w-7 h-7 rounded-lg text-[11px] font-black transition-colors ${
+                    i === page
+                      ? "bg-amber-500 text-black"
+                      : "text-zinc-500 hover:text-white hover:bg-zinc-800"
+                  }`}
+                >{i + 1}</button>
+              ))}
+              <button
+                onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                disabled={page === totalPages - 1}
+                className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors disabled:text-zinc-700 disabled:cursor-not-allowed text-zinc-400 hover:text-white hover:bg-zinc-800"
+              >›</button>
+              <button
+                onClick={() => setPage(totalPages - 1)}
+                disabled={page === totalPages - 1}
+                className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors disabled:text-zinc-700 disabled:cursor-not-allowed text-zinc-400 hover:text-white hover:bg-zinc-800"
+              >»</button>
+            </div>
+          </div>
+        </>
       )}
     </Card>
   );
@@ -560,21 +724,68 @@ function ErrorsTab({ data }: { data: DashboardData }) {
 // ── Tab: Video Devices ────────────────────────────────────────────────────────
 
 function VideoDevicesTab({ data }: { data: DashboardData }) {
-  // Device type with distinct colors
-  const deviceTypeColors = data.videoDeviceTypes.map(d => DEVICE_COLORS[d.name] ?? PIE_COLORS[0]);
+  // Normalize device type labels: gopro→GoPro, iphone→iPhone, android→Android
+  const normalizedDeviceTypes = data.videoDeviceTypes.map(d => ({
+    ...d,
+    name: d.name === "Gopro"   ? "GoPro"
+        : d.name === "Iphone"  ? "iPhone"
+        : d.name === "Android" ? "Android"
+        : d.name,
+  }));
 
   return (
     <div className="space-y-8">
       <section>
         <SectionLabel>Camera / Recording Device</SectionLabel>
+        <p className="text-[10px] text-zinc-600 mb-3 -mt-3">GoPro = action camera · iPhone = Apple smartphone (iOS) · Android = non-Apple smartphone (Samsung, Google, etc.)</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <DonutChart
-            data={data.videoDeviceTypes}
-            title="Device Type (GoPro / iPhone / Android)"
-            colors={data.videoDeviceTypes.map(d => DEVICE_COLORS[d.name] ?? "#78716c")}
+            data={normalizedDeviceTypes}
+            title="Device Category"
+            colors={normalizedDeviceTypes.map(d => DEVICE_COLORS[d.name] ?? "#78716c")}
           />
           <HBarChart data={data.cameraModels}     title="Camera Models" />
           <HBarChart data={data.videoDeviceMakes} title="Device Brands" color="#3b82f6" />
+        </div>
+      </section>
+
+      <section>
+        <SectionLabel accent="#22c55e">Mobile OS & Actions</SectionLabel>
+        <p className="text-[10px] text-zinc-600 mb-3 -mt-3">Tracked from sessions after mobile analytics was enabled. Historical data shows null.</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <DonutChart
+            data={data.mobileOsBreakdown ?? []}
+            title="Mobile OS (iOS vs Android)"
+            colors={["#f59e0b", "#22c55e", "#3b82f6"]}
+          />
+          <DonutChart
+            data={data.mobileDownloadActions ?? []}
+            title="Save vs Share to Instagram"
+            colors={["#f59e0b", "#ee2a7b"]}
+          />
+          {(data.mobileDownloadActions ?? []).length > 0 && (
+            <Card>
+              <ChartTitle>Save vs Share — Numbers</ChartTitle>
+              <div className="space-y-4 mt-2">
+                {(data.mobileDownloadActions ?? []).map((item, i) => {
+                  const total = (data.mobileDownloadActions ?? []).reduce((s, d) => s + d.value, 0);
+                  const colors = ["#f59e0b", "#ee2a7b"];
+                  const pct = total > 0 ? Math.round(item.value / total * 100) : 0;
+                  return (
+                    <div key={item.name}>
+                      <div className="flex justify-between text-xs mb-1.5">
+                        <span className="text-zinc-400 font-medium">{item.name}</span>
+                        <span className="font-black text-white">{item.value} <span className="text-zinc-500 font-normal">({pct}%)</span></span>
+                      </div>
+                      <div className="h-3 bg-zinc-800 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: colors[i] }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
         </div>
       </section>
 
@@ -633,7 +844,16 @@ function EngineTab({ data }: { data: DashboardData }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <DonutChart data={data.renderStatus}   title="Render Status" />
           <VBarChart  data={data.renderDuration} title="Render Duration" />
-          <VBarChart  data={data.processingTime} title="Processing Time" color="#22d3ee" />
+          <RenderPercentilesWidget data={data.renderPercentiles} />
+        </div>
+      </section>
+
+      <section>
+        <SectionLabel>Input Video Analysis</SectionLabel>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <VBarChart  data={data.videoDuration}   title="Input Video Length Distribution" color="#22d3ee" />
+          <VBarChart  data={data.processingTime}  title="Processing Time Distribution" color="#a855f7" />
+          <SuccessRateByDeviceChart data={data.successByDevice} />
         </div>
       </section>
 
@@ -642,7 +862,7 @@ function EngineTab({ data }: { data: DashboardData }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <VBarChart  data={data.timeOnReady}    title="Time on Preview Before Recording" color="#78716c" />
           <DonutChart data={data.syncStrategies} title="Sync Strategy Distribution" />
-          <FunnelChart data={data.funnel} />
+          <DonutChart data={data.unitSystem}     title="Unit System (Metric vs Imperial)" colors={[AMBER, "#3b82f6"]} />
         </div>
       </section>
 
@@ -652,7 +872,14 @@ function EngineTab({ data }: { data: DashboardData }) {
           <DonutChart
             data={data.browserOs.byOs}
             title="User OS Distribution"
-            colors={["#3b82f6","#a855f7","#f59e0b","#22c55e","#78716c"]}
+            colors={data.browserOs.byOs.map(d => {
+              if (d.name === "Windows")   return "#3b82f6";
+              if (d.name === "macOS")     return "#a855f7";
+              if (d.name === "iOS")       return AMBER;
+              if (d.name === "Android")   return "#22c55e";
+              if (d.name === "Linux")     return "#22d3ee";
+              return "#78716c";
+            })}
           />
           <DonutChart
             data={data.browserOs.mobileDesktop}

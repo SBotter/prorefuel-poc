@@ -1,27 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import type { ProcessingSessionInsert } from "@/lib/supabase/types";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    const session: ProcessingSessionInsert = {
+    // Build insert with only non-null optional columns.
+    // Columns added after initial schema (device_*, browser_*) are spread only
+    // when non-null so the insert doesn't fail on DBs that haven't run migrations.
+    const session: Record<string, unknown> = {
+      // Core columns — always present in schema
       video_filename:     body.video_filename     ?? null,
       video_duration_s:   body.video_duration_s   ?? null,
       camera_model:       body.camera_model       ?? null,
-      // Recording device (camera / phone) — from video metadata
-      device_type:        body.device_type        ?? null,
-      device_make:        body.device_make        ?? null,
-      device_model:       body.device_model       ?? null,
-      device_os:          body.device_os          ?? null,
-      device_os_version:  body.device_os_version  ?? null,
-      // Browser / web-app client device — from User-Agent
-      browser_os:         body.browser_os         ?? null,
-      browser_os_version: body.browser_os_version ?? null,
-      browser_name:       body.browser_name       ?? null,
-      browser_version:    body.browser_version    ?? null,
-      browser_is_mobile:  body.browser_is_mobile  ?? null,
       activity_name:      body.activity_name      ?? null,
       gpx_points_count:   body.gpx_points_count   ?? null,
       gps_device:         body.gps_device         ?? null,
@@ -35,6 +26,24 @@ export async function POST(req: NextRequest) {
       user_agent:         req.headers.get("user-agent") ?? null,
       app_version:        body.app_version        ?? null,
     };
+
+    // Optional extended columns — only included when non-null
+    // Requires: ALTER TABLE processing_sessions ADD COLUMN IF NOT EXISTS <col> ...
+    const optional: Record<string, unknown> = {
+      device_type:        body.device_type,
+      device_make:        body.device_make,
+      device_model:       body.device_model,
+      device_os:          body.device_os,
+      device_os_version:  body.device_os_version,
+      browser_os:         body.browser_os,
+      browser_os_version: body.browser_os_version,
+      browser_name:       body.browser_name,
+      browser_version:    body.browser_version,
+      browser_is_mobile:  body.browser_is_mobile,
+    };
+    for (const [k, v] of Object.entries(optional)) {
+      if (v != null) session[k] = v;
+    }
 
     const supabase = createServerClient();
     const { data, error } = await supabase
