@@ -65,7 +65,7 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
   const [loadingMore,  setLoadingMore]  = useState(false);
   const [hasMore,      setHasMore]      = useState(true);
 
-  // Detect return from OAuth (?strava=connected) and auto-fetch activities
+  // On mount: handle OAuth callback params OR check for existing valid session
   useEffect(() => {
     if (typeof window === "undefined") return;
     const p = new URLSearchParams(window.location.search);
@@ -73,16 +73,26 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
     if (p.get("strava") === "connected") {
       window.history.replaceState({}, "", window.location.pathname);
       fetchActivities();
+      return;
     }
     if (p.get("strava") === "denied") {
       window.history.replaceState({}, "", window.location.pathname);
-      // User denied — stay on idle, no error
+      return;
     }
     if (p.get("strava") === "error") {
       window.history.replaceState({}, "", window.location.pathname);
       setError("Something went wrong connecting to Strava. Please try again.");
       setState("error");
+      return;
     }
+
+    // No OAuth callback — check if there is already a valid session cookie.
+    // If the user connected previously (within the session or via refresh token),
+    // skip the OAuth flow entirely and show activities directly.
+    fetch("/api/strava/status")
+      .then(r => r.json())
+      .then(d => { if (d.connected) fetchActivities(); })
+      .catch(() => { /* network error — stay on idle */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
