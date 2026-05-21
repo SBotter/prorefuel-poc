@@ -970,7 +970,7 @@ export default function ProRefuelPage() {
         </a>
         <div className="flex items-center gap-1 sm:gap-2">
           <a href="/how-it-works" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">How It Works</a>
-          <a href="/privacidade" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">Privacy</a>
+          <a href="/privacy" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">Privacy</a>
           <div className="ml-2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/15 border border-amber-500/30">
             <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
             <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Free Beta</span>
@@ -1449,7 +1449,7 @@ export default function ProRefuelPage() {
               <span className="text-[11px] font-black uppercase tracking-widest">Contact · @LENS.video</span>
             </a>
             <a href="/how-it-works" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">How It Works</a>
-            <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
+            <a href="/privacy" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
           </div>
           <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">© {new Date().getFullYear()} ProRefuel.app</p>
         </div>

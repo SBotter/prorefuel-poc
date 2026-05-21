@@ -901,7 +901,7 @@ export default function MobilePage() {
         <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-2">by ProRefuel.app</span>
         <div className="flex items-center justify-center gap-4 mt-3">
           <a href="/how-it-works" className="text-[11px] font-black uppercase tracking-widest text-zinc-600">How It Works</a>
-          <a href="/privacidade"  className="text-[11px] font-black uppercase tracking-widest text-zinc-600">Privacy</a>
+          <a href="/privacy"  className="text-[11px] font-black uppercase tracking-widest text-zinc-600">Privacy</a>
         </div>
       </footer>
 

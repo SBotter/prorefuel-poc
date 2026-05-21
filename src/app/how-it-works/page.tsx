@@ -25,7 +25,7 @@ export default function HowItWorksPage() {
         </Link>
         <div className="flex items-center gap-1 sm:gap-2">
           <Link href="/how-it-works" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-amber-400">How It Works</Link>
-          <Link href="/privacidade" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">Privacy</Link>
+          <Link href="/privacy" className="px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:text-amber-400 transition-colors">Privacy</Link>
         </div>
       </nav>
 
@@ -212,7 +212,7 @@ export default function HowItWorksPage() {
               </div>
               <div className="flex justify-between items-center text-[11px]">
                 <span className="text-zinc-400">Android 10 / 3 GB RAM</span>
-                <span className="text-amber-400 font-black">500 MB</span>
+                <span className="text-amber-400 font-black">1 GB</span>
               </div>
             </div>
           </div>
@@ -260,7 +260,7 @@ export default function HowItWorksPage() {
               </tr>
               <tr className="bg-zinc-900/40">
                 <td className="px-4 py-3 text-zinc-500">📱 Android 10 / 3 GB RAM</td>
-                <td className="px-4 py-3 text-right font-black text-amber-400">500 MB</td>
+                <td className="px-4 py-3 text-right font-black text-amber-400">1 GB</td>
               </tr>
             </tbody>
           </table>
@@ -291,12 +291,25 @@ export default function HowItWorksPage() {
         {/* ── HOW IT WORKS IN 3 STEPS ──────────────────────────────────────── */}
         <SectionTitle>How it works in 3 steps</SectionTitle>
         <div className="space-y-4 mb-14">
-          <Step number="01" title="Import your GPS activity file (.gpx)">
-            Export your activity in GPX format from your GPS app or device. This file contains your full route — coordinates, elevation, timestamps, heart rate, cadence, and power. LENS uses it to detect the best moments and to sync with your video.
+          <Step number="01" title="Import your GPS activity">
+            You have two ways to provide your GPS activity data:
             <br /><br />
-            <span className="text-zinc-300 font-bold">Supported sources:</span>
+            <span className="text-zinc-300 font-bold">Option A — Connect directly to Strava:</span>
+            <div className="mt-2 p-3 rounded-xl bg-[#FC4C02]/8 border border-[#FC4C02]/30">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-6 h-6 rounded-md bg-[#FC4C02] flex items-center justify-center shrink-0">
+                  <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-white"><path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169"/></svg>
+                </div>
+                <span className="text-[#FC4C02] text-xs font-black uppercase tracking-widest">Strava Direct Import</span>
+              </div>
+              <p className="text-zinc-400 text-[12px] leading-relaxed">Click <strong className="text-white">Import from Strava</strong>, authorise once, and LENS shows your 10 most recent activities. Pick one and LENS extracts the full GPS route, elevation, HR, cadence and power automatically — no file download needed.</p>
+              <p className="text-zinc-600 text-[11px] mt-1.5">On mobile, the authorization opens the Strava app directly if installed.</p>
+            </div>
+            <br />
+            <span className="text-zinc-300 font-bold">Option B — Upload a GPX file manually:</span>
+            <p className="text-zinc-500 text-[12px] mt-1 mb-2 leading-relaxed">Export your activity as a <code className="text-amber-400">.gpx</code> file from any GPS app or device and drop it into LENS.</p>
             <DeviceRow logo="/devices/logos/garmin_logo.svg" lw={48} name="Garmin" detail="Garmin Connect → Activity → Export to GPX" />
-            <DeviceRow logo="/devices/logos/strava_logo.svg"  lw={44} name="Strava"  detail="Activity page → ••• → Export GPX" />
+            <DeviceRow logo="/devices/logos/strava_logo.svg"  lw={44} name="Strava"  detail="Activity page → ••• → Export GPX (or use direct import above)" />
             <DeviceRow logo="/devices/logos/suunto_logo.svg"  lw={48} name="Suunto"  detail="Export the *-track.gpx file (not the -route.gpx)" />
             <p className="text-zinc-600 text-[11px] mt-2 leading-relaxed">Also works with Wahoo, Polar, Coros, Komoot and any app that exports standard .gpx files.</p>
           </Step>
@@ -397,7 +410,20 @@ export default function HowItWorksPage() {
           </GpsCard>
 
           <GpsCard logo="/devices/logos/strava_logo.svg" lw={52} name="Strava">
-            <p className="text-zinc-400 text-sm leading-relaxed mb-2">Works with any activity synced to Strava, regardless of the recording device.</p>
+            <p className="text-zinc-400 text-sm leading-relaxed mb-3">Works with any activity synced to Strava, regardless of the recording device.</p>
+
+            {/* Direct import */}
+            <div className="p-3 rounded-xl bg-[#FC4C02]/8 border border-[#FC4C02]/25 mb-3">
+              <p className="text-[10px] font-black uppercase tracking-widest text-[#FC4C02] mb-1.5">Recommended — Direct import</p>
+              <ol className="space-y-1 text-sm text-zinc-400 list-none">
+                <ExportStep>Click <strong className="text-white">Import from Strava</strong> in LENS</ExportStep>
+                <ExportStep>Authorise once — no login needed if the app is installed</ExportStep>
+                <ExportStep>Pick any of your last 10 activities — done</ExportStep>
+              </ol>
+            </div>
+
+            {/* Manual export */}
+            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1.5">Or export manually</p>
             <ol className="space-y-1 text-sm text-zinc-400 list-none">
               <ExportStep>Open the activity on Strava (web or app)</ExportStep>
               <ExportStep>Click the <strong className="text-white">···</strong> menu (three dots)</ExportStep>
@@ -562,7 +588,7 @@ export default function HowItWorksPage() {
               </svg>
               <span className="text-[11px] font-black uppercase tracking-widest">Contact · @LENS.video</span>
             </a>
-            <a href="/privacidade" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
+            <a href="/privacy" className="text-[11px] font-black uppercase tracking-widest text-zinc-500 hover:text-amber-400 transition-colors">Privacy</a>
           </div>
           <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">© {new Date().getFullYear()} ProRefuel.app</p>
         </div>
