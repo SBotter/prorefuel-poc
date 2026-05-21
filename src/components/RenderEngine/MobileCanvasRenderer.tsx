@@ -1222,14 +1222,11 @@ export function MobileCanvasRenderer({
 
       if (isAndroid) {
         // ── Android: direct download → /sdcard/Downloads → Media Scanner → Gallery ──
-        // navigator.share() on Android opens a general share sheet (no "Save to Gallery").
-        // A direct <a download> saves to Downloads; the Android Media Scanner detects
-        // new MP4 files there and automatically adds them to the Gallery app.
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a"); a.href = url; a.download = filename;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 5000);
-        onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+        onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
         return;
       }
 
@@ -1237,7 +1234,7 @@ export function MobileCanvasRenderer({
       if (typeof navigator.share === "function" && navigator.canShare?.({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: "LENS Video" });
-          onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+          onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
           return;
         } catch (e: any) {
           if (e?.name === "AbortError") return; // user dismissed — stay on screen
@@ -1250,7 +1247,7 @@ export function MobileCanvasRenderer({
       const a = document.createElement("a"); a.href = url; a.download = filename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-      onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success" });
+      onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
     };
 
     return (
@@ -1299,6 +1296,8 @@ export function MobileCanvasRenderer({
                 if (navigator.canShare?.({ files: [file] })) {
                   try {
                     await navigator.share({ files: [file], title: "LENS Video" });
+                    // Track share action — triggers state reset same as save
+                    onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "share" });
                   } catch (e: any) {
                     if (e?.name !== "AbortError") console.warn("Share failed:", e);
                   }

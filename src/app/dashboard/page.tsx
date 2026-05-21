@@ -40,7 +40,7 @@ export default async function DashboardPage() {
         </div>
 
         {/* Global KPIs — always visible */}
-        <KpiCards data={data.kpis} />
+        <KpiCards data={data} />
 
         {/* Tabbed charts */}
         <DashboardCharts data={data} />

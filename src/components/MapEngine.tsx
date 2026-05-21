@@ -48,6 +48,7 @@ export interface RenderResult {
   outputSizeBytes: number;
   status: "success" | "error" | "fallback";
   errorMessage?: string;
+  downloadAction?: "save" | "share";
 }
 
 interface MapEngineProps {

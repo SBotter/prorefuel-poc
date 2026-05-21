@@ -57,6 +57,104 @@ function detectGPSDevice(creatorRaw: string): DeviceInfo {
   return { label: "", logoFile: "" };
 }
 
+// ── Activity type extraction — 4-layer fallback ───────────────────────────
+//
+// Layer 1: <trk><type>  — standard GPX. Garmin Connect + Strava write this.
+//          May be text ("cycling") or numeric code ("1", "17", "28"…).
+// Layer 2: <extensions>  — Polar and some Garmin firmware write sport type here.
+// Layer 3: Track name patterns  — Suunto encodes type in the machine-generated
+//          name ("suuntoapp-TrailRunning-…"). Wahoo/Coros/Komoot use plain names.
+// Layer 4: keyword scan on track name  — last resort, conservative matching.
+
+// Garmin/Polar numeric sport codes → normalized label
+const SPORT_CODES: Record<string, string> = {
+  "1": "Running",      "2": "Cycling",        "5": "Swimming",
+  "17": "Hiking",      "28": "Mountain Biking","29": "Cycling",
+  "36": "Skiing",      "45": "Trail Running",  "53": "Walking",
+};
+
+function normalizeTypeString(raw: string): string | undefined {
+  const t = raw.toLowerCase().replace(/_/g, " ").replace(/-/g, " ").trim();
+  if (!t) return undefined;
+
+  // Numeric code
+  if (/^\d+$/.test(t)) return SPORT_CODES[t];
+
+  // Specific types — order matters (more specific first)
+  if (/trail.?run/.test(t))                              return "Trail Running";
+  if (/mountain.?bik|mtb\b/.test(t))                    return "Mountain Biking";
+  if (/gravel/.test(t))                                  return "Gravel Cycling";
+  if (/e.?bik|ebike/.test(t))                           return "E-Bike";
+  if (/cycl|bik(?!e\s*path)|riding|velom/.test(t))      return "Cycling";
+  if (/running|jogg/.test(t))                            return "Running";
+  if (/hiking|trekking/.test(t))                         return "Hiking";
+  if (/walking/.test(t))                                 return "Walking";
+  if (/swim/.test(t))                                    return "Swimming";
+  if (/nordic.?ski|cross.?country.?ski/.test(t))         return "Cross-Country Skiing";
+  if (/ski(?!p)/.test(t))                                return "Skiing";
+  if (/kayak|canoe/.test(t))                             return "Kayaking";
+  if (/climb|alpini/.test(t))                            return "Climbing";
+  if (/triathlon/.test(t))                               return "Triathlon";
+
+  // Return as-is if it's a short alphabetic phrase (likely a valid type value)
+  if (/^[a-z][a-z\s]{1,28}$/.test(t))
+    return t.replace(/\b\w/g, c => c.toUpperCase());
+
+  return undefined;
+}
+
+function extractActivityType(xml: Document, suuntoNameMatch: RegExpMatchArray | null, rawTrackName: string): string | undefined {
+  // Layer 1 — <trk><type>
+  const typeEl = xml.querySelector("trk > type")?.textContent?.trim();
+  const fromType = normalizeTypeString(typeEl ?? "");
+  if (fromType) return fromType;
+
+  // Layer 2 — <extensions> sport/activity tags (Polar, some Garmin firmware)
+  // Try common element names used by different vendors
+  const extCandidates = [
+    "sport", "Sport", "activity", "Activity", "activity-type", "ActivityType",
+    "SportName", "sportName", "TrackActivity",
+  ];
+  for (const tag of extCandidates) {
+    const el = xml.querySelector(`trk > extensions > ${tag}, trk > extensions [localName="${tag}"]`);
+    const fromExt = normalizeTypeString(el?.textContent?.trim() ?? "");
+    if (fromExt) return fromExt;
+  }
+  // Also try any extension element whose tag name contains "sport" or "activity"
+  const extEls = xml.querySelectorAll("trk > extensions *");
+  for (const el of extEls) {
+    const name = el.localName?.toLowerCase() ?? "";
+    if (name.includes("sport") || name.includes("activit")) {
+      const fromExt = normalizeTypeString(el.textContent?.trim() ?? "");
+      if (fromExt) return fromExt;
+    }
+  }
+
+  // Layer 3 — Suunto machine-generated track name
+  if (suuntoNameMatch) {
+    return suuntoNameMatch[1].replace(/([A-Z])/g, " $1").trim();
+  }
+
+  // Layer 4 — keyword scan on track name (Wahoo, Coros, Komoot, generic apps)
+  // Conservative: only match clear sport keywords surrounded by word boundaries
+  const nameLc = rawTrackName.toLowerCase();
+  if (/\btrail\s*run/.test(nameLc))                        return "Trail Running";
+  if (/\bmountain\s*bik|\bmtb\b/.test(nameLc))             return "Mountain Biking";
+  if (/\bgravel\b/.test(nameLc))                            return "Gravel Cycling";
+  if (/\be\s*-?\s*bik/.test(nameLc))                       return "E-Bike";
+  if (/\bcycl|\bbiking\b/.test(nameLc))                    return "Cycling";
+  if (/\brunning\b|\bjogging\b/.test(nameLc))              return "Running";
+  if (/\bhiking\b|\btrekking\b/.test(nameLc))              return "Hiking";
+  if (/\bwalking\b/.test(nameLc))                          return "Walking";
+  if (/\bswimming\b/.test(nameLc))                         return "Swimming";
+  if (/\bnordic\s*ski|\bcross.country\s*ski/.test(nameLc)) return "Cross-Country Skiing";
+  if (/\bskiing\b/.test(nameLc))                           return "Skiing";
+  if (/\bkayak/.test(nameLc))                              return "Kayaking";
+  if (/\bclimbing\b/.test(nameLc))                         return "Climbing";
+
+  return undefined;
+}
+
 const ANDROID_BRANDS = ['samsung', 'galaxy', 'huawei', 'xiaomi', 'google', 'pixel',
   'motorola', 'oneplus', 'oppo', 'vivo', 'realme', 'sony xperia', 'android'];
 
@@ -607,18 +705,16 @@ export default function ProRefuelPage() {
       const bi = browserInfoRef.current;
       trackProcessingSession({
         status: "success", video_filename: file.name,
-        video_duration_s: isMobile ? iPhoneDurationMs / 1000 : (vpts.length > 0 ? (vpts[vpts.length - 1] as any).time / 1000 : null),
+        video_duration_s: videoDurationSec || null,
         camera_model: resolvedModel ?? null, activity_name: activityMeta.name ?? null,
-        // Recording device (from video metadata)
         device_type: deviceType, device_make: deviceMake, device_model: deviceModel,
         device_os: deviceOs, device_os_version: recordingDeviceOsVersion,
-        // Browser / web-app client device (from User-Agent)
         browser_os: bi?.os ?? null, browser_os_version: bi?.os_version ?? null,
         browser_name: bi?.browser ?? null, browser_version: bi?.browser_version ?? null,
         browser_is_mobile: bi?.is_mobile ?? null,
         gpx_points_count: activityPoints.length || null, gps_device: activityMeta.gpsDevice?.label ?? null,
         activity_location: activityMeta.location ?? null, sync_strategy: syncPlan.method ?? null,
-        scenes_count: sp.segments.length ?? null, unit_system: unit,
+        scenes_count: sp.segments.filter(s => s.type === 'ACTION').length || null, unit_system: unit,
         processing_time_ms: Date.now() - processingStart, error_message: null,
       }).then((processingSessionId) => {
         processingSessionIdRef.current = processingSessionId;
@@ -736,7 +832,7 @@ export default function ProRefuelPage() {
       ? suuntoNameMatch[1].replace(/([A-Z])/g, " $1").trim()  // "TrailRunning" → "Trail Running"
       : rawTrackName || "EPIC RIDE";
 
-    const activityType = xml.querySelector("trk > type")?.textContent?.trim() ?? undefined;
+    const activityType = extractActivityType(xml, suuntoNameMatch, rawTrackName);
     const gpsDevice   = creatorRaw ? detectGPSDevice(creatorRaw) : undefined;
     setActivityMeta({ name: trackName, ...(gpsDevice?.label ? { gpsDevice } : {}) });
     let resolvedLocation: string | undefined;
@@ -759,7 +855,7 @@ export default function ProRefuelPage() {
         }
       } catch { /* geocoding is optional */ }
     }
-    gpxMetricsRef.current = computeGpxMetrics(pts, { creator: gpsDevice?.label ?? creatorRaw ?? undefined, activityType, activityName: trackName, activityLocation: resolvedLocation });
+    gpxMetricsRef.current = computeGpxMetrics(validPts, { creator: gpsDevice?.label ?? creatorRaw ?? undefined, activityType, activityName: trackName, activityLocation: resolvedLocation });
   };
 
   const jsonLd = {

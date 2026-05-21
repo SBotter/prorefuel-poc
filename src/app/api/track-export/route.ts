@@ -19,6 +19,7 @@ export async function POST(req: NextRequest) {
       output_format:         body.output_format         ?? null,
       output_size_bytes:     body.output_size_bytes     ?? null,
       output_duration_s:     body.output_duration_s     ?? null,
+      download_action:       body.download_action       ?? null,
       app_version:           body.app_version           ?? null,
     };
 
