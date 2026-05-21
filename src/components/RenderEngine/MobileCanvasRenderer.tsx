@@ -1022,11 +1022,11 @@ export function MobileCanvasRenderer({
         setStatus("Preparing video…");
         videoEl.currentTime = target;
 
-        // Wait for seek to complete
+        // Wait for seek to complete — 15s for slow Android devices (was 5s, too short)
         await new Promise<void>(resolve => {
           const onSeeked = () => { videoEl.removeEventListener("seeked", onSeeked); resolve(); };
           videoEl.addEventListener("seeked", onSeeked);
-          setTimeout(resolve, 5000); // fallback timeout
+          setTimeout(resolve, 15_000);
         });
 
         // Wait for readyState >= 2 (HAVE_CURRENT_DATA)
@@ -1034,37 +1034,36 @@ export function MobileCanvasRenderer({
           await new Promise<void>(resolve => {
             const check = () => videoEl.readyState >= 2 ? resolve() : setTimeout(check, 80);
             check();
-            setTimeout(resolve, 5000);
+            setTimeout(resolve, 10_000);
           });
         }
         mlog("PRESEEK", `done — readyState=${videoEl.readyState} currentTime=${videoEl.currentTime.toFixed(2)}s`);
 
-        // Wait for the video decoder hardware to fully settle before starting
-        // the encoder. Both use Video Toolbox on iOS — concurrent init causes
-        // the encoder to fail immediately with no error log (muxer-level error).
-        // ── Pre-warm the iOS video decoder during the settle window ───────────
-        // Without this, the first ~1s of ACTION shows a frozen frame because
-        // the Video Toolbox decoder has a cold-start delay after a long pause.
-        // Strategy: play() for 200ms → pause() → video stays at target position
-        // (±0.2s) and the decoder is warm. When ACTION calls play() later,
-        // the decoder starts immediately with no freeze.
-        mlog("PRESEEK", "pre-warming decoder (play 200ms + pause)…");
-        videoEl.play().catch(() => {});
-        await new Promise<void>(r => setTimeout(r, 200));
-        videoEl.pause();
-        // Let Video Toolbox settle after the pause before encoder init
-        await new Promise<void>(r => setTimeout(r, 400));
-        mlog("PRESEEK", "delay done — decoder warm");
+        // ── Pre-warm the video decoder — iOS only ──────────────────────────────
+        // On iOS, Video Toolbox shares hardware with the VideoEncoder. A cold-start
+        // play() for 200ms warms the decoder so the first ACTION clip doesn't show
+        // a frozen frame. On Android, the decoder and encoder are independent —
+        // this play/pause cycle is unnecessary and adds 600ms of dead time.
+        if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+          mlog("PRESEEK", "pre-warming iOS Video Toolbox decoder…");
+          videoEl.play().catch(() => {});
+          await new Promise<void>(r => setTimeout(r, 200));
+          videoEl.pause();
+          await new Promise<void>(r => setTimeout(r, 400));
+          mlog("PRESEEK", "iOS decoder warm");
+        }
       } else {
-        // No pre-seek needed (videoStartTime=0), but still pre-warm the decoder
-        // so ACTION starts immediately without the ~1s frozen-frame cold-start.
-        mlog("PRESEEK", "no seek needed — pre-warming decoder at position 0");
-        videoEl.play().catch(() => {});
-        await new Promise<void>(r => setTimeout(r, 200));
-        videoEl.pause();
-        videoEl.currentTime = 0; // reset to beginning (advanced ~0.2s during warm-up)
-        await new Promise<void>(r => setTimeout(r, 300));
-        mlog("PRESEEK", "decoder pre-warmed at position 0");
+        // No pre-seek needed (videoStartTime=0)
+        // iOS only: pre-warm decoder at position 0 to avoid frozen first frame
+        if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+          mlog("PRESEEK", "no seek needed — pre-warming iOS decoder at position 0");
+          videoEl.play().catch(() => {});
+          await new Promise<void>(r => setTimeout(r, 200));
+          videoEl.pause();
+          videoEl.currentTime = 0;
+          await new Promise<void>(r => setTimeout(r, 300));
+          mlog("PRESEEK", "iOS decoder pre-warmed");
+        }
       }
 
       // Always mark gray frame as ready once the video element has content.
@@ -1220,17 +1219,10 @@ export function MobileCanvasRenderer({
     const handleSave = async () => {
       const file = new File([blob], filename, { type: "video/mp4" });
 
-      if (isAndroid) {
-        // ── Android: direct download → /sdcard/Downloads → Media Scanner → Gallery ──
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href = url; a.download = filename;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-        onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
-        return;
-      }
-
-      // ── iOS: Web Share API → Save to Photos in the native share sheet ─────────
+      // ── Web Share API — iOS and Android Chrome 75+ ─────────────────────────────
+      // On Android 10+ (scoped storage), <a download> saves to Downloads but NOT
+      // to the Gallery app. Web Share API lets the user choose Google Photos / Gallery
+      // directly from the native share sheet, which is the expected "Save" behavior.
       if (typeof navigator.share === "function" && navigator.canShare?.({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: "LENS Video" });
@@ -1238,11 +1230,14 @@ export function MobileCanvasRenderer({
           return;
         } catch (e: any) {
           if (e?.name === "AbortError") return; // user dismissed — stay on screen
-          // Share failed — fall through to direct download
+          // Share API failed — fall through to direct download
         }
       }
 
-      // Fallback: direct download
+      // ── Fallback: direct download (Android without Web Share API support) ──────
+      // File goes to /sdcard/Downloads. On Android 9 and older, the Media Scanner
+      // picks it up and adds it to the Gallery. On Android 10+, user must open
+      // the Files app and move it manually.
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url; a.download = filename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
