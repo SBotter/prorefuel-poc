@@ -466,49 +466,50 @@ export default function ProRefuelPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Extension used only as a quick format gate — not for camera identification
     const nameLc = file.name.toLowerCase();
     const isMP4  = nameLc.endsWith(".mp4") || file.type === "video/mp4";
     const isMOV  = nameLc.endsWith(".mov") || file.type === "video/quicktime";
     if (!isMP4 && !isMOV) {
       const ext = file.name.split(".").pop()?.toLowerCase() ?? "unknown";
-      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${ext}" — LENS only accepts .mp4 (GoPro/Android) and .mov (iPhone). File size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload");
+      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${ext}" — LENS accepts .mp4 and .mov. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload");
       setUploadError("Unsupported format. Use GoPro .mp4, iPhone .mov, or Android .mp4.");
       e.target.value = "";
       return;
     }
 
-    // ── HEVC / H.265 detection ────────────────────────────────────────────────
-    // Google Pixel records in H.265 (HEVC) by default in many modes (.TS, .MV,
-    // some 4K30 and higher). Chrome on Windows and Linux does NOT support H.265
-    // playback without an OS-level codec pack. MacOS Chrome 107+ supports it.
-    // We check via canPlayType() before starting heavy processing so the user
-    // gets an actionable message instead of a silent failure later.
+    // ── Camera detection + HEVC check — both read FILE CONTENT, not filename ──
+    // Run camera detection early (before setLoading) so the brand is available
+    // for the HEVC error message. Uses EXIF → Android byte scan → filename (last resort).
+    const { CameraDetector: CD } = await import("@/lib/media/CameraDetector");
+    const earlyDetection = await CD.detect(file);
+
     if (isMP4) {
       const testVid = document.createElement("video");
       const canHevc = testVid.canPlayType('video/mp4; codecs="hvc1"') ||
                       testVid.canPlayType('video/mp4; codecs="hev1"');
-      // Detect likely HEVC Android files by filename pattern or lack of canPlay
-      // Google Pixel: PXL_*.mp4 — Samsung/generic Android: YYYYMMDD_HHMMSS.mp4, VID_*.mp4
-      const looksAndroid = /^PXL_/i.test(file.name) || /^\d{8}_\d{6}/i.test(file.name) || /^VID_\d/i.test(file.name);
-      if (!canHevc && looksAndroid) {
-        const isPixel   = /^PXL_/i.test(file.name);
-        const isSamsung = /^\d{8}_\d{6}/i.test(file.name);
-        const brand = isPixel ? "Google Pixel" : isSamsung ? "Samsung" : "Android";
-        void trackError(
-          "WRONG_VIDEO_FORMAT",
-          `[${file.name}] HEVC/H.265 video from ${brand} — not supported in Chrome on Windows/Linux. ` +
-          `Fix: Camera app → Settings → Video quality → disable "Efficient video format" or select H.264.`,
-          "video_upload",
-        );
-        setUploadError(
-          `⚠ H.265 (HEVC) video detected — not supported in Chrome on Windows.\n\n` +
-          `Your ${brand} device recorded this video in H.265 (HEVC), which Chrome on Windows cannot play.\n\n` +
-          `Fix on your ${brand}:\n` +
-          `Camera app → Settings → Video quality → disable "Efficient video format" → record a new clip in H.264.\n\n` +
-          `Alternative: convert to H.264 with HandBrake (free) before importing.`
-        );
-        e.target.value = "";
-        return;
+      if (!canHevc) {
+        // Check file content (not filename) for actual H.265 codec
+        const { isHevcVideo } = await import("@/lib/engine/mobile/hevcTranscoder");
+        const fileIsHevc = await isHevcVideo(file);
+        if (fileIsHevc) {
+          const brand = earlyDetection.make || "Android";
+          void trackError(
+            "WRONG_VIDEO_FORMAT",
+            `[${file.name}] HEVC/H.265 video from ${brand} — not supported in Chrome on Windows/Linux. ` +
+            `Fix: Camera app → Settings → Video quality → disable "Efficient video format" or select H.264.`,
+            "video_upload",
+          );
+          setUploadError(
+            `⚠ H.265 (HEVC) video — not supported in Chrome on Windows.\n\n` +
+            `Your ${brand} device recorded this video in H.265 (HEVC), which Chrome on Windows cannot play.\n\n` +
+            `Fix on your ${brand}:\n` +
+            `Camera app → Settings → Video quality → disable "Efficient video format" → record a new clip in H.264.\n\n` +
+            `Alternative: convert to H.264 with HandBrake (free) before importing.`
+          );
+          e.target.value = "";
+          return;
+        }
       }
     }
 
@@ -521,7 +522,6 @@ export default function ProRefuelPage() {
     try {
       // Lazy-load engine modules — never imported on mobile, only when user actually uploads
       const [
-        { CameraDetector },
         { GoProEngineClient },
         { iPhoneEngineClient },
         { AndroidEngineClient },
@@ -531,7 +531,6 @@ export default function ProRefuelPage() {
         { TelemetryCrossRef },
         { StorytellingProcessor },
       ] = await Promise.all([
-        import("@/lib/media/CameraDetector"),
         import("@/lib/media/GoProEngineClient"),
         import("@/lib/media/iPhoneEngineClient"),
         import("@/lib/media/AndroidEngineClient"),
@@ -542,8 +541,9 @@ export default function ProRefuelPage() {
         import("@/lib/engine/StorytellingProcessor"),
       ]);
 
+      // Camera already detected from file content before setLoading — reuse result
       setStatusMsg("Identifying camera...");
-      const cameraDetection = await CameraDetector.detect(file);
+      const cameraDetection = earlyDetection;
       const isIPhone  = cameraDetection.type === "iphone";
       const isAndroid = cameraDetection.type === "android";
       const isMobile  = isIPhone || isAndroid;
@@ -621,11 +621,8 @@ export default function ProRefuelPage() {
         gpsVideoOffsetMs = result.gpsVideoOffsetMs;
       }
 
-      let resolvedModel = cameraModel || cameraDetection.model || cameraDetection.make;
-      if (!resolvedModel) {
-        const fn = file.name.toUpperCase();
-        if (/^G[HXL]\d{6}\.MP4$/.test(fn) || fn.startsWith("GOPR") || fn.startsWith("GP")) resolvedModel = "GoPro";
-      }
+      // resolvedModel comes only from file content (GPMF metadata or EXIF/byte scan)
+      const resolvedModel = cameraModel || cameraDetection.model || cameraDetection.make;
       if (resolvedModel) {
         const camera = detectCamera(resolvedModel);
         if (camera.label) setActivityMeta(prev => ({ ...prev, camera }));

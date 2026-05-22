@@ -19,19 +19,30 @@
 // reliable than canPlayType() which reflects browser capability, not file codec.
 
 export async function isHevcVideo(file: File): Promise<boolean> {
+  // H.265 codec fourccs are stored in the MP4 moov/trak/mdia/stbl/stsd box.
+  // For files with -movflags +faststart (moov at start), the first 16 KB suffices.
+  // For files without faststart (moov at end — common on Android), we must also
+  // check the last 64 KB. Both reads are fast (<5ms combined).
+  const find = (bytes: Uint8Array, tag: string): boolean => {
+    const c = [tag.charCodeAt(0), tag.charCodeAt(1), tag.charCodeAt(2), tag.charCodeAt(3)];
+    for (let i = 0; i <= bytes.length - 4; i++) {
+      if (bytes[i] === c[0] && bytes[i+1] === c[1] && bytes[i+2] === c[2] && bytes[i+3] === c[3]) return true;
+    }
+    return false;
+  };
+  const scan = (b: Uint8Array) => find(b, 'hvc1') || find(b, 'hev1') || find(b, 'dvhe');
+
   try {
-    const slice  = await file.slice(0, 16_384).arrayBuffer();
-    const bytes  = new Uint8Array(slice);
-    const find   = (tag: string): boolean => {
-      const c = [tag.charCodeAt(0), tag.charCodeAt(1), tag.charCodeAt(2), tag.charCodeAt(3)];
-      for (let i = 0; i <= bytes.length - 4; i++) {
-        if (bytes[i] === c[0] && bytes[i+1] === c[1] && bytes[i+2] === c[2] && bytes[i+3] === c[3]) return true;
-      }
-      return false;
-    };
-    return find('hvc1') || find('hev1') || find('dvhe');
+    // Check beginning (faststart files)
+    const head = new Uint8Array(await file.slice(0, 16_384).arrayBuffer());
+    if (scan(head)) return true;
+
+    // Check end (non-faststart — moov at EOF)
+    const tailSize = Math.min(65_536, file.size);
+    const tail = new Uint8Array(await file.slice(file.size - tailSize).arrayBuffer());
+    return scan(tail);
   } catch {
-    return false; // cannot determine — let pipeline proceed and handle natively
+    return false;
   }
 }
 

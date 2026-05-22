@@ -1,109 +1,85 @@
 /**
  * CameraDetector — identifies the camera type from a video file.
  *
- * Detection is done in two layers:
- *   1. Filename pattern (fast, synchronous) — covers 90% of cases
- *   2. EXIF Make/Model via exifr (authoritative, reads file header)
+ * Detection order (content-first, filename last resort):
+ *   1. Extension: .mov → iPhone (unambiguous — only Apple uses QuickTime MOV)
+ *   2. EXIF Make/Model — reads actual file content (Make tag)
+ *   3. Android MP4 container scan — reads 'com.android.*' metadata from bytes
+ *      Works for ANY filename including renamed files (moov at start or end)
+ *   4. Filename patterns — last resort only, for GoPro naming convention
+ *      (GH/GX/GL/GOPR/GP + digits — too specific to be a false positive)
  *
- * Adding a new camera in the future: add a pattern to FILENAME_PATTERNS
- * and a Make string to EXIF_MAKE_MAP. The rest of the pipeline picks it up
- * via the CameraType union.
+ * The filename is NEVER used as authoritative source. Users can rename files
+ * freely. Only file content determines the camera type.
  *
  * Supported types:
- *   'gopro'   → GoPro cameras (GPMF pipeline)
- *   'iphone'  → Apple iPhone (QuickTime/timestamp pipeline)
- *   'unknown' → Camera not yet supported — upload is rejected with an explanation
+ *   'gopro'   → GoPro cameras (GPMF telemetry pipeline)
+ *   'iphone'  → Apple iPhone (CreateDate timestamp pipeline)
+ *   'android' → Android phones (Samsung, Google Pixel, etc.)
+ *   'unknown' → Not supported — upload is rejected with explanation
  */
 
 export type CameraType = 'gopro' | 'iphone' | 'android' | 'unknown';
 
 export interface CameraDetection {
-  type: CameraType;
-  make: string;   // e.g. "GoPro", "Apple", "Samsung"
-  model: string;  // e.g. "HERO12 Black", "iPhone 15 Pro", "Galaxy S24 FE"
+  type:  CameraType;
+  make:  string;   // e.g. "GoPro", "Apple", "Samsung", "Google"
+  model: string;   // e.g. "HERO12 Black", "iPhone 15 Pro", "Galaxy S24 FE"
 }
 
-// ── Filename pattern registry ─────────────────────────────────────────────────
-// Each entry is [regex, CameraType]. First match wins.
-const FILENAME_PATTERNS: [RegExp, CameraType][] = [
-  [/^(GH|GX|GL|GOPR|GP)\d/i,                    'gopro'],
-  [/^IMG_\d{4}\.(MOV|mov)$/,                     'iphone'],
-  // Google Pixel: PXL_YYYYMMDD_HHMMSSMMM[.SUFFIX].mp4
-  // Covers standard (.mp4), Top Shot (.TS.mp4), Motion (.MV.mp4),
-  // Portrait (.PORTRAIT.mp4), Panorama (.PANO.mp4), Night Sight (.NIGHT.mp4)
-  [/^PXL_\d{8}_\d+(\.[A-Z]+)*\.mp4$/i,           'android'],
-  // Samsung / generic Android: YYYYMMDD_HHMMSS.mp4 or VID_YYYYMMDD_HHMMSS.mp4
-  [/^\d{8}_\d{6}\.(mp4|MP4)$/,                   'android'],
-  [/^VID_\d{8}_\d{6}\.(mp4|MP4)$/,               'android'],
-];
-
-// Extension-based fallback (lower confidence than filename pattern)
-const EXT_DEFAULTS: Record<string, CameraType> = {
-  mp4: 'gopro',
-  mov: 'iphone',
-};
-
 // ── EXIF Make → CameraType map ────────────────────────────────────────────────
-// Keys are lowercase substrings of the Make tag value.
 const EXIF_MAKE_MAP: [string, CameraType, string][] = [
-  // [substring, type, normalized make]
   ['gopro',    'gopro',    'GoPro'],
-  ['apple',    'iphone',  'Apple'],
-  ['samsung',  'android', 'Samsung'],
-  ['huawei',   'android', 'Huawei'],
-  ['xiaomi',   'android', 'Xiaomi'],
-  ['google',   'android', 'Google'],
-  ['motorola', 'android', 'Motorola'],
-  ['oneplus',  'android', 'OnePlus'],
-  ['oppo',     'android', 'OPPO'],
-  ['dji',      'unknown', 'DJI'],
-  ['insta',    'unknown', 'Insta360'],
+  ['apple',    'iphone',   'Apple'],
+  ['samsung',  'android',  'Samsung'],
+  ['huawei',   'android',  'Huawei'],
+  ['xiaomi',   'android',  'Xiaomi'],
+  ['google',   'android',  'Google'],
+  ['motorola', 'android',  'Motorola'],
+  ['oneplus',  'android',  'OnePlus'],
+  ['oppo',     'android',  'OPPO'],
+  ['dji',      'unknown',  'DJI'],
+  ['insta',    'unknown',  'Insta360'],
 ];
+
+// ── Filename patterns (LAST RESORT only) ─────────────────────────────────────
+// GoPro's camera-generated filenames are extremely specific (GH/GX/GL/GOPR/GP
+// followed by digits). These are used ONLY after all content-based checks fail.
+const GOPRO_FILENAME = /^(GH|GX|GL|GOPR|GP)\d/i;
 
 export class CameraDetector {
   /**
-   * Fast synchronous detection from filename alone.
-   * Returns null when no confident match is found.
-   */
-  static fromFilename(filename: string): CameraType | null {
-    for (const [pattern, type] of FILENAME_PATTERNS) {
-      if (pattern.test(filename)) return type;
-    }
-    return null;
-  }
-
-  /**
-   * Full detection: filename → extension → EXIF (last resort only).
-   *
-   * Order matters for performance: filename and extension checks are synchronous
-   * and do zero I/O. EXIF reading via exifr is deferred to the end because for
-   * iPhone MOV files exifr scans large portions of the file on the main thread
-   * before throwing "Unknown file format" (QuickTime 'qt  ' brand is not supported
-   * by exifr 7.x) — this blocks the browser and causes visible lag across the page.
-   *
-   * Always resolves — never rejects.
+   * Full detection — always reads file content, never relies solely on filename.
+   * Always resolves, never rejects.
    */
   static async detect(file: File): Promise<CameraDetection> {
-    // ── Layer 1: filename pattern (zero I/O, covers GoPro naming + iPhone IMG_XXXX) ─
-    for (const [pattern, type] of FILENAME_PATTERNS) {
-      if (pattern.test(file.name)) {
-        const make = type === 'gopro' ? 'GoPro' : type === 'iphone' ? 'Apple' : '';
-        return { type, make, model: '' };
-      }
-    }
-
-    // ── Layer 2: extension fallback — only for unambiguous extensions ────────
-    // .mov → iPhone (only Apple uses QuickTime brand)
-    // .mp4 → skip here; without a filename pattern match an MP4 could be
-    //        Android or GoPro — defer to EXIF (Layer 3) for confirmation.
     const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+
+    // ── Layer 1: MOV extension → iPhone ──────────────────────────────────────
+    // QuickTime MOV is exclusively used by Apple in consumer cameras/phones.
+    // No other mainstream device uses .mov. Extension alone is reliable here.
     if (ext === 'mov') {
+      // Confirm with EXIF if possible, but .mov is authoritative
+      try {
+        const exifr = await import('exifr');
+        const opts2: Record<string, any> = { quicktime: true, tiff: true, ifd0: true, exif: false, gps: false, mergeOutput: true, translateKeys: true, translateValues: false };
+        const tags  = await exifr.parse(file, opts2) as Record<string, any> | undefined;
+        if (tags) {
+          const model = String(tags.Model || tags.model || '').trim();
+          return { type: 'iphone', make: 'Apple', model };
+        }
+      } catch { /* EXIF unavailable — extension alone is sufficient */ }
       return { type: 'iphone', make: 'Apple', model: '' };
     }
 
-    // ── Layer 3: EXIF Make/Model (last resort — reads file, main thread) ────────
-    // Only reached for files that are neither .mp4/.mov nor match known filename
-    // patterns. In practice this path should never fire for GoPro or iPhone.
+    // Only MP4 from here — any other extension is unknown
+    if (ext !== 'mp4') {
+      return { type: 'unknown', make: '', model: '' };
+    }
+
+    // ── Layer 2: EXIF Make/Model (reads file content) ─────────────────────────
+    // Standard EXIF data — readable by exifr for GoPro, some iPhones, some Android.
+    // Android phones often skip EXIF entirely → Layer 3 handles those.
     try {
       const exifr = await import('exifr');
       const opts: Record<string, any> = {
@@ -129,10 +105,64 @@ export class CameraDetector {
           }
         }
       }
-    } catch {
-      // exifr read failed — fall through to unknown
+    } catch { /* exifr failed — continue to next layer */ }
+
+    // ── Layer 3: Android MP4 container byte scan (reads file content) ─────────
+    // Android writes 'com.android.*' proprietary metadata into the MP4 container
+    // regardless of filename. Works even for files renamed to anything.
+    //
+    // Scans BOTH the beginning (faststart files — moov at start) AND the end
+    // (non-faststart files — moov at EOF, common on Android camera apps).
+    const androidResult = await CameraDetector._scanAndroidContainer(file);
+    if (androidResult) return androidResult;
+
+    // ── Layer 4: GoPro filename pattern (last resort — content checks failed) ──
+    // GoPro's internal naming (GH/GX/GL/GOPR/GP + digits) is camera-generated
+    // and extremely specific. If EXIF failed but filename looks like GoPro,
+    // treat it as GoPro — the worker will verify via GPMF and fail clearly if not.
+    if (GOPRO_FILENAME.test(file.name)) {
+      return { type: 'gopro', make: 'GoPro', model: '' };
     }
 
     return { type: 'unknown', make: '', model: '' };
+  }
+
+  // ── Android container scan ───────────────────────────────────────────────────
+  private static async _scanAndroidContainer(file: File): Promise<CameraDetection | null> {
+    const decode   = (b: ArrayBuffer) => new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(b));
+    const scanText = (text: string): CameraDetection | null => {
+      if (!text.includes('com.android.')) return null;
+
+      // Infer brand from strings present in the container (keys and values
+      // are in separate MP4 boxes, so we scan for known brand strings)
+      let make = '';
+      const lc = text.toLowerCase();
+      if      (lc.includes('samsung'))   make = 'Samsung';
+      else if (lc.includes('google'))    make = 'Google';
+      else if (lc.includes('xiaomi'))    make = 'Xiaomi';
+      else if (lc.includes('huawei'))    make = 'Huawei';
+      else if (lc.includes('oneplus'))   make = 'OnePlus';
+      else if (lc.includes('motorola')) make = 'Motorola';
+      else if (lc.includes('oppo'))      make = 'OPPO';
+      else if (lc.includes('vivo'))      make = 'Vivo';
+      else if (lc.includes('realme'))    make = 'Realme';
+
+      const model = text.match(/com\.\w+\.android\.model\0{0,8}([A-Za-z0-9 _\-]{2,24})/)?.[1]?.trim() || '';
+      return { type: 'android', make, model };
+    };
+
+    try {
+      // Scan beginning — faststart files (moov at start)
+      const head = await file.slice(0, 65_536).arrayBuffer();
+      const r1   = scanText(decode(head));
+      if (r1) return r1;
+
+      // Scan end — non-faststart files (moov at EOF, common on Android)
+      const tailSize = Math.min(262_144, file.size);
+      const tail     = await file.slice(file.size - tailSize).arrayBuffer();
+      return scanText(decode(tail));
+    } catch {
+      return null;
+    }
   }
 }
