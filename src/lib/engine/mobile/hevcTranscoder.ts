@@ -97,13 +97,15 @@ export async function transcodeHevcToH264(
 
     onProgress(12, 'Converting H.265 → H.264…');
     const exitCode = await ff.exec([
-      '-i',       'input.mp4',
-      '-c:v',     'libx264',
-      '-preset',  'ultrafast', // fastest encode — important on mobile CPU
-      '-crf',     '23',        // good quality / speed balance
-      '-c:a',     'aac',
-      '-b:a',     '128k',
+      '-i',        'input.mp4',
+      '-c:v',      'libx264',
+      '-preset',   'ultrafast',
+      '-crf',      '26',
+      '-vf',       'scale=if(gt(iw,ih),min(1280,iw),-2):if(gt(iw,ih),-2,min(1280,ih))',
+      '-c:a',      'aac',
+      '-b:a',      '96k',
       '-movflags', '+faststart',
+      '-map_metadata', '0',
       'output.mp4',
     ]);
 

@@ -484,8 +484,13 @@ export default function MobilePage() {
 
       if (isMobile) {
         setStatusMsg(isAndroid ? "Reading Android metadata…" : "Reading iPhone metadata…");
+        // For Android: extract timestamp metadata from the ORIGINAL file.
+        // If H.265 was transcoded, FFmpeg may reset mvhd.creation_time in the
+        // output file. The original file always has the correct recording timestamp.
+        // The transcoded (processFile) is used only for video rendering.
+        const metaFile = (isAndroid && processFile !== file) ? file : processFile;
         const result = isAndroid
-          ? await AndroidEngineClient.extractTelemetry(processFile)
+          ? await AndroidEngineClient.extractTelemetry(metaFile)
           : await iPhoneEngineClient.extractTelemetry(processFile);
 
         // ── Critical: use ALL result fields, same as desktop page ──────────────
