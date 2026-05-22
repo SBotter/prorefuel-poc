@@ -101,7 +101,6 @@ export async function transcodeHevcToH264(
       '-c:v',      'libx264',
       '-preset',   'ultrafast',
       '-crf',      '26',
-      '-vf',       'scale=if(gt(iw,ih),min(1280,iw),-2):if(gt(iw,ih),-2,min(1280,ih))',
       '-c:a',      'aac',
       '-b:a',      '96k',
       '-movflags', '+faststart',
