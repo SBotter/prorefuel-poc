@@ -33,12 +33,15 @@ export async function isHevcVideo(file: File): Promise<boolean> {
   const scan = (b: Uint8Array) => find(b, 'hvc1') || find(b, 'hev1') || find(b, 'dvhe');
 
   try {
-    // Check beginning (faststart files)
+    // Check beginning (faststart files — moov at start)
     const head = new Uint8Array(await file.slice(0, 16_384).arrayBuffer());
     if (scan(head)) return true;
 
-    // Check end (non-faststart — moov at EOF)
-    const tailSize = Math.min(65_536, file.size);
+    // Check end (non-faststart — moov at EOF).
+    // The moov box of a typical mobile video is 300–600 KB.
+    // hvc1 lives near the BEGINNING of moov (stsd box), which can be
+    // 300–500 KB before EOF. Reading 1 MB ensures we always capture it.
+    const tailSize = Math.min(1_048_576, file.size); // last 1 MB
     const tail = new Uint8Array(await file.slice(file.size - tailSize).arrayBuffer());
     return scan(tail);
   } catch {

@@ -388,27 +388,41 @@ export default function MobilePage() {
       return;
     }
 
+    // ── Camera detection on ORIGINAL file (before any transcoding) ──────────────
+    // Must run on the original file so that Android container metadata (com.android.*)
+    // is available. After FFmpeg transcoding, these tags may be stripped.
+    const { CameraDetector: CD } = await import("@/lib/media/CameraDetector");
+    const originalCamDetection   = await CD.detect(file);
+    mlog("CAM_EARLY", `type=${originalCamDetection.type} make=${originalCamDetection.make}`);
+
     // ── H.265 / HEVC pre-transcoding ─────────────────────────────────────────────
-    // Detect H.265 by reading the MP4 container headers (fast, no server needed).
-    // Only activates for HEVC files — GoPro, iPhone, and H.264 Android pass through
-    // immediately with zero overhead. The rest of the pipeline is unchanged.
+    // Only transcodes when the file IS H.265 (byte scan) AND the browser cannot
+    // play H.265 natively. Android Chrome usually has hardware H.265 support —
+    // skip the expensive FFmpeg step when not needed.
     let processFile = file;
     try {
       const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
       const hevc = await isHevcVideo(file);
       if (hevc) {
-        mlog("HEVC", `detected H.265 in ${file.name} (${(file.size/1024/1024).toFixed(1)}MB) — transcoding to H.264`);
-        setHevcConverting(true);
-        setHevcProgress(0);
-        setHevcStatus("Loading converter…");
-        processFile = await transcodeHevcToH264(file, (pct, status) => {
-          setHevcProgress(pct);
-          setHevcStatus(status);
-        });
-        mlog("HEVC", `transcoding done — new file size: ${(processFile.size/1024/1024).toFixed(1)}MB`);
-        setHevcConverting(false);
-        setHevcProgress(0);
-        setHevcStatus("");
+        const testVid  = document.createElement("video");
+        const canH265  = testVid.canPlayType('video/mp4; codecs="hvc1"') !== '' ||
+                         testVid.canPlayType('video/mp4; codecs="hev1"') !== '';
+        if (canH265) {
+          mlog("HEVC", `detected H.265 but browser supports it natively — skipping transcode`);
+        } else {
+          mlog("HEVC", `detected H.265, browser cannot play it — transcoding to H.264`);
+          setHevcConverting(true);
+          setHevcProgress(0);
+          setHevcStatus("Loading converter…");
+          processFile = await transcodeHevcToH264(file, (pct, status) => {
+            setHevcProgress(pct);
+            setHevcStatus(status);
+          });
+          mlog("HEVC", `transcoding done — ${(processFile.size/1024/1024).toFixed(1)}MB`);
+          setHevcConverting(false);
+          setHevcProgress(0);
+          setHevcStatus("");
+        }
       }
     } catch (err: any) {
       setHevcConverting(false);
@@ -436,7 +450,6 @@ export default function MobilePage() {
 
     try {
       const [
-        { CameraDetector },
         { iPhoneEngineClient },
         { AndroidEngineClient },
         { GoProEngineClient },
@@ -445,7 +458,6 @@ export default function MobilePage() {
         { TelemetryCrossRef },
         { StorytellingProcessor },
       ] = await Promise.all([
-        import("@/lib/media/CameraDetector"),
         import("@/lib/media/iPhoneEngineClient"),
         import("@/lib/media/AndroidEngineClient"),
         import("@/lib/media/GoProEngineClient"),
@@ -455,8 +467,9 @@ export default function MobilePage() {
         import("@/lib/engine/StorytellingProcessor"),
       ]);
 
+      // Use detection from original file (before transcoding) — preserves Android metadata
       setStatusMsg("Identifying camera…");
-      const cam = await CameraDetector.detect(processFile);
+      const cam = originalCamDetection;
       camResult = cam; // expose to catch block for richer error messages
       const isIPhone  = cam.type === "iphone";
       const isAndroid = cam.type === "android";
