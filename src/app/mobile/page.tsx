@@ -234,6 +234,11 @@ export default function MobilePage() {
   const gpxMetricsRef          = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
   const videoMetricsRef        = useRef<Omit<VideoUploadInsert, "app_version" | "processing_session_id"> | null>(null);
 
+  // H.265 pre-transcoding state — only active when an HEVC video is detected
+  const [hevcConverting, setHevcConverting] = useState(false);
+  const [hevcProgress,   setHevcProgress]   = useState(0);
+  const [hevcStatus,     setHevcStatus]     = useState("");
+
   // ── Capability detection + debug mode ──────────────────────────────────────
   useEffect(() => {
     setMounted(true);
@@ -263,14 +268,22 @@ export default function MobilePage() {
       return { lat, lon, ele, time, ...(hr !== undefined && { hr }), ...(cad !== undefined && { cad }), ...(spd !== undefined && { speed: spd }) };
     };
 
-    let pts = Array.from(xml.querySelectorAll("trkpt")).map(parsePoint).filter(p => isFinite(p.time));
+    // Parse all trkpts (unfiltered) to detect timestamp-less files
+    const allTrkpts = Array.from(xml.querySelectorAll("trkpt")).map(parsePoint);
+    let pts = allTrkpts.filter(p => isFinite(p.time));
     if (pts.length === 0) {
       const rtepts = Array.from(xml.querySelectorAll("rtept")).map(parsePoint).filter(p => isFinite(p.time));
       pts = rtepts;
     }
     if (pts.length === 0) {
-      void trackError("NO_GPS_TRACK", `No GPS track found in GPX.`, "gpx_upload");
-      setGpxError("No GPS track found in this file."); return;
+      const isStravaNoTs = creatorRaw.toLowerCase().includes("strava") && allTrkpts.length > 0;
+      const msg = isStravaNoTs
+        ? "This Strava GPX has no timestamps — exported from a public URL which strips timing data.\n\nUse \"Import from Strava\" button (recommended) or log into Strava → activity → ⋯ → Export GPX."
+        : "No GPS track found in this file.";
+      void trackError("NO_GPS_TRACK",
+        `[${gpxNameRef.current || "gpx"}] ${isStravaNoTs ? `Strava public URL export — ${allTrkpts.length} points but all timestamps stripped.` : "No <trkpt>/<rtept> elements or all timestamps invalid."}`,
+        "gpx_upload");
+      setGpxError(msg); return;
     }
 
     setActivityPoints(pts);
@@ -335,7 +348,8 @@ export default function MobilePage() {
 
     const nameLc = file.name.toLowerCase();
     if (!nameLc.endsWith(".mp4") && !nameLc.endsWith(".mov")) {
-      void trackError("WRONG_VIDEO_FORMAT", `Unsupported format: "${file.name}"`, "video_upload");
+      const mobileExt = file.name.split(".").pop()?.toLowerCase() ?? "unknown";
+      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${mobileExt}" on mobile. LENS mobile accepts .mp4 and .mov only. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload");
       setUploadError("Only .mp4 and .mov files are supported."); e.target.value = ""; return;
     }
 
@@ -374,16 +388,68 @@ export default function MobilePage() {
       return;
     }
 
+    // ── Camera detection on ORIGINAL file (before any transcoding) ──────────────
+    // Must run on the original file so that Android container metadata (com.android.*)
+    // is available. After FFmpeg transcoding, these tags may be stripped.
+    const { CameraDetector: CD } = await import("@/lib/media/CameraDetector");
+    const originalCamDetection   = await CD.detect(file);
+    mlog("CAM_EARLY", `type=${originalCamDetection.type} make=${originalCamDetection.make}`);
+
+    // ── H.265 / HEVC pre-transcoding ─────────────────────────────────────────────
+    // Only transcodes when the file IS H.265 (byte scan) AND the browser cannot
+    // play H.265 natively. Android Chrome usually has hardware H.265 support —
+    // skip the expensive FFmpeg step when not needed.
+    let processFile = file;
+    try {
+      const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
+      const hevc = await isHevcVideo(file);
+      if (hevc) {
+        const testVid  = document.createElement("video");
+        const canH265  = testVid.canPlayType('video/mp4; codecs="hvc1"') !== '' ||
+                         testVid.canPlayType('video/mp4; codecs="hev1"') !== '';
+        if (canH265) {
+          mlog("HEVC", `detected H.265 but browser supports it natively — skipping transcode`);
+        } else {
+          mlog("HEVC", `detected H.265, browser cannot play it — transcoding to H.264`);
+          setHevcConverting(true);
+          setHevcProgress(0);
+          setHevcStatus("Loading converter…");
+          processFile = await transcodeHevcToH264(file, (pct, status) => {
+            setHevcProgress(pct);
+            setHevcStatus(status);
+          });
+          mlog("HEVC", `transcoding done — ${(processFile.size/1024/1024).toFixed(1)}MB`);
+          setHevcConverting(false);
+          setHevcProgress(0);
+          setHevcStatus("");
+        }
+      }
+    } catch (err: any) {
+      setHevcConverting(false);
+      setHevcProgress(0);
+      setHevcStatus("");
+      mlog("HEVC", `transcoding failed: ${err.message}`);
+      void trackError("WRONG_VIDEO_FORMAT",
+        `[${file.name}] H.265 transcoding failed: ${err.message}`,
+        "video_upload");
+      setUploadError(
+        "Failed to convert H.265 video. " +
+        "Try recording in H.264: Camera app → Settings → Video quality → disable \"Efficient video format\"."
+      );
+      e.target.value = "";
+      return;
+    }
+
     setLoading(true); setUploadError(null); setProgress(0);
     mlogClear();
-    mlog("UPLOAD", `file=${file.name} size=${(file.size/1_048_576).toFixed(1)}MB`);
+    mlog("UPLOAD", `file=${processFile.name} size=${(processFile.size/1_048_576).toFixed(1)}MB`);
     const interval        = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);
     const processingStart = Date.now();
     let   errorTracked    = false; // prevents double-tracking in the catch block
+    let   camResult: { type: string; make: string; model: string } | null = null;
 
     try {
       const [
-        { CameraDetector },
         { iPhoneEngineClient },
         { AndroidEngineClient },
         { GoProEngineClient },
@@ -392,7 +458,6 @@ export default function MobilePage() {
         { TelemetryCrossRef },
         { StorytellingProcessor },
       ] = await Promise.all([
-        import("@/lib/media/CameraDetector"),
         import("@/lib/media/iPhoneEngineClient"),
         import("@/lib/media/AndroidEngineClient"),
         import("@/lib/media/GoProEngineClient"),
@@ -402,8 +467,10 @@ export default function MobilePage() {
         import("@/lib/engine/StorytellingProcessor"),
       ]);
 
+      // Use detection from original file (before transcoding) — preserves Android metadata
       setStatusMsg("Identifying camera…");
-      const cam = await CameraDetector.detect(file);
+      const cam = originalCamDetection;
+      camResult = cam; // expose to catch block for richer error messages
       const isIPhone  = cam.type === "iphone";
       const isAndroid = cam.type === "android";
       const isMobile  = isIPhone || isAndroid;
@@ -417,9 +484,14 @@ export default function MobilePage() {
 
       if (isMobile) {
         setStatusMsg(isAndroid ? "Reading Android metadata…" : "Reading iPhone metadata…");
+        // For Android: extract timestamp metadata from the ORIGINAL file.
+        // If H.265 was transcoded, FFmpeg may reset mvhd.creation_time in the
+        // output file. The original file always has the correct recording timestamp.
+        // The transcoded (processFile) is used only for video rendering.
+        const metaFile = (isAndroid && processFile !== file) ? file : processFile;
         const result = isAndroid
-          ? await AndroidEngineClient.extractTelemetry(file)
-          : await iPhoneEngineClient.extractTelemetry(file);
+          ? await AndroidEngineClient.extractTelemetry(metaFile)
+          : await iPhoneEngineClient.extractTelemetry(processFile);
 
         // ── Critical: use ALL result fields, same as desktop page ──────────────
         vpts               = result.points as any[];
@@ -463,7 +535,7 @@ export default function MobilePage() {
         }
       } else {
         setStatusMsg("Extracting GoPro telemetry…");
-        const result = await GoProEngineClient.extractTelemetry(file);
+        const result = await GoProEngineClient.extractTelemetry(processFile);
         vpts             = result.points as any[];
         gpsVideoOffsetMs = result.gpsVideoOffsetMs;
         mlog("PARSE", `gopro vpts=${vpts.length} offset=${gpsVideoOffsetMs}ms`);
@@ -488,7 +560,12 @@ export default function MobilePage() {
           const vidDate = new Date(vidT0).toLocaleDateString();
           const actDate = new Date(actT0).toLocaleDateString();
           mlog("ERROR", `no temporal overlap: video=${vidDate} gpx=${actDate}`);
-          void trackError("VIDEO_GPX_MISMATCH", `[${file.name}] Video date (${vidDate}) ≠ GPX date (${actDate}).`, "video_upload");
+          void trackError("VIDEO_GPX_MISMATCH",
+            `[${file.name}] Date mismatch — video: ${vidDate}, GPX: ${actDate}. ` +
+            `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""}. ` +
+            `Activity: "${activityName}". ` +
+            `Cause: different days/sessions, wrong files paired, or phone clock not on auto.`,
+            "video_upload");
           errorTracked = true;
           throw new Error(`This video and GPX are from different days — video: ${vidDate}, GPX: ${actDate}. Please use files from the same ride.`);
         }
@@ -531,9 +608,12 @@ export default function MobilePage() {
       const resolvedCamera = cam.model || cam.make || null;
       const deviceOs       = isAndroid ? "Android" : (isMobile ? "iOS" : null);
       videoMetricsRef.current = {
-        filename: file.name, file_size_bytes: file.size, camera_model: resolvedCamera,
+        filename: processFile.name, file_size_bytes: processFile.size, camera_model: resolvedCamera,
         device_type: cam.type as any, device_make: cam.make || null,
-        device_model: cam.model || null, device_os: deviceOs, device_os_version: null,
+        device_model: cam.model || null, device_os: deviceOs,
+        device_os_version: isAndroid
+          ? (mobileCaps?.androidVersion?.toString() ?? null)
+          : (mobileCaps?.iosVersion?.toString()     ?? null),
         has_gps: isMobile ? iPhoneHasStartGPS : vpts.length > 0, gps_points_count: vpts.length,
         gps_duration_s: videoProfile.durationSec, gps_sampling_interval_ms: videoProfile.samplingIntervalMs,
         gps_start_utc: vpts.length > 0 ? new Date(vpts[0].time).toISOString() : null,
@@ -548,7 +628,7 @@ export default function MobilePage() {
       // Track processing session
       trackProcessingSession({
         status:              "success",
-        video_filename:      file.name,
+        video_filename:      processFile.name,
         video_duration_s:    videoDurationSec || null,
         camera_model:        resolvedCamera,
         device_type:         cam.type as "gopro" | "iphone" | "android" | "unknown",
@@ -582,7 +662,7 @@ export default function MobilePage() {
 
       setHighlights(segments);
       setStoryPlan(sp);
-      setVideoFile(file);
+      setVideoFile(processFile);
       setVideoLoaded(true);
       setStep("READY");
     } catch (err: any) {
@@ -591,7 +671,12 @@ export default function MobilePage() {
       setUploadError(err.message ?? "Processing failed.");
       if (!errorTracked) {
         // Unknown/unexpected error — not already tracked at its source
-        void trackError("NO_SCENES", `[${file.name}] ${err.message ?? "Processing failed"}`, "video_upload");
+        void trackError("NO_SCENES",
+        `[${file.name}] ${err.message ?? "Processing failed"}. ` +
+        `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""}. ` +
+        `GPX points: ${activityPoints.length}. ` +
+        `Activity: "${activityName}".`,
+        "video_upload");
       }
       trackProcessingSession({
         status: "error", video_filename: file.name, video_duration_s: null,
@@ -640,6 +725,47 @@ export default function MobilePage() {
     videoMetricsRef.current        = null;
     setStep("UPLOAD");
   };
+
+  // ── Render: H.265 conversion overlay ────────────────────────────────────────
+  if (hevcConverting) {
+    return (
+      <div className="fixed inset-0 z-[200] bg-[#050505] flex flex-col items-center justify-center p-8 text-white">
+        {/* Brand */}
+        <div className="flex flex-col items-center mb-10">
+          <span className="text-4xl font-black tracking-tight leading-none mb-1">LENS</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Developed by</span>
+            <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[13px] opacity-50" />
+          </div>
+        </div>
+
+        {/* Icon */}
+        <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mb-6">
+          <svg viewBox="0 0 24 24" className="w-8 h-8 text-amber-400 animate-spin" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 12a9 9 0 11-6.219-8.56"/>
+          </svg>
+        </div>
+
+        <p className="text-lg font-black uppercase tracking-[0.15em] mb-1">Preparing Video</p>
+        <p className="text-amber-500 font-black text-sm uppercase tracking-widest mb-6 animate-pulse">
+          {hevcStatus || "Converting…"}
+        </p>
+
+        {/* Progress bar */}
+        <div className="w-full max-w-[280px] h-2 bg-zinc-800 rounded-full overflow-hidden mb-3">
+          <div
+            className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out"
+            style={{ width: `${hevcProgress}%` }}
+          />
+        </div>
+        <p className="text-zinc-500 font-black text-sm mb-8">{hevcProgress}%</p>
+
+        <p className="text-zinc-600 text-[11px] text-center max-w-[240px] leading-relaxed">
+          Your video uses H.265 encoding. Converting to a compatible format — this happens only once per clip.
+        </p>
+      </div>
+    );
+  }
 
   // ── Render: debug panel (overlay — shown on top of any state) ─────────────
   if (showDebug) return <DebugPanel />;

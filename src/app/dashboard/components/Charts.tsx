@@ -703,6 +703,54 @@ function OverviewTab({ data }: { data: DashboardData }) {
 
 // ── Tab: Errors ───────────────────────────────────────────────────────────────
 
+function ErrorsByDeviceAndSizeTable({ data }: { data: DashboardData["errorsByDeviceSize"] }) {
+  if (!data || data.length === 0) return null;
+  return (
+    <Card>
+      <ChartTitle>Errors by Device OS · File Size · Type</ChartTitle>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-zinc-500 border-b border-zinc-800">
+              {["Device OS", "Version", "Error Type", "File Size", "Count"].map(h => (
+                <th key={h} className="text-left py-2 pr-3 font-black uppercase tracking-widest whitespace-nowrap text-[10px]">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((r, i) => {
+              const errColor = r.error === "File too large"     ? "#ef4444"
+                             : r.error === "H.265 not supported" ? "#f97316"
+                             : r.error === "Camera not supported" ? "#8b5cf6"
+                             : r.error === "GPS missing"          ? "#eab308"
+                             : r.error === "Timestamp error"      ? "#3b82f6"
+                             : "#71717a";
+              return (
+                <tr key={i} className="border-b border-zinc-800/40 hover:bg-zinc-800/20 transition-colors">
+                  <td className="py-2 pr-3">
+                    <span className={`font-black text-xs ${r.os === "iOS" ? "text-amber-400" : "text-green-400"}`}>
+                      {r.os}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 text-zinc-300 font-mono text-[11px]">{r.version}</td>
+                  <td className="py-2 pr-3">
+                    <span className="px-2 py-0.5 rounded text-[10px] font-black"
+                      style={{ background: `${errColor}18`, color: errColor }}>
+                      {r.error}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 text-zinc-400 text-[11px]">{r.size}</td>
+                  <td className="py-2 font-black text-white">{r.count}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
 function ErrorsTab({ data }: { data: DashboardData }) {
   return (
     <div className="space-y-6">
@@ -716,6 +764,7 @@ function ErrorsTab({ data }: { data: DashboardData }) {
         <ErrorsOverTimeChart        data={data.errorsOverTime} />
         <SessionOutcomeOverTimeChart data={data.sessionSuccessOverTime} />
       </div>
+      <ErrorsByDeviceAndSizeTable data={data.errorsByDeviceSize ?? []} />
       <RecentErrorsTable data={data.recentErrors} />
     </div>
   );
@@ -757,6 +806,11 @@ function VideoDevicesTab({ data }: { data: DashboardData }) {
             data={data.mobileOsBreakdown ?? []}
             title="Mobile OS (iOS vs Android)"
             colors={["#f59e0b", "#22c55e", "#3b82f6"]}
+          />
+          <HBarChart
+            data={data.osVersionBreakdown ?? []}
+            title="OS Version Distribution"
+            color="#22c55e"
           />
           <DonutChart
             data={data.mobileDownloadActions ?? []}
@@ -854,6 +908,39 @@ function EngineTab({ data }: { data: DashboardData }) {
           <VBarChart  data={data.videoDuration}   title="Input Video Length Distribution" color="#22d3ee" />
           <VBarChart  data={data.processingTime}  title="Processing Time Distribution" color="#a855f7" />
           <SuccessRateByDeviceChart data={data.successByDevice} />
+        </div>
+      </section>
+
+      <section>
+        <SectionLabel>Upload File Size</SectionLabel>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <VBarChart
+            data={(data.videoSizeStats?.buckets ?? [])}
+            title="Video File Size Distribution"
+            color="#f59e0b"
+          />
+          {data.videoSizeStats && data.videoSizeStats.count > 0 && (
+            <Card>
+              <ChartTitle>File Size — Stats</ChartTitle>
+              <div className="space-y-3 mt-2">
+                <div className="flex justify-between items-center py-2 border-b border-zinc-800/60">
+                  <span className="text-zinc-400 text-sm">Total uploads tracked</span>
+                  <span className="text-white font-black">{data.videoSizeStats.count}</span>
+                </div>
+                <div className="flex justify-between items-center py-2 border-b border-zinc-800/60">
+                  <span className="text-zinc-400 text-sm">Average file size</span>
+                  <span className="text-amber-400 font-black">{data.videoSizeStats.avgMB} MB</span>
+                </div>
+                <div className="flex justify-between items-center py-2">
+                  <span className="text-zinc-400 text-sm">Largest file uploaded</span>
+                  <span className="text-amber-400 font-black">{data.videoSizeStats.maxMB} MB</span>
+                </div>
+                <p className="text-[10px] text-zinc-600 pt-1 leading-relaxed">
+                  Helps calibrate upload limits and understand user expectations.
+                </p>
+              </div>
+            </Card>
+          )}
         </div>
       </section>
 

@@ -924,7 +924,9 @@ const MapEngine = forwardRef(
 
           void trackError(
             isOOM ? "RENDER_OOM" : "RENDER_FAILED",
-            isOOM ? "Not enough memory to export." : "Export failed.",
+            isOOM
+              ? `Out of memory during FFmpeg transcode. Chunks recorded: ${chunks.length}, fallback blob: ${(fallbackBlob.size/1024/1024).toFixed(1)}MB. Browser: ${navigator.userAgent.slice(0,80)}. Cause: too many open tabs, large file, or insufficient RAM.`
+              : `FFmpeg export failed after ${((Date.now()-renderStart)/1000).toFixed(1)}s. Error: ${err?.message ?? "unknown"}. Chunks: ${chunks.length}.`,
             "render"
           );
           setRenderError({
@@ -1427,8 +1429,12 @@ const MapEngine = forwardRef(
         ctx.fillStyle = "#f59e0b";
         ctx.fillText(` ${DIST_LABEL[unit]}`, W * 0.04 + dW, metY - 4);
 
-        const subY = metY + Math.round(H * 0.036);
-        let groupX = W * 0.04;
+        const subY   = metY + Math.round(H * 0.036);
+        const lineH  = Math.round(W * 0.054);
+        // Stable: if ANY point has power data, keep watts visible at 0W when coasting
+        const hasPow = activityPoints.some((p: any) => p.power > 0);
+        const timeY  = hasPow ? subY + lineH : subY;
+        let groupX   = W * 0.04;
         ctx.save();
         ctx.beginPath();
         ctx.rect(0, 0, Math.round(W * 0.54), H);
@@ -1438,22 +1444,18 @@ const MapEngine = forwardRef(
           shadow("rgba(0,0,0,1)", 20);
           ctx.fillStyle = "#ff4d4d";
           ctx.fillText(`\u2665 ${Math.round(pt.hr)}`, groupX, subY);
-          groupX +=
-            ctx.measureText(`\u2665 ${Math.round(pt.hr)}`).width +
-            Math.round(W * 0.03);
+          groupX += ctx.measureText(`\u2665 ${Math.round(pt.hr)}`).width + Math.round(W * 0.03);
         }
-        if (pt.power) {
+        if (hasPow) {
           shadow("rgba(0,0,0,1)", 20);
           ctx.fillStyle = "#ffffff";
-          ctx.fillText(`\u26A1 ${Math.round(pt.power)}W`, groupX, subY);
-          groupX +=
-            ctx.measureText(`\u26A1 ${Math.round(pt.power)}W`).width +
-            Math.round(W * 0.03);
+          ctx.fillText(`\u26A1 ${Math.round((pt as any).power ?? 0)}W`, groupX, subY);
+          groupX = W * 0.04; // time moves to row 2
         }
         shadow("rgba(0,0,0,1)", 20);
         ctx.fillStyle = "rgba(255,255,255,0.9)";
-        ctx.fillText(`\u23F1 ${timeStr}`, groupX, subY);
-        ctx.restore();
+        ctx.fillText(`\u23F1 ${timeStr}`, groupX, timeY);
+        ctx.restore();        ctx.restore();
 
         // Intensity bar — top of canvas, full width
         const iScore = storyPlan?.intensityScores?.[idx] ?? 0;

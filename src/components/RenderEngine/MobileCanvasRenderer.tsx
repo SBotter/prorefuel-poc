@@ -549,12 +549,23 @@ export function MobileCanvasRenderer({
       c.save();
       c.beginPath(); c.rect(0, 0, Math.round(W * 0.54), H); c.clip();
       c.font = `900 ${Math.round(W * 0.044)}px sans-serif`;
-      let groupX = W * 0.04;
+      // Two-row layout when power is present:
+      //   Row 1: ♥ HR   ⚡ Power    Row 2: ⏱ Time
+      const hasPow2 = hasPowerData; // stable: keep visible at 0W when coasting
+      const lineH2  = Math.round(W * 0.054);
+      const timeY2  = hasPow2 ? subY + lineH2 : subY;
+      let groupX    = W * 0.04;
       if (hasHR && cur?.hr) {
         sh(c, "rgba(0,0,0,1)", 20);
         c.fillStyle = "#ff4d4d";
-        c.fillText(`♥ ${Math.round(cur.hr)}`, groupX, subY);
-        groupX += c.measureText(`♥ ${Math.round(cur.hr)}`).width + Math.round(W * 0.03);
+        c.fillText(`\u2665 ${Math.round(cur.hr)}`, groupX, subY);
+        groupX += c.measureText(`\u2665 ${Math.round(cur.hr)}`).width + Math.round(W * 0.03);
+      }
+      if (hasPow2) {
+        sh(c, "rgba(0,0,0,1)", 20);
+        c.fillStyle = "#ffffff";
+        c.fillText(`\u26A1 ${Math.round((cur as any)?.power ?? 0)}W`, groupX, subY);
+        groupX = W * 0.04; // time on row 2
       }
       const relMs  = Math.max(0, (cur?.time || 0) - (pts[0]?.time || 0));
       const relSec = Math.round(relMs / 1000);
@@ -564,8 +575,8 @@ export function MobileCanvasRenderer({
       const tstr = rhh > 0 ? `${rhh.toString().padStart(2,"0")}:${rmm}:${rss}` : `${rmm}:${rss}`;
       sh(c, "rgba(0,0,0,1)", 20);
       c.fillStyle = "rgba(255,255,255,0.9)";
-      c.fillText(`⏱ ${tstr}`, groupX, subY);
-      c.restore();
+      c.fillText(`\u23F1 ${tstr}`, groupX, timeY2);
+      c.restore();      c.restore();
 
       // Intensity bar — top of canvas (speed-based, same as desktop concept)
       const barW2 = Math.round(W * c01(speedRaw / (maxGauge / SPEED_DIV)));
@@ -949,6 +960,9 @@ export function MobileCanvasRenderer({
       c.fillText("LENS", wmCX, wmCY);
       c.restore();
     }
+
+    // Pre-compute: does ANY point in this activity have power data?
+    const hasPowerData = pts.some((p: any) => p.power > 0);
 
     // ── Master draw function (called each frame) ───────────────────────────────
     function drawFrame(elapsed: number) {

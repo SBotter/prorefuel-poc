@@ -158,7 +158,8 @@ async function findMoovContent(file: File, maxBytes = 12 * 1024 * 1024): Promise
   return null;
 }
 
-const MAC_TO_UNIX_S = 2082844800;
+const MAC_TO_UNIX_S  = 2082844800;
+const MIN_VALID_MS   = new Date('2000-01-01').getTime(); // sanity floor
 
 interface TkhdResult { createDateMs: number }
 
@@ -177,6 +178,34 @@ function parseTkhd(d: Uint8Array): TkhdResult | null {
   }
 
   return { createDateMs: createSec * 1000 };
+}
+
+/** Parse mvhd (movie header) for creation time + duration.
+ *  Used as fallback when tkhd.CreateDate is 0 or invalid (common on Pixel phones). */
+function parseMvhd(d: Uint8Array): { createDateMs: number; durationMs: number } | null {
+  if (d.length < 20) return null;
+  const version = d[0];
+
+  if (version === 1) {
+    if (d.length < 32) return null;
+    const createSec  = u64(d, 4)  - MAC_TO_UNIX_S;
+    const timescale  = u32(d, 20);
+    const dur        = u64(d, 24);
+    return {
+      createDateMs: createSec * 1000,
+      durationMs:   timescale > 0 ? Math.round((dur / timescale) * 1000) : 0,
+    };
+  }
+
+  // version 0: [1][3][4 create][4 modify][4 timescale][4 duration]
+  if (d.length < 20) return null;
+  const createSec  = u32(d, 4)  - MAC_TO_UNIX_S;
+  const timescale  = u32(d, 12);
+  const dur        = u32(d, 16);
+  return {
+    createDateMs: createSec * 1000,
+    durationMs:   timescale > 0 ? Math.round((dur / timescale) * 1000) : 0,
+  };
 }
 
 interface MdhdResult { durationMs: number }
@@ -356,10 +385,27 @@ self.onmessage = async (e: MessageEvent<{ file: File }>) => {
     return;
   }
 
-  const { createDateMs, durationMs } = videoTrack;
+  let { createDateMs, durationMs } = videoTrack;
 
-  if (isNaN(createDateMs) || createDateMs < new Date('2000-01-01').getTime()) {
-    console.error('[Android Worker] CreateDate out of range:', new Date(createDateMs).toISOString());
+  // ── Fallback: mvhd when tkhd.CreateDate is 0 or invalid ──────────────────
+  // Samsung Galaxy: tkhd.CreateDate = END of recording ✓
+  // Google Pixel:   tkhd.CreateDate = 0 (not set by firmware)
+  //                 mvhd.CreateDate = END of recording → use this instead
+  if (isNaN(createDateMs) || createDateMs < MIN_VALID_MS) {
+    console.warn('[Android Worker] tkhd.CreateDate invalid, trying mvhd fallback');
+    const mvhdBox = findBox(moov, 'mvhd');
+    if (mvhdBox) {
+      const mvhd = parseMvhd(mvhdBox);
+      if (mvhd && mvhd.createDateMs >= MIN_VALID_MS) {
+        createDateMs = mvhd.createDateMs;
+        if (durationMs <= 0 && mvhd.durationMs > 0) durationMs = mvhd.durationMs;
+        console.log('[Android Worker] Using mvhd.CreateDate:', new Date(createDateMs).toISOString());
+      }
+    }
+  }
+
+  if (isNaN(createDateMs) || createDateMs < MIN_VALID_MS) {
+    console.error('[Android Worker] CreateDate out of range even after mvhd fallback:', createDateMs);
     self.postMessage({ success: false, error: ERROR_MESSAGES.ANDROID_INVALID_DATE, code: 'ANDROID_INVALID_DATE' } as WorkerErrorPayload);
     return;
   }
@@ -370,7 +416,7 @@ self.onmessage = async (e: MessageEvent<{ file: File }>) => {
     return;
   }
 
-  // Android tkhd stores END time → subtract duration to get START
+  // Android: mvhd/tkhd CreateDate stores END time → subtract duration to get START
   const videoStartMs = createDateMs - durationMs;
 
   // ── Step 3: Parse device model + OS version ──────────────────────────────

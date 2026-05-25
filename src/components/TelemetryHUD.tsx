@@ -40,6 +40,13 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores, uni
     return { cumDist: cd, maxSpd: Math.max(50, Math.ceil(peak / 10) * 10) };
   }, [points]);
 
+  // Pre-compute once: does this activity have ANY power data?
+  // Used to keep the watts display stable (show 0W instead of hiding).
+  const hasAnyPower = useMemo(
+    () => (points ?? []).some((p) => (p as any).power > 0),
+    [points],
+  );
+
   // Sync canvas buffer size via ResizeObserver — invalidates gauge cache on resize
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -229,18 +236,26 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores, uni
     ctx.fillText(` ${DIST_LABEL[unit]}`, W * 0.04 + dW, metY - 4);
 
     // ── HR / Power / Time ──────────────────────────────────────────────────────
-    // Clipped to left 46% of canvas — padding before mini-map right widget
+    // When power is present, use a two-row layout to prevent overflow:
+    //   Row 1: ♥ HR   ⚡ Power
+    //   Row 2: ⏱ Time
     const subY   = metY + Math.round(H * 0.055);
-    let groupX   = W * 0.04;
+    const lineH  = Math.round(W * 0.054);
+    // hasAnyPower = activity has power data at all → keep watts visible at 0W
+    const hasPow = hasAnyPower;
+    const timeY  = hasPow ? subY + lineH : subY;
+
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, Math.round(W * 0.54), H);
     ctx.clip();
     ctx.font = `900 ${Math.round(W * 0.044)}px sans-serif`;
 
+    let groupX = W * 0.04;
+
     if (pt.hr) {
-      const ratio    = hrMax && hrMax > 1 ? pt.hr / hrMax : 0;
-      const hrColor  = ratio > 0.90 ? '#ef4444' : ratio > 0.75 ? '#f97316' : ratio > 0.60 ? '#fbbf24' : '#ff4d4d';
+      const ratio   = hrMax && hrMax > 1 ? pt.hr / hrMax : 0;
+      const hrColor = ratio > 0.90 ? '#ef4444' : ratio > 0.75 ? '#f97316' : ratio > 0.60 ? '#fbbf24' : '#ff4d4d';
       shadow('rgba(0,0,0,1)', 20);
       ctx.fillStyle = hrColor;
       const hrStr   = `\u2665 ${Math.round(pt.hr)}`;
@@ -248,18 +263,18 @@ export function TelemetryHUD({ points, currentIndex, hrMax, intensityScores, uni
       groupX += ctx.measureText(hrStr).width + Math.round(W * 0.022);
     }
 
-    if (pt.power) {
+    if (hasPow) {
       shadow('rgba(0,0,0,1)', 20);
-      ctx.fillStyle  = '#ffffff';
-      const pwStr    = `\u26A1 ${Math.round(pt.power)}W`;
+      ctx.fillStyle = '#ffffff';
+      const pwStr   = `\u26A1 ${Math.round((pt as any).power ?? 0)}W`;
       ctx.fillText(pwStr, groupX, subY);
-      groupX += ctx.measureText(pwStr).width + Math.round(W * 0.022);
+      groupX = W * 0.04; // time moves to row 2
     }
 
     shadow('rgba(0,0,0,1)', 20);
     ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.fillText(`\u23F1 ${timeStr}`, groupX, subY);
-    ctx.restore();
+    ctx.fillText(`\u23F1 ${timeStr}`, groupX, timeY);
+    ctx.restore();    ctx.restore();
 
     noShad();
   }, [points, currentIndex, cumDist, maxSpd, hrMax, unit]);
