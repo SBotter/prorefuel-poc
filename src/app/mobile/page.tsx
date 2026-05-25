@@ -610,7 +610,10 @@ export default function MobilePage() {
       videoMetricsRef.current = {
         filename: processFile.name, file_size_bytes: processFile.size, camera_model: resolvedCamera,
         device_type: cam.type as any, device_make: cam.make || null,
-        device_model: cam.model || null, device_os: deviceOs, device_os_version: null,
+        device_model: cam.model || null, device_os: deviceOs,
+        device_os_version: isAndroid
+          ? (mobileCaps?.androidVersion?.toString() ?? null)
+          : (mobileCaps?.iosVersion?.toString()     ?? null),
         has_gps: isMobile ? iPhoneHasStartGPS : vpts.length > 0, gps_points_count: vpts.length,
         gps_duration_s: videoProfile.durationSec, gps_sampling_interval_ms: videoProfile.samplingIntervalMs,
         gps_start_utc: vpts.length > 0 ? new Date(vpts[0].time).toISOString() : null,

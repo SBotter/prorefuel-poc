@@ -59,21 +59,27 @@ export async function getSessionSuccessOverTime() {
 
 export async function getFunnel() {
   const client = db();
-  const [uploads, reached, downloaded] = await Promise.all([
+  const [uploads, reachedRows, downloadedRows] = await Promise.all([
     client.from("processing_sessions").select("id", { count: "exact", head: true }),
-    // Count only the "click Generate" record (completed_download=false) to avoid
-    // double-counting: each completed download creates 2 records with reached_experience=true
-    // (one at click time, one at completion). Counting the click record gives unique sessions.
-    client.from("video_exports").select("id", { count: "exact", head: true })
-      .eq("clicked_record", true)
-      .eq("completed_download", false),
-    client.from("video_exports").select("id", { count: "exact", head: true }).eq("completed_download", true),
+    // Fetch all "click Generate" records and deduplicate by processing_session_id.
+    // A user may click Generate multiple times (retries) — each creates a separate
+    // record. Counting distinct session IDs gives unique users who reached preview.
+    client.from("video_exports")
+      .select("processing_session_id")
+      .eq("clicked_record", true),
+    // Same for downloads — count distinct sessions that completed a download.
+    client.from("video_exports")
+      .select("processing_session_id")
+      .eq("completed_download", true),
   ]);
 
+  const uniqueReached    = new Set((reachedRows.data ?? []).map(r => r.processing_session_id)).size;
+  const uniqueDownloaded = new Set((downloadedRows.data ?? []).map(r => r.processing_session_id)).size;
+
   return [
-    { name: "Uploaded Files",    value: uploads.count   ?? 0 },
-    { name: "Reached Preview",   value: reached.count   ?? 0 },
-    { name: "Downloaded Video",  value: downloaded.count ?? 0 },
+    { name: "Uploaded Files",    value: uploads.count  ?? 0 },
+    { name: "Reached Preview",   value: uniqueReached },
+    { name: "Downloaded Video",  value: uniqueDownloaded },
   ];
 }
 
@@ -405,6 +411,154 @@ export async function getErrorKPIs() {
   };
 }
 
+// ── OS version breakdown ──────────────────────────────────────────────────────
+
+export async function getOsVersionBreakdown() {
+  const { data } = await db()
+    .from("processing_sessions")
+    .select("device_os, device_os_version")
+    .not("device_os", "is", null)
+    .not("device_os_version", "is", null);
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach(r => {
+    if (!r.device_os || !r.device_os_version) return;
+    const key = `${r.device_os} ${r.device_os_version}`;
+    map[key] = (map[key] ?? 0) + 1;
+  });
+
+  return Object.entries(map)
+    .sort((a, b) => {
+      // Sort by OS name first (iOS before Android), then by version descending
+      if (a[0].split(" ")[0] !== b[0].split(" ")[0]) return a[0].localeCompare(b[0]);
+      return b[1] - a[1];
+    })
+    .map(([name, value]) => ({ name, value }));
+}
+
+// ── Video file size distribution ─────────────────────────────────────────────
+
+export async function getVideoSizeDistribution() {
+  const { data } = await db()
+    .from("video_uploads")
+    .select("file_size_bytes")
+    .not("file_size_bytes", "is", null)
+    .gt("file_size_bytes", 0);
+
+  const buckets: Record<string, number> = {
+    "< 100 MB":      0,
+    "100–300 MB":    0,
+    "300 MB–1 GB":   0,
+    "1–1.5 GB":      0,
+    "> 1.5 GB":      0,
+  };
+
+  let totalBytes = 0;
+  (data ?? []).forEach(r => {
+    const mb = (r.file_size_bytes ?? 0) / 1_048_576;
+    totalBytes += r.file_size_bytes ?? 0;
+    if      (mb < 100)   buckets["< 100 MB"]++;
+    else if (mb < 300)   buckets["100–300 MB"]++;
+    else if (mb < 1024)  buckets["300 MB–1 GB"]++;
+    else if (mb < 1536)  buckets["1–1.5 GB"]++;
+    else                 buckets["> 1.5 GB"]++;
+  });
+
+  const count = (data ?? []).length;
+  const avgMB = count > 0 ? Math.round(totalBytes / count / 1_048_576) : 0;
+  const maxMB = count > 0
+    ? Math.round(Math.max(...(data ?? []).map(r => (r.file_size_bytes ?? 0))) / 1_048_576)
+    : 0;
+
+  return {
+    buckets: Object.entries(buckets).map(([name, value]) => ({ name, value })),
+    avgMB,
+    maxMB,
+    count,
+  };
+}
+
+// ── Errors by device OS version + file size ──────────────────────────────────
+// Joins processing_sessions (errors + device info) with video_uploads (file size)
+// to answer: "which device/OS/size combinations are failing and why?"
+
+export async function getErrorsByDeviceAndSize() {
+  // Step 1: get error sessions with device info
+  const { data: errorSessions } = await db()
+    .from("processing_sessions")
+    .select("id, device_os, device_os_version, error_message")
+    .eq("status", "error")
+    .not("device_os", "is", null)
+    .limit(500);
+
+  if (!errorSessions || errorSessions.length === 0) return [];
+
+  // Step 2: get video_uploads for those sessions (to get file_size_bytes)
+  const ids = errorSessions.map(s => s.id).filter(Boolean) as string[];
+  const { data: uploads } = await db()
+    .from("video_uploads")
+    .select("processing_session_id, file_size_bytes")
+    .in("processing_session_id", ids.slice(0, 200));
+
+  const sizeMap = new Map<string, number>();
+  (uploads ?? []).forEach(u => {
+    if (u.processing_session_id && u.file_size_bytes) {
+      sizeMap.set(u.processing_session_id, u.file_size_bytes);
+    }
+  });
+
+  // Step 3: also parse size from error_message for "file too large" errors
+  const sizeBucket = (bytes: number | null): string => {
+    if (!bytes || bytes <= 0) return "Unknown size";
+    const mb = bytes / 1_048_576;
+    if (mb < 100)   return "< 100 MB";
+    if (mb < 300)   return "100–300 MB";
+    if (mb < 512)   return "300–512 MB";
+    if (mb < 1024)  return "512 MB–1 GB";
+    if (mb < 1536)  return "1–1.5 GB";
+    return "> 1.5 GB";
+  };
+
+  const errorType = (msg: string | null): string => {
+    if (!msg) return "Unknown";
+    if (msg.toLowerCase().includes("too large") || msg.toLowerCase().includes("file size"))
+      return "File too large";
+    if (msg.toLowerCase().includes("h.265") || msg.toLowerCase().includes("hevc"))
+      return "H.265 not supported";
+    if (msg.toLowerCase().includes("unsupported camera") || msg.toLowerCase().includes("unrecogni"))
+      return "Camera not supported";
+    if (msg.toLowerCase().includes("no gps") || msg.toLowerCase().includes("gps"))
+      return "GPS missing";
+    if (msg.toLowerCase().includes("timestamp") || msg.toLowerCase().includes("date"))
+      return "Timestamp error";
+    if (msg.toLowerCase().includes("no scenes") || msg.toLowerCase().includes("highlight"))
+      return "No scenes found";
+    if (msg.toLowerCase().includes("gpx") || msg.toLowerCase().includes("track"))
+      return "GPX error";
+    return "Other";
+  };
+
+  // Group: OS version + error type + file size bucket → count
+  const map: Record<string, { os: string; version: string; error: string; size: string; count: number }> = {};
+  errorSessions.forEach(s => {
+    const os      = s.device_os ?? "Unknown OS";
+    const ver     = s.device_os_version ?? "?";
+    const err     = errorType(s.error_message);
+    const bytes   = sizeMap.get(s.id ?? "") ?? null;
+    // Also try to extract size from error message "File too large: 400MB"
+    const msgSize = s.error_message?.match(/(\d+)\s*MB/i)?.[1];
+    const sizeB   = bytes ?? (msgSize ? parseInt(msgSize) * 1_048_576 : null);
+    const size    = sizeBucket(sizeB);
+    const key     = `${os} ${ver}|${err}|${size}`;
+    if (!map[key]) map[key] = { os, version: ver, error: err, size, count: 0 };
+    map[key].count++;
+  });
+
+  return Object.values(map)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20); // top 20 combinations
+}
+
 // ── Mobile download action: Save vs Share to Instagram ───────────────────────
 // Requires column: ALTER TABLE video_exports ADD COLUMN download_action text;
 
@@ -654,7 +808,7 @@ export async function getAllDashboardData() {
     topLocations, timeOnReady, processingTime,
     errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
     videoDeviceTypes, videoDeviceMakes, browserOs,
-    gpsDeviceModels, gpsDeviceBrands, mobileOsBreakdown, mobileDownloadActions,
+    gpsDeviceModels, gpsDeviceBrands, mobileOsBreakdown, mobileDownloadActions, osVersionBreakdown, videoSizeStats, errorsByDeviceSize,
     contentStats, renderPercentiles, successByDevice, videoDuration,
   ] = await Promise.all([
     getKPIs(), getSessionsOverTime(), getSessionSuccessOverTime(), getFunnel(), getRenderStatus(),
@@ -663,7 +817,7 @@ export async function getAllDashboardData() {
     getTopLocations(), getTimeOnReady(), getProcessingTimeBuckets(),
     getErrorsByCode(), getErrorsBySource(), getErrorsByDevice(), getErrorsOverTime(), getRecentErrors(), getErrorKPIs(),
     getVideoDeviceTypes(), getVideoDeviceMakes(), getBrowserOsBreakdown(),
-    getGpsDeviceModels(), getGpsDeviceBrands(), getMobileOsBreakdown(), getMobileDownloadActions(),
+    getGpsDeviceModels(), getGpsDeviceBrands(), getMobileOsBreakdown(), getMobileDownloadActions(), getOsVersionBreakdown(), getVideoSizeDistribution(), getErrorsByDeviceAndSize(),
     getContentStats(), getRenderTimePercentiles(), getSuccessRateByDevice(), getVideoDurationDistribution(),
   ]);
 
@@ -673,8 +827,8 @@ export async function getAllDashboardData() {
     syncStrategies, gpxFields, activityTypes, unitSystem,
     topLocations, timeOnReady, processingTime,
     errorsByCode, errorsBySource, errorsByDevice, errorsOverTime, recentErrors, errorKPIs,
-    videoDeviceTypes, videoDeviceMakes, browserOs, mobileOsBreakdown, mobileDownloadActions,
+    videoDeviceTypes, videoDeviceMakes, browserOs, mobileOsBreakdown, mobileDownloadActions, osVersionBreakdown,
     gpsDeviceModels, gpsDeviceBrands,
-    contentStats, renderPercentiles, successByDevice, videoDuration,
+    contentStats, renderPercentiles, successByDevice, videoDuration, videoSizeStats, errorsByDeviceSize,
   };
 }
