@@ -1083,12 +1083,12 @@ export async function getFailedSessions() {
     .select(
       "id, created_at, status, error_message, video_filename, camera_model, " +
       "device_type, device_make, device_model, device_os, device_os_version, " +
-      "browser_os, browser_name, browser_version, processing_time_ms, app_version"
+      "browser_os, browser_os_version, browser_name, browser_version, processing_time_ms, app_version"
     )
     .eq("status", "error")
     .order("created_at", { ascending: false })
     .limit(50);
-  return (data ?? []) as Array<{
+  return (data ?? []) as unknown as Array<{
     id: string;
     created_at: string;
     status: string;
@@ -1101,6 +1101,7 @@ export async function getFailedSessions() {
     device_os: string | null;
     device_os_version: string | null;
     browser_os: string | null;
+    browser_os_version: string | null;
     browser_name: string | null;
     browser_version: string | null;
     processing_time_ms: number | null;
