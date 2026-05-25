@@ -14,7 +14,9 @@ import { mlog, mlogClear } from "@/lib/engine/mobile/mobileDebugLogger";
 import {
   trackProcessingSession, trackVideoExport, trackError,
   trackGpxSession, trackVideoUpload, computeGpxMetrics,
+  buildBrowserCtx,
 } from "@/lib/supabase/tracking";
+import type { ErrorContext } from "@/lib/supabase/tracking";
 import type { VideoUploadInsert } from "@/lib/supabase/types";
 import type { ActionSegment }  from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
@@ -251,6 +253,13 @@ export default function MobilePage() {
     }
   }, []);
 
+  // ── Browser context helper — call once, reuse for all error tracking ────────
+  // Returns structured browser/hardware context for error diagnostics.
+  const getBrowserCtx = (): Pick<ErrorContext,
+    "browser_os" | "browser_os_version" | "browser_name" | "browser_version" |
+    "device_memory_gb" | "cpu_cores"
+  > => mobileCaps ? buildBrowserCtx(mobileCaps) : {};
+
   // ── Core GPX processing — called by file upload AND Strava import ──────────
   const processGpxText = async (text: string) => {
     setGpxError(null);
@@ -282,7 +291,8 @@ export default function MobilePage() {
         : "No GPS track found in this file.";
       void trackError("NO_GPS_TRACK",
         `[${gpxNameRef.current || "gpx"}] ${isStravaNoTs ? `Strava public URL export — ${allTrkpts.length} points but all timestamps stripped.` : "No <trkpt>/<rtept> elements or all timestamps invalid."}`,
-        "gpx_upload");
+        "gpx_upload",
+        getBrowserCtx());
       setGpxError(msg); return;
     }
 
@@ -334,7 +344,12 @@ export default function MobilePage() {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".gpx")) {
-      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}". Only .gpx files are accepted.`, "gpx_upload");
+      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}". Only .gpx files are accepted.`, "gpx_upload", {
+        ...getBrowserCtx(),
+        file_extension: `.${file.name.split(".").pop()?.toLowerCase() ?? "unknown"}`,
+        file_size_bytes: file.size,
+        file_mime_type:  file.type || null,
+      });
       setGpxError("Only .gpx files are accepted."); e.target.value = ""; return;
     }
     gpxNameRef.current = file.name;
@@ -346,10 +361,19 @@ export default function MobilePage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Build error context incrementally as we learn more about the file/device.
+    // Step 1: browser + file — always available at this point.
+    const errCtxBase: ErrorContext = {
+      ...getBrowserCtx(),
+      file_extension:  `.${file.name.split(".").pop()?.toLowerCase() ?? "unknown"}`,
+      file_size_bytes: file.size,
+      file_mime_type:  file.type || null,
+    };
+
     const nameLc = file.name.toLowerCase();
     if (!nameLc.endsWith(".mp4") && !nameLc.endsWith(".mov")) {
       const mobileExt = file.name.split(".").pop()?.toLowerCase() ?? "unknown";
-      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${mobileExt}" on mobile. LENS mobile accepts .mp4 and .mov only. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload");
+      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${mobileExt}" on mobile. LENS mobile accepts .mp4 and .mov only. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload", errCtxBase);
       setUploadError("Only .mp4 and .mov files are supported."); e.target.value = ""; return;
     }
 
@@ -382,7 +406,7 @@ export default function MobilePage() {
       const fileMB  = (file.size  / 1_048_576).toFixed(0);
       const limitGB = (MAX_VIDEO_MB / 1024).toFixed(MAX_VIDEO_MB % 1024 === 0 ? 0 : 1);
       const msg = `Video too large (${fileMB} MB). Maximum for this device is ${MAX_VIDEO_MB >= 1024 ? limitGB + " GB" : MAX_VIDEO_MB + " MB"}. Trim the clip or open LENS on desktop Chrome (no size limit).`;
-      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] File too large: ${fileMB}MB > ${MAX_VIDEO_MB}MB limit.`, "video_upload");
+      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] File too large: ${fileMB}MB > ${MAX_VIDEO_MB}MB limit. Android: ${androidVer}, iOS: ${iosVer}.`, "video_upload", errCtxBase);
       setUploadError(msg);
       e.target.value = "";
       return;
@@ -395,14 +419,24 @@ export default function MobilePage() {
     const originalCamDetection   = await CD.detect(file);
     mlog("CAM_EARLY", `type=${originalCamDetection.type} make=${originalCamDetection.make}`);
 
+    // Step 2: enrich context with camera info — available after detection
+    const errCtxCam: ErrorContext = {
+      ...errCtxBase,
+      device_type:  originalCamDetection.type,
+      device_make:  originalCamDetection.make  || null,
+      device_model: originalCamDetection.model || null,
+    };
+
     // ── H.265 / HEVC pre-transcoding ─────────────────────────────────────────────
     // Only transcodes when the file IS H.265 (byte scan) AND the browser cannot
     // play H.265 natively. Android Chrome usually has hardware H.265 support —
     // skip the expensive FFmpeg step when not needed.
     let processFile = file;
+    let detectedCodec: "h264" | "hevc" | null = null;
     try {
       const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
       const hevc = await isHevcVideo(file);
+      detectedCodec = hevc ? "hevc" : "h264";
       if (hevc) {
         const testVid  = document.createElement("video");
         const canH265  = testVid.canPlayType('video/mp4; codecs="hvc1"') !== '' ||
@@ -431,7 +465,8 @@ export default function MobilePage() {
       mlog("HEVC", `transcoding failed: ${err.message}`);
       void trackError("WRONG_VIDEO_FORMAT",
         `[${file.name}] H.265 transcoding failed: ${err.message}`,
-        "video_upload");
+        "video_upload",
+        { ...errCtxCam, video_codec: "hevc" });
       setUploadError(
         "Failed to convert H.265 video. " +
         "Try recording in H.264: Camera app → Settings → Video quality → disable \"Efficient video format\"."
@@ -439,6 +474,9 @@ export default function MobilePage() {
       e.target.value = "";
       return;
     }
+
+    // Step 3: enrich context with codec — available after HEVC scan
+    const errCtxFull: ErrorContext = { ...errCtxCam, video_codec: detectedCodec };
 
     setLoading(true); setUploadError(null); setProgress(0);
     mlogClear();
@@ -565,7 +603,8 @@ export default function MobilePage() {
             `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""}. ` +
             `Activity: "${activityName}". ` +
             `Cause: different days/sessions, wrong files paired, or phone clock not on auto.`,
-            "video_upload");
+            "video_upload",
+            errCtxFull);
           errorTracked = true;
           throw new Error(`This video and GPX are from different days — video: ${vidDate}, GPX: ${actDate}. Please use files from the same ride.`);
         }
@@ -586,7 +625,7 @@ export default function MobilePage() {
         const actT0 = activityPoints[0]?.time ?? 0;
         const diffMin = Math.round((vidT0 - actT0) / 60_000);
         mlog("ERROR", `no highlights. vpts[0].time=${new Date(vidT0).toISOString()} actPts[0].time=${new Date(actT0).toISOString()} diff=${diffMin}min`);
-        void trackError("NO_SCENES", `No highlight scenes detected. Time diff: ${Math.abs(diffMin)} min. File: "${file.name}".`, "video_upload");
+        void trackError("NO_SCENES", `No highlight scenes detected. Time diff: ${Math.abs(diffMin)} min. File: "${file.name}".`, "video_upload", errCtxFull);
         errorTracked = true;
         throw new Error(`No highlight scenes detected. Video and GPX may not overlap in time (diff: ${Math.abs(diffMin)} min). Make sure both files are from the same ride.`);
       }
@@ -668,7 +707,23 @@ export default function MobilePage() {
     } catch (err: any) {
       clearInterval(interval);
       mlog("ERROR", `upload failed: ${err.message}`);
-      setUploadError(err.message ?? "Processing failed.");
+
+      // Translate raw worker/engine errors into clear, actionable user messages.
+      const raw: string = err.message ?? "";
+      const isGpsError =
+        raw.includes("GPMF") ||
+        raw.includes("GPS5") ||
+        raw.includes("telemetry") ||
+        raw.includes("GPS points") ||
+        raw.includes("GPS coordinate");
+      const userMsg = isGpsError
+        ? "No GPS data found in this GoPro file.\n\n" +
+          "Most likely cause: the video was re-encoded or trimmed (e.g. exported from CapCut, iMovie, or the GoPro Quik app) — this permanently erases the GPS metadata.\n\n" +
+          "Fix: import the original, unedited .mp4 directly from the GoPro SD card. " +
+          "Also make sure GPS is enabled on the camera (Settings → Preferences → GPS → On) and the solid lock icon appeared before you started recording."
+        : raw || "Processing failed. Please try again.";
+
+      setUploadError(userMsg);
       if (!errorTracked) {
         // Unknown/unexpected error — not already tracked at its source
         void trackError("NO_SCENES",
@@ -676,7 +731,8 @@ export default function MobilePage() {
         `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""}. ` +
         `GPX points: ${activityPoints.length}. ` +
         `Activity: "${activityName}".`,
-        "video_upload");
+        "video_upload",
+        errCtxFull);
       }
       trackProcessingSession({
         status: "error", video_filename: file.name, video_duration_s: null,

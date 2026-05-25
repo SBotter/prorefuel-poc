@@ -245,13 +245,61 @@ export interface ErrorEvent {
   error_code: ErrorCode;
   error_message: string | null;
   error_source: string | null;
-  // Device context — optional for backward compat
+
+  // Recording device (the camera that shot the video)
   device_type?: "gopro" | "iphone" | "android" | "unknown" | null;
-  device_make?: string | null;
-  device_model?: string | null;
-  file_extension?: string | null;  // '.mov', '.mp4', '.gpx'
+  device_make?: string | null;   // 'GoPro', 'Apple', 'Samsung', …
+  device_model?: string | null;  // 'HERO12 Black', 'iPhone 15 Pro', …
+
+  // File submitted by the user
+  file_extension?: string | null;   // '.mov', '.mp4', '.gpx'
+  file_size_bytes?: number | null;  // raw bytes — NULL for pre-file errors
+  file_mime_type?: string | null;   // 'video/mp4', 'video/quicktime', …
+
+  // Video codec detected via byte scan
+  video_codec?: string | null;      // 'h264' | 'hevc' | 'unknown'
+
+  // Browser / phone used to ACCESS LENS (may differ from recording device)
+  browser_os?: string | null;          // 'iOS' | 'Android' | 'Windows' | 'macOS'
+  browser_os_version?: string | null;  // '17', '16.4', '13', …
+  browser_name?: string | null;        // 'Chrome' | 'Safari' | 'Firefox' | 'Edge'
+  browser_version?: string | null;     // major version string
+
+  // Client hardware hints (browser API — approximate / may be null)
+  device_memory_gb?: number | null;  // navigator.deviceMemory (Android Chrome only)
+  cpu_cores?: number | null;         // navigator.hardwareConcurrency
+
+  // GPX source — raw <gpx creator="..."> attribute (demand signal for unsupported GPS devices)
+  gpx_creator?: string | null;       // e.g. 'Wahoo ELEMNT BOLT', 'Apple Watch', 'Coros Apex 2'
+
   app_version: string | null;
   user_agent: string | null;
+}
+
+// ── ErrorContext — structured context passed to trackError() ──────────────────
+// Build this at upload time and pass to every trackError() call.
+// Fields are additive: start with browser context, add cam + codec as detected.
+export interface ErrorContext {
+  // Recording device
+  device_type?: string | null;
+  device_make?: string | null;
+  device_model?: string | null;
+  // File
+  file_extension?: string | null;
+  file_size_bytes?: number | null;
+  file_mime_type?: string | null;
+  // Codec
+  video_codec?: string | null;
+  // Browser / phone
+  browser_os?: string | null;
+  browser_os_version?: string | null;
+  browser_name?: string | null;
+  browser_version?: string | null;
+  // Hardware
+  device_memory_gb?: number | null;
+  cpu_cores?: number | null;
+  // GPX source — raw <gpx creator="..."> attribute
+  gpx_creator?: string | null;
 }
 
 export type ErrorEventInsert = Omit<ErrorEvent, "id" | "created_at">;

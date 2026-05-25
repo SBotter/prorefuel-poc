@@ -472,7 +472,8 @@ export default function ProRefuelPage() {
     const isMOV  = nameLc.endsWith(".mov") || file.type === "video/quicktime";
     if (!isMP4 && !isMOV) {
       const ext = file.name.split(".").pop()?.toLowerCase() ?? "unknown";
-      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${ext}" — LENS accepts .mp4 and .mov. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload");
+      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${ext}" — LENS accepts .mp4 and .mov. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload",
+        { file_extension: "." + ext, file_size_bytes: file.size, file_mime_type: file.type || null });
       setUploadError("Unsupported format. Use GoPro .mp4, iPhone .mov, or Android .mp4.");
       e.target.value = "";
       return;
@@ -560,7 +561,14 @@ export default function ProRefuelPage() {
           `This may be a DJI, Insta360, dashcam, or re-encoded file. ` +
           `Re-encoding removes telemetry — always use original files.`,
           "video_upload",
-          { device_type: "unknown", device_make: cameraDetection.make || null, device_model: cameraDetection.model || null, file_extension: ext },
+          {
+            device_type: "unknown",
+            device_make: cameraDetection.make || null,
+            device_model: cameraDetection.model || null,
+            file_extension: ext,
+            file_size_bytes: file.size,
+            file_mime_type: file.type || null,
+          },
         );
         throw new Error("Unsupported camera. Supported: GoPro, iPhone, and Android phones.");
       }
@@ -850,7 +858,7 @@ export default function ProRefuelPage() {
           // Suunto and some apps export route files without timestamps — these are
           // planned routes, not recorded activities. They cannot be synced with video.
           const isSuunto = creatorRaw.toLowerCase().includes("suunto");
-          void trackError("NO_GPS_TRACK", `Route file (rtept, no timestamps). Creator: "${creatorRaw}".`, "gpx_upload");
+          void trackError("NO_GPS_TRACK", `Route file (rtept, no timestamps). Creator: "${creatorRaw}".`, "gpx_upload", { gpx_creator: creatorRaw || null });
           setGpxError(
             isSuunto
               ? "This is a Suunto route file, not a recording. Please upload the track file (*-track.gpx) instead — it has timestamps and heart rate data."
@@ -865,7 +873,7 @@ export default function ProRefuelPage() {
 
     if (pts.length === 0) {
       const deviceHint = creatorRaw ? ` Device: "${creatorRaw}".` : "";
-      void trackError("NO_GPS_TRACK", `No GPS track found in this file.${deviceHint}`, "gpx_upload");
+      void trackError("NO_GPS_TRACK", `No GPS track found in this file.${deviceHint}`, "gpx_upload", { gpx_creator: creatorRaw || null });
       setGpxError("No GPS track found in this file. Make sure your .gpx file contains valid location data."); return;
     }
     // Filter points with invalid timestamps (NaN) — can corrupt sync
@@ -879,7 +887,7 @@ export default function ProRefuelPage() {
       void trackError("NO_GPS_TRACK",
         `All ${pts.length} points have no timestamps. Creator: "${creatorRaw}". ` +
         `${isStravaPublicExport ? "Strava public URL export strips timestamps — use authenticated export or Strava API integration." : ""}`,
-        "gpx_upload");
+        "gpx_upload", { gpx_creator: creatorRaw || null });
       setGpxError(msg); return;
     }
 
@@ -928,7 +936,8 @@ export default function ProRefuelPage() {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".gpx")) {
       const ext = file.name.split(".").pop() ?? file.type;
-      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}" (.${ext}). Only .gpx files are accepted.`, "gpx_upload");
+      void trackError("WRONG_GPX_FORMAT", `Wrong format: "${file.name}" (.${ext}). Only .gpx files are accepted.`, "gpx_upload",
+        { file_extension: "." + ext, file_size_bytes: file.size, file_mime_type: file.type || null });
       setGpxError("Only .gpx files are accepted. Export your activity as GPX from Strava, Garmin Connect, Wahoo, or Komoot."); e.target.value = ""; return;
     }
     await processGpxText(await file.text());
