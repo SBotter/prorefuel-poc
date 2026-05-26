@@ -256,8 +256,18 @@ export interface ErrorEvent {
   file_size_bytes?: number | null;  // raw bytes — NULL for pre-file errors
   file_mime_type?: string | null;   // 'video/mp4', 'video/quicktime', …
 
-  // Video codec detected via byte scan
+  // Video codec + stream metadata (from MP4 container byte scan)
   video_codec?: string | null;      // 'h264' | 'hevc' | 'unknown'
+  video_width?: number | null;      // e.g. 3840
+  video_height?: number | null;     // e.g. 2160
+  video_fps?: number | null;        // e.g. 59.9
+  video_has_gps?: boolean | null;   // true when GPMF telemetry stream present
+  video_recorded_at?: string | null; // ISO 8601 — from MP4 mvhd creation_time
+
+  // GPX time range (to compute temporal overlap with video)
+  gpx_start_at?: string | null;     // ISO 8601 — first GPX timestamp
+  gpx_end_at?: string | null;       // ISO 8601 — last GPX timestamp
+  gpx_point_count?: number | null;  // total track points
 
   // Browser / phone used to ACCESS LENS (may differ from recording device)
   browser_os?: string | null;          // 'iOS' | 'Android' | 'Windows' | 'macOS'
@@ -288,8 +298,17 @@ export interface ErrorContext {
   file_extension?: string | null;
   file_size_bytes?: number | null;
   file_mime_type?: string | null;
-  // Codec
+  // Codec + video stream metadata
   video_codec?: string | null;
+  video_width?: number | null;
+  video_height?: number | null;
+  video_fps?: number | null;
+  video_has_gps?: boolean | null;
+  video_recorded_at?: string | null;
+  // GPX time range
+  gpx_start_at?: string | null;
+  gpx_end_at?: string | null;
+  gpx_point_count?: number | null;
   // Browser / phone
   browser_os?: string | null;
   browser_os_version?: string | null;

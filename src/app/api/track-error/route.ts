@@ -25,8 +25,17 @@ export async function POST(req: NextRequest) {
       file_extension:  body.file_extension,
       file_size_bytes: body.file_size_bytes,
       file_mime_type:  body.file_mime_type,
-      // Codec
-      video_codec: body.video_codec,
+      // Codec + stream metadata
+      video_codec:       body.video_codec,
+      video_width:       body.video_width,
+      video_height:      body.video_height,
+      video_fps:         body.video_fps,
+      video_has_gps:     body.video_has_gps,
+      video_recorded_at: body.video_recorded_at,
+      // GPX time range
+      gpx_start_at:      body.gpx_start_at,
+      gpx_end_at:        body.gpx_end_at,
+      gpx_point_count:   body.gpx_point_count,
       // Browser / phone
       browser_os:         body.browser_os,
       browser_os_version: body.browser_os_version,

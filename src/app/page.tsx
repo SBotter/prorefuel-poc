@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { trackProcessingSession, trackGpxSession, computeGpxMetrics, trackVideoExport, trackVideoUpload, trackError } from "@/lib/supabase/tracking";
+import { getBrowserInfo } from "@/lib/utils/browserInfo";
 import type { RenderResult } from "@/components/MapEngine";
 
 // Dynamic import — keeps mapbox-gl, Tone.js and ffmpeg out of the initial bundle.
@@ -441,6 +442,9 @@ export default function ProRefuelPage() {
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [activityMeta, setActivityMeta]     = useState<{ name: string; location?: string; gpsDevice?: DeviceInfo; camera?: DeviceInfo }>({ name: "EPIC RIDE" });
   const [isMobileVideo, setIsMobileVideo]   = useState(false); // true for iPhone + Android
+  const [hevcConverting, setHevcConverting] = useState(false);
+  const [hevcProgress,   setHevcProgress]   = useState(0);
+  const [hevcStatus,     setHevcStatus]     = useState("");
 
   const mapEngineRef           = useRef<{ start: () => void; startRecording: () => Promise<void>; isRecording: boolean }>(null);
   const gpxMetricsRef          = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
@@ -470,46 +474,118 @@ export default function ProRefuelPage() {
     const nameLc = file.name.toLowerCase();
     const isMP4  = nameLc.endsWith(".mp4") || file.type === "video/mp4";
     const isMOV  = nameLc.endsWith(".mov") || file.type === "video/quicktime";
+
+    // Browser/hardware context — synchronous, available from the very first error.
+    const bi  = getBrowserInfo();
+    const ext = "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown");
+    const baseFileBrowserCtx = {
+      file_extension:    ext,
+      file_size_bytes:   file.size,
+      file_mime_type:    file.type || null,
+      browser_os:        bi.os,
+      browser_os_version: bi.os_version,
+      browser_name:      bi.browser,
+      browser_version:   bi.browser_version,
+      device_memory_gb:  typeof navigator !== "undefined" ? (navigator as any).deviceMemory ?? null : null,
+      cpu_cores:         typeof navigator !== "undefined" ? (navigator.hardwareConcurrency || null) : null,
+    };
+
     if (!isMP4 && !isMOV) {
-      const ext = file.name.split(".").pop()?.toLowerCase() ?? "unknown";
-      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${ext}" — LENS accepts .mp4 and .mov. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload",
-        { file_extension: "." + ext, file_size_bytes: file.size, file_mime_type: file.type || null });
+      void trackError(
+        "WRONG_VIDEO_FORMAT",
+        `[${file.name}] Unsupported extension "${ext}" — LENS accepts .mp4 and .mov. Size: ${(file.size/1024/1024).toFixed(1)}MB.`,
+        "video_upload",
+        { ...baseFileBrowserCtx },
+      );
       setUploadError("Unsupported format. Use GoPro .mp4, iPhone .mov, or Android .mp4.");
       e.target.value = "";
       return;
     }
 
-    // ── Camera detection + HEVC check — both read FILE CONTENT, not filename ──
-    // Run camera detection early (before setLoading) so the brand is available
-    // for the HEVC error message. Uses EXIF → Android byte scan → filename (last resort).
+    // ── Camera detection — reads FILE CONTENT, never filename ────────────────
     const { CameraDetector: CD } = await import("@/lib/media/CameraDetector");
     const earlyDetection = await CD.detect(file);
 
-    if (isMP4) {
+    // ── Video metadata scan — runs once, reused by ALL error paths ────────────
+    // Reads the first 2 MB of the file (fast, ~5ms). Provides codec, resolution,
+    // fps, embedded GPS flag, and recording timestamp for every error event.
+    const { parseVideoMeta: _parseVideoMeta } = await import("@/lib/engine/parseVideoMeta");
+    const vmeta = await _parseVideoMeta(file).catch(() => ({
+      codec: "unknown" as const, width: null, height: null,
+      fps: null, hasEmbeddedGPS: false, recordedAt: null,
+    }));
+
+    // ── Comprehensive error context — spread into every trackError call ────────
+    // GPX fields are populated if the user already uploaded a GPX before the video.
+    const richCtx = {
+      ...baseFileBrowserCtx,
+      // Video
+      video_codec:       vmeta.codec !== "unknown" ? vmeta.codec : null,
+      video_width:       vmeta.width,
+      video_height:      vmeta.height,
+      video_fps:         vmeta.fps,
+      video_has_gps:     vmeta.hasEmbeddedGPS || null,
+      video_recorded_at: vmeta.recordedAt,
+      // Camera (from file content — not filename)
+      device_type:  earlyDetection.type !== "unknown" ? (earlyDetection.type as any) : null,
+      device_make:  earlyDetection.make  || null,
+      device_model: earlyDetection.model || null,
+      // GPX — if already uploaded by the user at this point
+      gpx_start_at:    activityPoints.length > 0 ? new Date(activityPoints[0].time).toISOString() : null,
+      gpx_end_at:      activityPoints.length > 0 ? new Date(activityPoints[activityPoints.length - 1].time).toISOString() : null,
+      gpx_point_count: activityPoints.length > 0 ? activityPoints.length : null,
+      gpx_creator:     gpxMetricsRef.current?.creator ?? null,
+    };
+
+    // processVideoFile = H.264 version used for setVideoFile (playback).
+    // GPMF/GPS/EXIF extraction always uses the original `file`.
+    let processVideoFile: File = file;
+
+    // HEVC check covers both .mp4 AND .mov — iPhone records HEVC in .mov by default.
+    // Uses file-content scanning (not canPlayType) so the codec detection is
+    // browser-independent. canPlayType is only used to skip transcoding when the
+    // browser already supports HEVC natively (e.g. Safari, Chrome on Apple Silicon).
+    if (isMP4 || isMOV) {
       const testVid = document.createElement("video");
       const canHevc = testVid.canPlayType('video/mp4; codecs="hvc1"') ||
-                      testVid.canPlayType('video/mp4; codecs="hev1"');
+                      testVid.canPlayType('video/mp4; codecs="hev1"') ||
+                      testVid.canPlayType('video/quicktime; codecs="hvc1"') ||
+                      testVid.canPlayType('video/quicktime; codecs="hev1"');
       if (!canHevc) {
-        // Check file content (not filename) for actual H.265 codec
-        const { isHevcVideo } = await import("@/lib/engine/mobile/hevcTranscoder");
+        const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
         const fileIsHevc = await isHevcVideo(file);
         if (fileIsHevc) {
-          const brand = earlyDetection.make || "Android";
-          void trackError(
-            "WRONG_VIDEO_FORMAT",
-            `[${file.name}] HEVC/H.265 video from ${brand} — not supported in Chrome on Windows/Linux. ` +
-            `Fix: Camera app → Settings → Video quality → disable "Efficient video format" or select H.264.`,
-            "video_upload",
-          );
-          setUploadError(
-            `⚠ H.265 (HEVC) video — not supported in Chrome on Windows.\n\n` +
-            `Your ${brand} device recorded this video in H.265 (HEVC), which Chrome on Windows cannot play.\n\n` +
-            `Fix on your ${brand}:\n` +
-            `Camera app → Settings → Video quality → disable "Efficient video format" → record a new clip in H.264.\n\n` +
-            `Alternative: convert to H.264 with HandBrake (free) before importing.`
-          );
-          e.target.value = "";
-          return;
+          // Transcode H.265 → H.264 at 1080p so every browser can decode it.
+          // Original file is always kept for GPMF/GPS/EXIF extraction.
+          // processVideoFile (the H.264 output) is what gets rendered.
+          setHevcConverting(true);
+          setHevcProgress(0);
+          setHevcStatus("Loading converter…");
+          try {
+            processVideoFile = await transcodeHevcToH264(file, (pct, status) => {
+              setHevcProgress(pct);
+              setHevcStatus(status);
+            }, { maxHeight: 1080 });
+            setHevcConverting(false);
+          } catch (err: any) {
+            setHevcConverting(false);
+            void trackError(
+              "WRONG_VIDEO_FORMAT",
+              `[${file.name}] HEVC transcoding failed — codec: ${vmeta.codec}, ` +
+              `resolution: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"}, fps: ${vmeta.fps ?? "?"}, ` +
+              `size: ${(file.size/1024/1024).toFixed(1)}MB, camera: ${earlyDetection.make || "unknown"} ${earlyDetection.model || ""}. ` +
+              `FFmpeg error: ${err.message}`,
+              "video_upload",
+              { ...richCtx, video_codec: "hevc" },
+            );
+            setUploadError(
+              `⚠ Could not prepare this video for editing.\n\n` +
+              `The file uses H.265 encoding which requires conversion. This usually fails for very large clips (>400 MB). ` +
+              `Try trimming the clip or, on GoPro, switching to H.264: Preferences → Video → Codec → H.264.`
+            );
+            e.target.value = "";
+            return;
+          }
         }
       }
     }
@@ -550,25 +626,17 @@ export default function ProRefuelPage() {
       const isMobile  = isIPhone || isAndroid;
       setIsMobileVideo(isMobile);
 
-      if (!isMobile) setVideoFile(file);
+      if (!isMobile) setVideoFile(processVideoFile);
 
       if (cameraDetection.type === "unknown") {
         const detected = [cameraDetection.make, cameraDetection.model].filter(Boolean).join(" ") || "unrecognised";
-        const ext = "." + (file.name.split(".").pop()?.toLowerCase() ?? "");
-        void trackError("UNSUPPORTED_CAMERA",
-          `[${file.name}] Camera not supported — detected: "${detected}" (${ext}, ${(file.size/1024/1024).toFixed(1)}MB). ` +
+        void trackError(
+          "UNSUPPORTED_CAMERA",
+          `[${file.name}] Camera not supported — detected: "${detected}" (${ext}, ${(file.size/1024/1024).toFixed(1)}MB, codec: ${vmeta.codec}). ` +
           `LENS supports: GoPro MP4, iPhone MOV, Android MP4 (Samsung/Pixel/etc). ` +
-          `This may be a DJI, Insta360, dashcam, or re-encoded file. ` +
-          `Re-encoding removes telemetry — always use original files.`,
+          `This may be a DJI, Insta360, dashcam, or re-encoded file. Re-encoding removes telemetry — use originals.`,
           "video_upload",
-          {
-            device_type: "unknown",
-            device_make: cameraDetection.make || null,
-            device_model: cameraDetection.model || null,
-            file_extension: ext,
-            file_size_bytes: file.size,
-            file_mime_type: file.type || null,
-          },
+          { ...richCtx, device_type: null },
         );
         throw new Error("Unsupported camera. Supported: GoPro, iPhone, and Android phones.");
       }
@@ -636,12 +704,21 @@ export default function ProRefuelPage() {
         if (camera.label) setActivityMeta(prev => ({ ...prev, camera }));
       }
 
+      // Update richCtx with the more specific camera model resolved from GPMF/EXIF
+      const resolvedCtx = { ...richCtx, device_model: resolvedModel || richCtx.device_model };
+
       if (!isMobile && vpts.length === 0) {
-        void trackError("NO_GPS_VIDEO",
-          `[${file.name}] No GPS telemetry found. Camera: "${resolvedModel || cameraDetection.make || "unknown"}". ` +
-          `Likely causes: GPS not enabled before recording, GPS never locked (recording started indoors/immediately), ` +
-          `or file was re-encoded (removes GPMF track). Clip duration: ${(file.size/1024/1024).toFixed(1)}MB.`,
-          "video_upload");
+        void trackError(
+          "NO_GPS_VIDEO",
+          `[${file.name}] No GPS telemetry found. ` +
+          `Camera: ${resolvedModel || cameraDetection.make || "unknown"} | ` +
+          `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | ` +
+          `size: ${(file.size/1024/1024).toFixed(1)}MB | has_embedded_gps_flag: ${vmeta.hasEmbeddedGPS}. ` +
+          `Likely causes: GPS not enabled before recording, GPS lock never acquired (started indoors/immediately), ` +
+          `or file was re-encoded (re-encoding removes the GPMF track).`,
+          "video_upload",
+          resolvedCtx,
+        );
         throw new Error("No GPS data found in this video. Make sure GPS is enabled on your GoPro and that you waited for GPS lock before starting recording.");
       }
 
@@ -650,12 +727,17 @@ export default function ProRefuelPage() {
         : VideoGPSAnalyzer.analyze(vpts, gpsVideoOffsetMs);
 
       if (!isMobile && (!videoProfile.hasGPSLock || videoProfile.postLockPoints === 0)) {
-        void trackError("GPS_WEAK",
-          `[${file.name}] GPS lock never acquired. Camera: "${resolvedModel || cameraDetection.make || "unknown"}". ` +
-          `Pre-lock points: ${videoProfile.preLockPoints}, post-lock points: ${videoProfile.postLockPoints}. ` +
-          `Lock latency: ${videoProfile.lockLatencySec?.toFixed(1) ?? "n/a"}s. ` +
-          `Recording must start AFTER the solid GPS icon (10-30s outdoors).`,
-          "video_upload");
+        void trackError(
+          "GPS_WEAK",
+          `[${file.name}] GPS lock never acquired. ` +
+          `Camera: ${resolvedModel || cameraDetection.make || "unknown"} | ` +
+          `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | ` +
+          `pre-lock pts: ${videoProfile.preLockPoints} | post-lock pts: ${videoProfile.postLockPoints} | ` +
+          `lock latency: ${videoProfile.lockLatencySec?.toFixed(1) ?? "n/a"}s | ` +
+          `total GPS pts: ${vpts.length} | GPS sampling: ${videoProfile.samplingIntervalMs}ms.`,
+          "video_upload",
+          resolvedCtx,
+        );
         throw new Error("GPS signal too weak — no valid fix was recorded. Wait for the GPS lock icon on your GoPro before starting your activity.");
       }
 
@@ -725,13 +807,17 @@ export default function ProRefuelPage() {
           if (!spatialOverlap) {
             const vidT0 = vpts.length > 0 ? new Date((vpts[0] as any).time).toISOString() : "n/a";
             const actT0 = activityPoints.length > 0 ? new Date(activityPoints[0].time).toISOString() : "n/a";
-            void trackError("VIDEO_GPX_MISMATCH",
+            void trackError(
+              "VIDEO_GPX_MISMATCH",
               `[${file.name}] GPS positions don't overlap within 2km. ` +
-              `Video GPS start: ${vidT0}, Activity start: ${actT0}. ` +
-              `Camera: "${resolvedModel || cameraDetection.make || "unknown"}". ` +
-              `Activity: "${activityMeta.name}". ` +
-              `Cause: different rides/days, wrong file, or phone clock not synced to auto.`,
-              "video_upload");
+              `Video GPS start: ${vidT0} | Activity start: ${actT0} | ` +
+              `Camera: ${resolvedModel || cameraDetection.make || "unknown"} | ` +
+              `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | ` +
+              `Activity: "${activityMeta.name}" (${activityPoints.length} pts) | ` +
+              `Video GPS pts: ${vpts.length} | GPX creator: ${gpxMetricsRef.current?.creator ?? "unknown"}.`,
+              "video_upload",
+              resolvedCtx,
+            );
             throw new Error("This video and GPX file don't match. Make sure both files are from the same ride.");
           }
         }
@@ -751,13 +837,18 @@ export default function ProRefuelPage() {
         const actDurMin = activityPoints.length > 1
           ? ((activityPoints[activityPoints.length-1].time - activityPoints[0].time) / 60_000).toFixed(0)
           : "?";
-        void trackError("NO_SCENES",
+        void trackError(
+          "NO_SCENES",
           `[${file.name}] No highlight scenes found. ` +
-          `Camera: "${resolvedModel || cameraDetection.make || "unknown"}". ` +
-          `Activity: "${activityMeta.name}" (${actDurMin} min, ${activityPoints.length} GPX points). ` +
-          `Video GPS points: ${vpts.length}. ` +
-          `Causes: activity too flat/short, video window doesn't overlap activity, or insufficient speed/elevation variation.`,
-          "video_upload");
+          `Camera: ${resolvedModel || cameraDetection.make || "unknown"} | ` +
+          `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | ` +
+          `Activity: "${activityMeta.name}" (${actDurMin} min, ${activityPoints.length} GPX pts) | ` +
+          `Video GPS pts: ${vpts.length} | GPX creator: ${gpxMetricsRef.current?.creator ?? "unknown"} | ` +
+          `Speed avg: ${Math.round(videoProfile.postLockSpeedAvgKmh)}km/h | ` +
+          `Speed max: ${Math.round(videoProfile.postLockSpeedMaxKmh)}km/h.`,
+          "video_upload",
+          resolvedCtx,
+        );
         throw new Error("No highlight scenes detected. Your activity may be too short or lack speed and elevation variation.");
       }
 
@@ -798,7 +889,7 @@ export default function ProRefuelPage() {
 
       setTimeout(() => {
         setHighlights(segments);
-        if (isMobile) setVideoFile(file);
+        if (isMobile) setVideoFile(processVideoFile);
         setStep("READY");
         readyStepStartRef.current = Date.now();
         setLoading(false);
@@ -1033,6 +1124,35 @@ export default function ProRefuelPage() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
+
+      {/* HEVC TRANSCODING OVERLAY */}
+      {hevcConverting && (
+        <div className="fixed inset-0 z-[300] bg-[#050505] flex flex-col items-center justify-center p-8 text-white">
+          {/* Brand */}
+          <h2 className="text-5xl font-black tracking-tight uppercase text-white mb-2">LENS</h2>
+          <img src="/prorefuel_logo.png" alt="ProRefuel" className="w-28 opacity-60 mb-8" />
+
+          {/* Status */}
+          <p className="text-lg font-black uppercase tracking-[0.15em] mb-1">Preparing Video</p>
+          <p className="text-amber-500 font-black text-sm uppercase tracking-widest mb-6 animate-pulse">
+            {hevcStatus || 'Converting…'}
+          </p>
+
+          {/* Progress bar */}
+          <div className="w-full max-w-[320px] h-2 bg-zinc-800 rounded-full overflow-hidden mb-3">
+            <div
+              className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out"
+              style={{ width: `${hevcProgress}%` }}
+            />
+          </div>
+          <p className="text-zinc-500 font-black text-sm mb-8">{hevcProgress}%</p>
+
+          <p className="text-zinc-600 text-[11px] text-center max-w-[280px] leading-relaxed">
+            Converting H.265 to H.264 at 1080p — this may take 3–5 minutes for large 4K footage.
+          </p>
+        </div>
+      )}
+
     <main className="min-h-screen bg-[#050505] text-white font-sans selection:bg-amber-500/40 overflow-x-hidden">
 
       {/* AMBIENT BACKGROUND */}

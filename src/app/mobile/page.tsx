@@ -431,18 +431,26 @@ export default function MobilePage() {
     // Only transcodes when the file IS H.265 (byte scan) AND the browser cannot
     // play H.265 natively. Android Chrome usually has hardware H.265 support —
     // skip the expensive FFmpeg step when not needed.
+    //
+    // GoPro always records H.264 (HEVC requires explicit firmware opt-in, extremely rare).
+    // Skip the byte-scan entirely for GoPro to restore pre-HEVC behaviour.
     let processFile = file;
     let detectedCodec: "h264" | "hevc" | null = null;
     try {
+      const isGoPro = originalCamDetection.type === "gopro";
       const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
-      const hevc = await isHevcVideo(file);
+      const hevc = isGoPro ? false : await isHevcVideo(file);
       detectedCodec = hevc ? "hevc" : "h264";
       if (hevc) {
+        // iOS: every browser (Safari, Chrome, Firefox) runs on WebKit and supports HEVC natively.
+        // canPlayType() returns "" in Chrome DevTools device simulator despite iPhone UA — UA is authoritative here.
+        const isIOSDevice = /iPhone|iPad|iPod/i.test(navigator.userAgent);
         const testVid  = document.createElement("video");
-        const canH265  = testVid.canPlayType('video/mp4; codecs="hvc1"') !== '' ||
+        const canH265  = isIOSDevice ||
+                         testVid.canPlayType('video/mp4; codecs="hvc1"') !== '' ||
                          testVid.canPlayType('video/mp4; codecs="hev1"') !== '';
         if (canH265) {
-          mlog("HEVC", `detected H.265 but browser supports it natively — skipping transcode`);
+          mlog("HEVC", `detected H.265 but browser supports it natively${isIOSDevice ? " (iOS)" : ""} — skipping transcode`);
         } else {
           mlog("HEVC", `detected H.265, browser cannot play it — transcoding to H.264`);
           setHevcConverting(true);
@@ -475,8 +483,29 @@ export default function MobilePage() {
       return;
     }
 
-    // Step 3: enrich context with codec — available after HEVC scan
-    const errCtxFull: ErrorContext = { ...errCtxCam, video_codec: detectedCodec };
+    // Step 3: video metadata scan — runs once, enriches ALL error paths
+    // Reads the first 2 MB (fast, ~5ms) — gives codec, resolution, fps,
+    // embedded GPS flag, and recording timestamp for every error event.
+    const { parseVideoMeta: _parseVideoMeta } = await import("@/lib/engine/parseVideoMeta");
+    const vmeta = await _parseVideoMeta(file).catch(() => ({
+      codec: "unknown" as const, width: null, height: null,
+      fps: null, hasEmbeddedGPS: false, recordedAt: null,
+    }));
+
+    const errCtxFull: ErrorContext = {
+      ...errCtxCam,
+      video_codec:       detectedCodec,
+      video_width:       vmeta.width,
+      video_height:      vmeta.height,
+      video_fps:         vmeta.fps,
+      video_has_gps:     vmeta.hasEmbeddedGPS || null,
+      video_recorded_at: vmeta.recordedAt,
+      // GPX — if already uploaded before the video
+      gpx_start_at:    activityPoints.length > 0 ? new Date(activityPoints[0].time).toISOString() : null,
+      gpx_end_at:      activityPoints.length > 0 ? new Date(activityPoints[activityPoints.length - 1].time).toISOString() : null,
+      gpx_point_count: activityPoints.length > 0 ? activityPoints.length : null,
+      gpx_creator:     gpxMetricsRef.current?.creator ?? null,
+    };
 
     setLoading(true); setUploadError(null); setProgress(0);
     mlogClear();
@@ -522,14 +551,13 @@ export default function MobilePage() {
 
       if (isMobile) {
         setStatusMsg(isAndroid ? "Reading Android metadata…" : "Reading iPhone metadata…");
-        // For Android: extract timestamp metadata from the ORIGINAL file.
-        // If H.265 was transcoded, FFmpeg may reset mvhd.creation_time in the
-        // output file. The original file always has the correct recording timestamp.
-        // The transcoded (processFile) is used only for video rendering.
-        const metaFile = (isAndroid && processFile !== file) ? file : processFile;
+        // Always use the ORIGINAL file for metadata/telemetry extraction.
+        // FFmpeg transcoding strips QuickTime/EXIF metadata and resets
+        // mvhd.creation_time — both iPhone and Android need the original.
+        // processFile (H.264) is used only for video rendering.
         const result = isAndroid
-          ? await AndroidEngineClient.extractTelemetry(metaFile)
-          : await iPhoneEngineClient.extractTelemetry(processFile);
+          ? await AndroidEngineClient.extractTelemetry(file)
+          : await iPhoneEngineClient.extractTelemetry(file);
 
         // ── Critical: use ALL result fields, same as desktop page ──────────────
         vpts               = result.points as any[];
@@ -573,7 +601,8 @@ export default function MobilePage() {
         }
       } else {
         setStatusMsg("Extracting GoPro telemetry…");
-        const result = await GoProEngineClient.extractTelemetry(processFile);
+        // Always use original file for GPMF — transcoding strips the telemetry track.
+        const result = await GoProEngineClient.extractTelemetry(file);
         vpts             = result.points as any[];
         gpsVideoOffsetMs = result.gpsVideoOffsetMs;
         mlog("PARSE", `gopro vpts=${vpts.length} offset=${gpsVideoOffsetMs}ms`);
@@ -598,11 +627,14 @@ export default function MobilePage() {
           const vidDate = new Date(vidT0).toLocaleDateString();
           const actDate = new Date(actT0).toLocaleDateString();
           mlog("ERROR", `no temporal overlap: video=${vidDate} gpx=${actDate}`);
-          void trackError("VIDEO_GPX_MISMATCH",
+          void trackError(
+            "VIDEO_GPX_MISMATCH",
             `[${file.name}] Date mismatch — video: ${vidDate}, GPX: ${actDate}. ` +
-            `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""}. ` +
-            `Activity: "${activityName}". ` +
-            `Cause: different days/sessions, wrong files paired, or phone clock not on auto.`,
+            `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""} | ` +
+            `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | fps: ${vmeta.fps ?? "?"} | ` +
+            `size: ${(file.size/1024/1024).toFixed(1)}MB | recorded_at: ${vmeta.recordedAt ?? "unknown"} | ` +
+            `video GPS pts: ${vpts.length} | vidT0: ${new Date(vidT0).toISOString()} | actT0: ${new Date(actT0).toISOString()} | ` +
+            `Activity: "${activityName}" (${activityPoints.length} pts) | GPX creator: ${errCtxFull.gpx_creator ?? "unknown"}.`,
             "video_upload",
             errCtxFull);
           errorTracked = true;
@@ -625,7 +657,16 @@ export default function MobilePage() {
         const actT0 = activityPoints[0]?.time ?? 0;
         const diffMin = Math.round((vidT0 - actT0) / 60_000);
         mlog("ERROR", `no highlights. vpts[0].time=${new Date(vidT0).toISOString()} actPts[0].time=${new Date(actT0).toISOString()} diff=${diffMin}min`);
-        void trackError("NO_SCENES", `No highlight scenes detected. Time diff: ${Math.abs(diffMin)} min. File: "${file.name}".`, "video_upload", errCtxFull);
+        void trackError(
+          "NO_SCENES",
+          `[${file.name}] No highlight scenes detected. ` +
+          `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""} | ` +
+          `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | fps: ${vmeta.fps ?? "?"} | ` +
+          `size: ${(file.size/1024/1024).toFixed(1)}MB | ` +
+          `video GPS pts: ${vpts.length} | time diff video-GPX: ${Math.abs(diffMin)} min | ` +
+          `Activity: "${activityName}" (${activityPoints.length} pts) | GPX creator: ${errCtxFull.gpx_creator ?? "unknown"}.`,
+          "video_upload",
+          errCtxFull);
         errorTracked = true;
         throw new Error(`No highlight scenes detected. Video and GPX may not overlap in time (diff: ${Math.abs(diffMin)} min). Make sure both files are from the same ride.`);
       }

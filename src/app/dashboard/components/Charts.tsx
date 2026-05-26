@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -188,8 +188,11 @@ export function KpiCards({ data }: { data: DashboardData }) {
           <KpiCard label="Elevation Gained"  value={contentStats.totalElevM.toLocaleString()} unit=" m"   accent="#a855f7" tooltip="Total elevation gain across all activities processed — cumulative meters climbed." />
           <KpiCard label="Activity Hours"    value={contentStats.totalActivityH}               unit=" h"   accent="#22d3ee" tooltip="Total duration of GPS tracks analyzed, in hours. Reflects how much activity data the engine has processed." />
           <KpiCard label="Video Hours In"    value={contentStats.totalVideoH}                  unit=" h"   accent="#78716c" tooltip="Total duration of raw source video files uploaded, in hours. Gives a sense of input content volume." />
-          <KpiCard label="Avg Clips/Video"   value={contentStats.avgScenes}                                               tooltip="Average number of action scene clips detected per video — higher means richer, more dynamic content." sub="action clips per video" />
-          <KpiCard label="Avg Output Length" value={contentStats.avgOutputSec}                 unit=" s"                   tooltip="Average duration of the final rendered highlight video in seconds." sub="final video duration" />
+          <KpiCard label="Avg Clips/Video"   value={contentStats.avgScenes}                                                tooltip="Average number of action scene clips detected per video — higher means richer, more dynamic content." sub="action clips per video" />
+          <KpiCard label="Avg Output Length" value={contentStats.avgOutputSec}                  unit=" s"                  tooltip="Average duration of the final rendered highlight video in seconds." sub="final video duration" />
+          <KpiCard label="Avg Output Size"   value={contentStats.avgOutputMB}                   unit=" MB" accent={AMBER}  tooltip="Average file size of the rendered highlight video downloaded by the user." sub="avg rendered video size" />
+          <KpiCard label="Max Output Size"   value={contentStats.maxOutputMB}                   unit=" MB" accent={AMBER}  tooltip="Largest rendered highlight video downloaded — useful for sizing infrastructure limits." sub="largest rendered video" />
+          <KpiCard label="Total Output"      value={contentStats.totalOutputGB}                 unit=" GB" accent="#22d3ee" tooltip="Total gigabytes of rendered highlight videos downloaded by all users." sub="total video generated" />
         </div>
       </div>
     </div>
@@ -344,33 +347,6 @@ function SessionOutcomeOverTimeChart({ data }: { data: DashboardData["sessionSuc
   );
 }
 
-function FunnelChart({ data }: { data: DashboardData["funnel"] }) {
-  const max = data[0]?.value || 1;
-  return (
-    <Card tooltip="Simplified conversion funnel showing how many sessions progress from upload to video download.">
-      <ChartTitle>Conversion Funnel</ChartTitle>
-      {data.every((d) => d.value === 0) ? <EmptyState /> : (
-        <div className="space-y-4">
-          {data.map((step, i) => {
-            const pct = Math.round((step.value / max) * 100);
-            const colors = [AMBER, "#d97706", "#92400e"];
-            return (
-              <div key={step.name}>
-                <div className="flex justify-between text-xs mb-1.5">
-                  <span className="text-zinc-400 font-medium">{step.name}</span>
-                  <span className="text-white font-black">{step.value} <span className="text-zinc-500">({pct}%)</span></span>
-                </div>
-                <div className="h-3 bg-zinc-800 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: colors[i] }} />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </Card>
-  );
-}
 
 // ── Session Outcome Widget ────────────────────────────────────────────────────
 
@@ -860,7 +836,8 @@ function ErrorsOverTimeChart({ data }: { data: DashboardData["errorsOverTime"] }
 const ERRORS_PER_PAGE = 15;
 
 function RecentErrorsTable({ data }: { data: DashboardData["recentErrors"] }) {
-  const [page, setPage] = useState(0);
+  const [page, setPage]           = useState(0);
+  const [expandedIdx, setExpanded] = useState<number | null>(null);
 
   const totalPages = Math.ceil(data.length / ERRORS_PER_PAGE);
   const slice      = data.slice(page * ERRORS_PER_PAGE, (page + 1) * ERRORS_PER_PAGE);
@@ -868,10 +845,30 @@ function RecentErrorsTable({ data }: { data: DashboardData["recentErrors"] }) {
   const fmtMB = (bytes: number | null) =>
     bytes == null ? null : bytes < 1_048_576 ? `${(bytes / 1024).toFixed(0)} KB` : `${(bytes / 1_048_576).toFixed(0)} MB`;
 
+  const fmtDate = (iso: string | null) => {
+    if (!iso) return null;
+    return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
+
+  const timeOverlapAnalysis = (e: typeof data[number]) => {
+    if (!e.video_recorded_at || !e.gpx_start_at || !e.gpx_end_at) return null;
+    const rec   = new Date(e.video_recorded_at).getTime();
+    const start = new Date(e.gpx_start_at).getTime();
+    const end   = new Date(e.gpx_end_at).getTime();
+    const inWindow = rec >= start && rec <= end;
+    const diffMin  = Math.round(Math.min(Math.abs(rec - start), Math.abs(rec - end)) / 60_000);
+    return { inWindow, diffMin };
+  };
+
+  const COL_COUNT = 9;
+
   return (
     <Card>
       <div className="flex items-center justify-between mb-4">
-        <ChartTitle>Error Log — Full Diagnostic Context</ChartTitle>
+        <div>
+          <ChartTitle>Error Log — Full Diagnostic Context</ChartTitle>
+          <p className="text-[10px] text-zinc-600 -mt-3">Click any row to expand full diagnostics</p>
+        </div>
         <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
           {data.length} events
         </span>
@@ -882,13 +879,14 @@ function RecentErrorsTable({ data }: { data: DashboardData["recentErrors"] }) {
             <table className="w-full text-xs min-w-[900px]">
               <thead>
                 <tr className="text-zinc-500 border-b border-zinc-800">
-                  {["Date", "Code", "Camera", "File", "Codec", "OS", "Browser", "RAM", "Message"].map(h => (
+                  {["", "Date", "Code", "Camera / GPS Source", "File", "Resolution", "Codec", "OS", "Message"].map(h => (
                     <th key={h} className="text-left py-2 pr-3 font-black uppercase tracking-widest whitespace-nowrap text-[10px]">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {slice.map((e, i) => {
+                  const isOpen      = expandedIdx === i;
                   const cameraLabel = [e.device_make, e.device_model].filter(Boolean).join(" ") || null;
                   const cameraColor = e.device_type === "gopro"   ? "#3b82f6"
                                     : e.device_type === "iphone"  ? "#f59e0b"
@@ -901,82 +899,183 @@ function RecentErrorsTable({ data }: { data: DashboardData["recentErrors"] }) {
                     .replace(/\s*Device:\s*"[^"]+"\./g, "")
                     .replace(/\s*File:\s*"[^"]+"\./g, "")
                     .replace(/Unsupported camera:\s*"[^"]+"\.?\s*/g, "")
-                    .slice(0, 120);
+                    .slice(0, 100);
+                  const resolution  = (e as any).video_width && (e as any).video_height
+                    ? `${(e as any).video_width}×${(e as any).video_height}` : null;
+                  const overlap     = timeOverlapAnalysis(e as any);
+
                   return (
-                    <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/20 transition-colors">
-                      {/* Date */}
-                      <td className="py-2 pr-3 text-zinc-500 whitespace-nowrap font-mono text-[10px]">
-                        {new Date(e.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{" "}
-                        <span className="text-zinc-700">{new Date(e.date).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</span>
-                      </td>
-                      {/* Code */}
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase tracking-wide"
-                          style={{ background: `${ERROR_COLORS[e.code] ?? ERROR_RED}20`, color: ERROR_COLORS[e.code] ?? ERROR_RED }}>
-                          {e.code?.replace(/_/g, " ")}
-                        </span>
-                      </td>
-                      {/* Camera */}
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        {cameraLabel ? (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap"
-                            style={{ background: `${cameraColor ?? "#78716c"}18`, color: cameraColor ?? "#a1a1aa" }}>
-                            {cameraLabel}
+                    <React.Fragment key={`row-${i}`}>
+                      <tr
+                        onClick={() => setExpanded(isOpen ? null : i)}
+                        className={`border-b border-zinc-800/50 cursor-pointer transition-colors ${isOpen ? "bg-zinc-800/40" : "hover:bg-zinc-800/20"}`}
+                      >
+                        {/* Expand indicator */}
+                        <td className="py-2 pr-1 text-zinc-600 text-[10px] font-black w-4 select-none">
+                          {isOpen ? "▾" : "▸"}
+                        </td>
+                        {/* Date */}
+                        <td className="py-2 pr-3 text-zinc-500 whitespace-nowrap font-mono text-[10px]">
+                          {new Date(e.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{" "}
+                          <span className="text-zinc-700">{new Date(e.date).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</span>
+                        </td>
+                        {/* Code */}
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase tracking-wide"
+                            style={{ background: `${ERROR_COLORS[e.code] ?? ERROR_RED}20`, color: ERROR_COLORS[e.code] ?? ERROR_RED }}>
+                            {e.code?.replace(/_/g, " ")}
                           </span>
-                        ) : <span className="text-zinc-700">—</span>}
-                      </td>
-                      {/* File size + ext */}
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        <div className="flex flex-col gap-0.5">
-                          {fmtMB(e.file_size_bytes) && (
-                            <span className="text-zinc-300 font-mono text-[10px] font-bold">{fmtMB(e.file_size_bytes)}</span>
-                          )}
-                          {e.file_extension && (
-                            <span className="text-zinc-600 font-mono text-[10px]">{e.file_extension}</span>
-                          )}
-                          {!fmtMB(e.file_size_bytes) && !e.file_extension && <span className="text-zinc-700">—</span>}
-                        </div>
-                      </td>
-                      {/* Codec */}
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        {e.video_codec ? (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-black uppercase"
-                            style={{ background: `${codecColor ?? "#52525b"}20`, color: codecColor ?? "#71717a" }}>
-                            {e.video_codec}
-                          </span>
-                        ) : <span className="text-zinc-700">—</span>}
-                      </td>
-                      {/* OS */}
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        {e.browser_os ? (
-                          <div>
-                            <span className="font-black text-[11px]" style={{ color: osColor }}>{e.browser_os}</span>
-                            {e.browser_os_version && (
-                              <span className="text-zinc-600 text-[10px] ml-1">{e.browser_os_version}</span>
+                        </td>
+                        {/* Camera / GPS Source */}
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          {cameraLabel ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap"
+                              style={{ background: `${cameraColor ?? "#78716c"}18`, color: cameraColor ?? "#a1a1aa" }}>
+                              {cameraLabel}
+                            </span>
+                          ) : (e as any).gpx_creator ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-amber-900/20 text-amber-400">
+                              {(e as any).gpx_creator}
+                            </span>
+                          ) : <span className="text-zinc-700">—</span>}
+                        </td>
+                        {/* File */}
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          <div className="flex flex-col gap-0.5">
+                            {fmtMB(e.file_size_bytes) && (
+                              <span className="text-zinc-300 font-mono text-[10px] font-bold">{fmtMB(e.file_size_bytes)}</span>
                             )}
+                            {e.file_extension && (
+                              <span className="text-zinc-600 font-mono text-[10px]">{e.file_extension}</span>
+                            )}
+                            {!fmtMB(e.file_size_bytes) && !e.file_extension && <span className="text-zinc-700">—</span>}
                           </div>
-                        ) : <span className="text-zinc-700">—</span>}
-                      </td>
-                      {/* Browser */}
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        {e.browser_name ? (
-                          <span className="text-zinc-400 text-[11px]">
-                            {e.browser_name}
-                            {e.browser_version && <span className="text-zinc-600 ml-0.5 text-[10px]"> {e.browser_version}</span>}
-                          </span>
-                        ) : <span className="text-zinc-700">—</span>}
-                      </td>
-                      {/* RAM */}
-                      <td className="py-2 pr-3 whitespace-nowrap text-zinc-400 text-[11px]">
-                        {e.device_memory_gb != null
-                          ? <span className="font-mono">{e.device_memory_gb} GB</span>
-                          : <span className="text-zinc-700">—</span>}
-                      </td>
-                      {/* Message */}
-                      <td className="py-2 max-w-[280px]">
-                        <span className="text-zinc-400 text-[10px] break-words leading-relaxed">{cleanMsg || "—"}</span>
-                      </td>
-                    </tr>
+                        </td>
+                        {/* Resolution */}
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          {resolution ? (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-zinc-300 font-mono text-[10px] font-bold">{resolution}</span>
+                              {(e as any).video_fps && (
+                                <span className="text-zinc-600 font-mono text-[10px]">{(e as any).video_fps} fps</span>
+                              )}
+                            </div>
+                          ) : <span className="text-zinc-700">—</span>}
+                        </td>
+                        {/* Codec */}
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          {e.video_codec ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-black uppercase"
+                              style={{ background: `${codecColor ?? "#52525b"}20`, color: codecColor ?? "#71717a" }}>
+                              {e.video_codec}
+                            </span>
+                          ) : <span className="text-zinc-700">—</span>}
+                        </td>
+                        {/* OS */}
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          {e.browser_os ? (
+                            <div>
+                              <span className="font-black text-[11px]" style={{ color: osColor }}>{e.browser_os}</span>
+                              {e.browser_os_version && (
+                                <span className="text-zinc-600 text-[10px] ml-1">{e.browser_os_version}</span>
+                              )}
+                            </div>
+                          ) : <span className="text-zinc-700">—</span>}
+                        </td>
+                        {/* Message */}
+                        <td className="py-2 max-w-[240px]">
+                          <span className="text-zinc-400 text-[10px] break-words leading-relaxed">{cleanMsg || "—"}</span>
+                        </td>
+                      </tr>
+
+                      {/* ── Expanded detail panel ─────────────────────────────── */}
+                      {isOpen && (
+                        <tr key={`detail-${i}`} className="bg-zinc-900/80 border-b border-zinc-800">
+                          <td colSpan={COL_COUNT} className="px-4 py-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+
+                              {/* Video */}
+                              <div className="space-y-2">
+                                <p className="text-[9px] font-black uppercase tracking-[0.25em] text-zinc-600 mb-2">Video File</p>
+                                {[
+                                  { label: "Codec",       value: e.video_codec?.toUpperCase() ?? null,
+                                    color: e.video_codec === "hevc" ? "#f97316" : e.video_codec === "h264" ? "#22d3ee" : null },
+                                  { label: "Resolution",  value: resolution },
+                                  { label: "Frame Rate",  value: (e as any).video_fps ? `${(e as any).video_fps} fps` : null },
+                                  { label: "File Size",   value: fmtMB(e.file_size_bytes) },
+                                  { label: "Format",      value: e.file_extension ?? null },
+                                  { label: "MIME",        value: e.file_mime_type ?? null },
+                                  { label: "Embedded GPS",value: (e as any).video_has_gps != null
+                                      ? ((e as any).video_has_gps ? "Yes — GPMF stream present" : "No") : null,
+                                    color: (e as any).video_has_gps ? "#22c55e" : null },
+                                  { label: "Recorded At", value: fmtDate((e as any).video_recorded_at) },
+                                ].map(({ label, value, color }: any) => value != null && (
+                                  <div key={label} className="flex items-baseline gap-2">
+                                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600 w-24 shrink-0">{label}</span>
+                                    <span className="text-[11px] font-black" style={{ color: color ?? "#e4e4e7" }}>{value}</span>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* GPX + Time Overlap */}
+                              <div className="space-y-2">
+                                <p className="text-[9px] font-black uppercase tracking-[0.25em] text-zinc-600 mb-2">GPS / GPX</p>
+                                {[
+                                  { label: "Source",      value: (e as any).gpx_creator ?? null },
+                                  { label: "Points",      value: (e as any).gpx_point_count ? `${(e as any).gpx_point_count.toLocaleString()} pts` : null },
+                                  { label: "GPX Start",   value: fmtDate((e as any).gpx_start_at) },
+                                  { label: "GPX End",     value: fmtDate((e as any).gpx_end_at) },
+                                ].map(({ label, value }: any) => value != null && (
+                                  <div key={label} className="flex items-baseline gap-2">
+                                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600 w-24 shrink-0">{label}</span>
+                                    <span className="text-[11px] font-black text-zinc-200">{value}</span>
+                                  </div>
+                                ))}
+                                {overlap != null && (
+                                  <div className={`mt-2 px-2 py-1.5 rounded-lg text-[10px] font-black ${
+                                    overlap.inWindow
+                                      ? "bg-green-900/30 text-green-400"
+                                      : "bg-red-900/30 text-red-400"
+                                  }`}>
+                                    {overlap.inWindow
+                                      ? "✓ Video recording falls within GPX time window"
+                                      : `⚠ No time overlap — video is ${overlap.diffMin} min outside GPX window`}
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Device + Browser */}
+                              <div className="space-y-2">
+                                <p className="text-[9px] font-black uppercase tracking-[0.25em] text-zinc-600 mb-2">Device & Browser</p>
+                                {[
+                                  { label: "Camera",      value: [e.device_make, e.device_model].filter(Boolean).join(" ") || null },
+                                  { label: "Type",        value: e.device_type ?? null },
+                                  { label: "Browser OS",  value: e.browser_os ? `${e.browser_os} ${e.browser_os_version ?? ""}`.trim() : null },
+                                  { label: "Browser",     value: e.browser_name ? `${e.browser_name} ${e.browser_version ?? ""}`.trim() : null },
+                                  { label: "RAM",         value: e.device_memory_gb != null ? `${e.device_memory_gb} GB` : null },
+                                  { label: "CPU Cores",   value: e.cpu_cores != null ? `${e.cpu_cores} cores` : null },
+                                  { label: "App Version", value: e.version ?? null },
+                                ].map(({ label, value }: any) => value != null && (
+                                  <div key={label} className="flex items-baseline gap-2">
+                                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600 w-24 shrink-0">{label}</span>
+                                    <span className="text-[11px] font-black text-zinc-200">{value}</span>
+                                  </div>
+                                ))}
+
+                                {/* Full error message */}
+                                {e.message && (
+                                  <div className="mt-3 pt-3 border-t border-zinc-800/60">
+                                    <p className="text-[9px] font-black uppercase tracking-[0.25em] text-zinc-600 mb-1">Full Message</p>
+                                    <p className="text-[10px] text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">{e.message}</p>
+                                  </div>
+                                )}
+                              </div>
+
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -1398,15 +1497,16 @@ function InvestorKpiStrip({ data }: { data: DashboardData }) {
 
 function PlatformComparisonWidget({ data: pc }: { data: DashboardData["platformComparison"] }) {
   const platforms = [
-    { label: "Mobile",  icon: "📱", d: pc.mobile,  color: AMBER,     barColor: AMBER },
-    { label: "Desktop", icon: "🖥️", d: pc.desktop, color: "#22d3ee", barColor: "#22d3ee" },
+    { label: "Mobile",  icon: "📱", d: pc.mobile,  barColor: AMBER },
+    { label: "Desktop", icon: "🖥️", d: pc.desktop, barColor: "#22d3ee" },
+    { label: "Unknown", icon: "❓", d: pc.unknown,  barColor: "#52525b" },
   ].filter(p => p.d.total > 0);
 
   return (
-    <Card tooltip="Success rate comparison between mobile and desktop browsers. Based on the browser_is_mobile flag on each session. A large gap (>10pp) suggests platform-specific compatibility work is needed.">
+    <Card tooltip="Success rate comparison between mobile and desktop browsers. Based on the browser_is_mobile flag on each session. 'Unknown' = sessions where the flag was not captured (older sessions or incomplete instrumentation) — check these for hidden failures.">
       <ChartTitle>Mobile vs Desktop</ChartTitle>
       <p className="text-[10px] text-zinc-600 mb-4 -mt-2">
-        Success rate comparison — based on <span className="font-mono">browser_is_mobile</span> flag on each session.
+        Success rate by platform — <span className="font-mono">browser_is_mobile</span> flag. "Unknown" = flag not captured.
       </p>
       {platforms.length === 0 ? <EmptyState label="No platform data yet" /> : (
         <div className="space-y-5">
@@ -1582,9 +1682,9 @@ const MOBILE_LIMITS = [
 function VideoFileSizeWidget({ data }: { data: VideoSizeStats | null }) {
   if (!data || data.count === 0) {
     return (
-      <Card tooltip="How many uploads fall into each 100 MB size bucket. Bars show % of total uploads.">
-        <ChartTitle>Video File Size Distribution</ChartTitle>
-        <EmptyState label="No upload size data yet" />
+      <Card tooltip="Every video file users attempted to process — successful uploads and early rejections combined. All platforms (desktop + mobile).">
+        <ChartTitle>Video File Size — All Attempts</ChartTitle>
+        <EmptyState label="No video data yet" />
       </Card>
     );
   }
@@ -1600,11 +1700,11 @@ function VideoFileSizeWidget({ data }: { data: VideoSizeStats | null }) {
   };
 
   return (
-    <Card tooltip="Distribution of uploaded video file sizes in 100 MB increments. Each bar = % of all uploads in that range. The dashed annotations show mobile upload limits — files to the right of each line are rejected by that device category.">
+    <Card tooltip="Every video file users attempted to process — successful uploads and early rejections combined. All platforms (desktop + mobile). Each bar = % of all attempts in that size range. Dashed lines show mobile upload limits.">
       <div className="flex items-start justify-between mb-5">
         <div>
-          <ChartTitle>Video File Size Distribution</ChartTitle>
-          <p className="text-[10px] text-zinc-500 -mt-3">{total} uploads · bars show % of total</p>
+          <ChartTitle>Video File Size — All Attempts</ChartTitle>
+          <p className="text-[10px] text-zinc-500 -mt-3">{total} attempts · desktop + mobile · bars show % of total</p>
         </div>
         <div className="flex gap-5 shrink-0 ml-4">
           {[
@@ -1762,6 +1862,81 @@ function FileSizeByPlatformWidget({ data }: { data: DashboardData["fileSizeByPla
           )}
         </>
       )}
+    </Card>
+  );
+}
+
+// ── File size by recording device ────────────────────────────────────────────
+
+function FileSizeByDeviceWidget({ data }: { data: DashboardData["fileSizeByDevice"] }) {
+  if (!data || data.length === 0) {
+    return (
+      <Card tooltip="File sizes crossed with the recording device — every attempt, all platforms.">
+        <ChartTitle>File Size by Device</ChartTitle>
+        <EmptyState label="No device data yet" />
+      </Card>
+    );
+  }
+
+  const maxCount = Math.max(...data.map(d => d.count));
+
+  const deviceColor = (type: string | null) =>
+    type === "gopro"   ? "#3b82f6"
+    : type === "iphone"  ? "#f59e0b"
+    : type === "android" ? "#22c55e"
+    : "#52525b";
+
+  const cols = [
+    { key: "count",    label: "Attempts" },
+    { key: "avgMB",    label: "Avg"      },
+    { key: "medianMB", label: "Median"   },
+    { key: "p90MB",    label: "P90"      },
+    { key: "maxMB",    label: "Max"      },
+  ] as const;
+
+  return (
+    <Card tooltip="Every video users attempted to bring to LENS — successful uploads and early rejections combined — grouped by recording device. Avg / Median / P90 / Max are in MB.">
+      <ChartTitle>File Size by Device — What Users Are Trying to Edit</ChartTitle>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs min-w-[520px]">
+          <thead>
+            <tr className="border-b border-zinc-800">
+              <th className="text-left py-2 pr-4 text-[10px] font-black uppercase tracking-widest text-zinc-600">Device</th>
+              <th className="text-left py-2 pr-6 text-[10px] font-black uppercase tracking-widest text-zinc-600 min-w-[100px]">Attempts</th>
+              {cols.slice(1).map(c => (
+                <th key={c.key} className="text-right py-2 px-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {data.map(row => {
+              const color = deviceColor(row.type);
+              const barPct = Math.round((row.count / maxCount) * 100);
+              return (
+                <tr key={row.label} className="border-b border-zinc-800/30 hover:bg-zinc-800/20 transition-colors">
+                  <td className="py-2.5 pr-4">
+                    <span className="font-black text-[12px]" style={{ color }}>{row.label}</span>
+                  </td>
+                  <td className="py-2.5 pr-6">
+                    <div className="flex items-center gap-2">
+                      <span className="font-black text-white tabular-nums text-[12px] w-6 shrink-0">{row.count}</span>
+                      <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden min-w-[60px]">
+                        <div className="h-full rounded-full" style={{ width: `${barPct}%`, background: color }} />
+                      </div>
+                    </div>
+                  </td>
+                  {(["avgMB", "medianMB", "p90MB", "maxMB"] as const).map(k => (
+                    <td key={k} className="py-2.5 px-2 text-right">
+                      <span className="font-black text-white tabular-nums text-[12px]">{row[k]}</span>
+                      <span className="text-zinc-600 text-[10px] ml-0.5">MB</span>
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </Card>
   );
 }
@@ -2153,7 +2328,7 @@ function EngineTab({ data }: { data: DashboardData }) {
         <SectionLabel>Render Pipeline</SectionLabel>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <DonutChart data={data.renderStatus}   title="Render Status"    tooltip="Breakdown of render outcomes: success, error, or aborted. A high error slice signals a systemic rendering issue." />
-          <VBarChart  data={data.renderDuration} title="Render Duration"  tooltip="Distribution of render durations grouped in time buckets. Helps identify whether most renders are fast or if there's a long-tail performance problem." />
+          <VBarChart  data={data.renderDuration} title="Render Duration (Successful)"  tooltip="Distribution of render durations for successful renders only. Failed renders are excluded. Helps identify whether most renders are fast or if there's a long-tail performance problem." />
           <RenderPercentilesWidget data={data.renderPercentiles} />
         </div>
       </section>
@@ -2172,10 +2347,13 @@ function EngineTab({ data }: { data: DashboardData }) {
       </section>
 
       <section>
-        <SectionLabel>Upload File Size</SectionLabel>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <VideoFileSizeWidget      data={data.videoSizeStats} />
-          <FileSizeByPlatformWidget data={data.fileSizeByPlatform} />
+        <SectionLabel>Video File Size — What Users Are Trying to Edit</SectionLabel>
+        <div className="space-y-4">
+          <FileSizeByDeviceWidget data={data.fileSizeByDevice} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <VideoFileSizeWidget      data={data.videoSizeStats} />
+            <FileSizeByPlatformWidget data={data.fileSizeByPlatform} />
+          </div>
         </div>
       </section>
 
@@ -2237,11 +2415,7 @@ export function DashboardCharts({ data }: { data: DashboardData }) {
           width:  collapsed ? "58px" : "200px",
         }}
       >
-        {/* Section label */}
-        <div className={`px-4 pt-5 pb-3 transition-opacity duration-150 ${collapsed ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
-          <p className="text-[9px] font-black uppercase tracking-[0.25em] text-zinc-700 whitespace-nowrap">Navigation</p>
-        </div>
-        {collapsed && <div className="pt-5" />}
+        <div className="pt-5" />
 
         {/* Nav items */}
         <nav className="flex-1 flex flex-col px-2 gap-0.5 overflow-y-auto overflow-x-hidden">
@@ -2284,7 +2458,6 @@ export function DashboardCharts({ data }: { data: DashboardData }) {
             }`}
           >
             <span className="text-[11px] font-black leading-none">{collapsed ? "▶" : "◀"}</span>
-            {!collapsed && <span className="text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Collapse</span>}
           </button>
         </div>
       </aside>
