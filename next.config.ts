@@ -7,11 +7,24 @@ const nextConfig: NextConfig = {
   // block those that lack CORP headers (fonts, analytics, etc.).
   async headers() {
     return [
+      // Engine routes — full isolation (require-corp) for SharedArrayBuffer.
       {
         source: "/(render-hero|v2)(.*)",
         headers: [
-          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Opener-Policy",   value: "same-origin" },
           { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+        ],
+      },
+      // Upload pages — credentialless COEP enables SharedArrayBuffer without
+      // blocking cross-origin resources (fonts, analytics) that lack CORP headers.
+      // This unlocks multi-threaded FFmpeg.wasm for HEVC transcoding.
+      // credentialless supported: Chrome 96+, Edge 96+, Firefox 119+.
+      // Safari supports HEVC natively so never reaches FFmpeg.wasm.
+      {
+        source: "/(mobile)?(.*)",
+        headers: [
+          { key: "Cross-Origin-Opener-Policy",   value: "same-origin" },
+          { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
         ],
       },
     ];

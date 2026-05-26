@@ -12,7 +12,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { mlog, mlogClear } from "@/lib/engine/mobile/mobileDebugLogger";
 import {
-  trackProcessingSession, trackVideoExport, trackError,
+  trackProcessingSession, trackVideoExport, trackError, trackHevcTranscode,
   trackGpxSession, trackVideoUpload, computeGpxMetrics,
   buildBrowserCtx,
 } from "@/lib/supabase/tracking";
@@ -436,6 +436,7 @@ export default function MobilePage() {
     // Skip the byte-scan entirely for GoPro to restore pre-HEVC behaviour.
     let processFile = file;
     let detectedCodec: "h264" | "hevc" | null = null;
+    let transcodeStart: number | null = null;
     try {
       const isGoPro = originalCamDetection.type === "gopro";
       const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
@@ -456,11 +457,18 @@ export default function MobilePage() {
           setHevcConverting(true);
           setHevcProgress(0);
           setHevcStatus("Loading converter…");
+          transcodeStart = Date.now();
           processFile = await transcodeHevcToH264(file, (pct, status) => {
             setHevcProgress(pct);
             setHevcStatus(status);
           });
-          mlog("HEVC", `transcoding done — ${(processFile.size/1024/1024).toFixed(1)}MB`);
+          const transcodeMs = Date.now() - transcodeStart;
+          mlog("HEVC", `transcoding done in ${(transcodeMs/1000).toFixed(1)}s — ${(processFile.size/1024/1024).toFixed(1)}MB`);
+          void trackHevcTranscode(transcodeMs, {
+            ...errCtxCam,
+            file_size_bytes: file.size,
+            file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
+          });
           setHevcConverting(false);
           setHevcProgress(0);
           setHevcStatus("");
@@ -474,7 +482,8 @@ export default function MobilePage() {
       void trackError("WRONG_VIDEO_FORMAT",
         `[${file.name}] H.265 transcoding failed: ${err.message}`,
         "video_upload",
-        { ...errCtxCam, video_codec: "hevc" });
+        { ...errCtxCam, video_codec: "hevc",
+          hevc_transcode_ms: transcodeStart != null ? Date.now() - transcodeStart : null });
       setUploadError(
         "Failed to convert H.265 video. " +
         "Try recording in H.264: Camera app → Settings → Video quality → disable \"Efficient video format\"."

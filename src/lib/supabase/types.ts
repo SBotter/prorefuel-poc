@@ -237,6 +237,7 @@ export type ErrorCode =
   | "RENDER_OOM"
   | "RENDER_FAILED"
   | "WORKER_ERROR"
+  | "HEVC_TRANSCODE_OK"  // performance event — successful HEVC→H.264 transcode with timing
   | "UNKNOWN";
 
 export interface ErrorEvent {
@@ -282,6 +283,9 @@ export interface ErrorEvent {
   // GPX source — raw <gpx creator="..."> attribute (demand signal for unsupported GPS devices)
   gpx_creator?: string | null;       // e.g. 'Wahoo ELEMNT BOLT', 'Apple Watch', 'Coros Apex 2'
 
+  // HEVC transcoding performance (null for non-HEVC or non-transcode events)
+  hevc_transcode_ms?: number | null; // wall-clock ms from FFmpeg start to file ready
+
   app_version: string | null;
   user_agent: string | null;
 }
@@ -319,6 +323,9 @@ export interface ErrorContext {
   cpu_cores?: number | null;
   // GPX source — raw <gpx creator="..."> attribute
   gpx_creator?: string | null;
+
+  // HEVC transcoding performance
+  hevc_transcode_ms?: number | null;
 }
 
 export type ErrorEventInsert = Omit<ErrorEvent, "id" | "created_at">;

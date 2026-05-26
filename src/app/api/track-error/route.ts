@@ -46,6 +46,8 @@ export async function POST(req: NextRequest) {
       cpu_cores:        body.cpu_cores,
       // GPX source (demand signal for unsupported GPS devices)
       gpx_creator: body.gpx_creator,
+      // HEVC transcode performance (HEVC_TRANSCODE_OK events + failed transcode errors)
+      hevc_transcode_ms: body.hevc_transcode_ms,
     };
     for (const [k, v] of Object.entries(optional)) {
       if (v != null) record[k] = v;

@@ -1943,13 +1943,14 @@ function FileSizeByDeviceWidget({ data }: { data: DashboardData["fileSizeByDevic
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
-type TabId = "overview" | "errors" | "video" | "gps" | "engine";
+type TabId = "overview" | "errors" | "video" | "gps" | "engine" | "codec";
 
 const TABS: { id: TabId; label: string; icon: string; accent?: string }[] = [
   { id: "overview", label: "Overview",      icon: "▦" },
   { id: "errors",   label: "Errors",        icon: "⚠", accent: "#ef4444" },
   { id: "video",    label: "Video Devices", icon: "▶" },
   { id: "gps",      label: "GPS Trackers",  icon: "⊕" },
+  { id: "codec",    label: "Codec / HEVC",  icon: "◈", accent: "#f97316" },
   { id: "engine",   label: "Engine",        icon: "⚙" },
 ];
 
@@ -2394,6 +2395,472 @@ function EngineTab({ data }: { data: DashboardData }) {
   );
 }
 
+// ── Codec / HEVC Tab ──────────────────────────────────────────────────────────
+
+const HEVC_ORANGE = "#f97316";
+const H264_CYAN   = "#22d3ee";
+const CODEC_COLORS_MAP: Record<string, string> = {
+  "HEVC / H.265": HEVC_ORANGE,
+  "H.264":        H264_CYAN,
+  "Other":        "#52525b",
+};
+
+function CodecKpiStrip({ d }: { d: DashboardData["codecStats"] }) {
+  const tiles = [
+    {
+      label: "Error Events with Codec Data",
+      value: d.totalWithCodec.toLocaleString(),
+      sub:   "error_events WHERE video_codec IS NOT NULL",
+      accent: "#71717a",
+    },
+    {
+      label: "HEVC / H.265 Events",
+      value: d.hevcCount.toLocaleString(),
+      sub:   `${d.hevcPct}% of codec-tagged errors`,
+      accent: HEVC_ORANGE,
+    },
+    {
+      label: "H.264 Events",
+      value: d.h264Count.toLocaleString(),
+      sub:   d.totalWithCodec > 0 ? `${100 - d.hevcPct}% of codec-tagged errors` : "—",
+      accent: H264_CYAN,
+    },
+    {
+      label: "Top HEVC Error",
+      value: d.hevcErrorCodes[0]?.name.replace(/_/g, " ") ?? "—",
+      sub:   d.hevcErrorCodes[0] ? `${d.hevcErrorCodes[0].value}× occurrences` : "no data",
+      accent: "#ef4444",
+    },
+  ];
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      {tiles.map(t => (
+        <Card key={t.label} className="flex flex-col gap-1">
+          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-600">{t.label}</p>
+          <p className="text-2xl font-black tabular-nums leading-none" style={{ color: t.accent }}>{t.value}</p>
+          <p className="text-[10px] text-zinc-600 font-mono mt-0.5">{t.sub}</p>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function CodecSplitDonut({ d }: { d: DashboardData["codecStats"] }) {
+  const total = d.totalWithCodec;
+  return (
+    <Card tooltip="Breakdown of error events by video codec. HEVC (H.265) requires browser support or FFmpeg transcoding — it generates more failures than standard H.264.">
+      <ChartTitle>Codec Distribution — Error Events</ChartTitle>
+      <p className="text-[10px] text-zinc-600 mb-3 -mt-2">
+        All error events where the codec could be identified.
+      </p>
+      {total === 0 ? <EmptyState label="No codec data in error events yet" /> : (
+        <div className="flex items-center gap-4">
+          <ResponsiveContainer width={130} height={130}>
+            <PieChart>
+              <Pie data={d.codecSplit} cx="50%" cy="50%" innerRadius={36} outerRadius={58} dataKey="value" strokeWidth={0}>
+                {d.codecSplit.map(entry => (
+                  <Cell key={entry.name} fill={CODEC_COLORS_MAP[entry.name] ?? "#52525b"} />
+                ))}
+              </Pie>
+              <Tooltip contentStyle={tooltipStyle} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="flex-1 space-y-3">
+            {d.codecSplit.map(entry => {
+              const pct = total > 0 ? Math.round(entry.value / total * 100) : 0;
+              return (
+                <div key={entry.name}>
+                  <div className="flex items-center justify-between text-[11px] mb-1">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full" style={{ background: CODEC_COLORS_MAP[entry.name] ?? "#52525b" }} />
+                      <span className="font-mono font-black text-zinc-300">{entry.name}</span>
+                    </div>
+                    <span className="font-black text-white tabular-nums">{entry.value}
+                      <span className="text-zinc-600 font-normal ml-1">({pct}%)</span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: CODEC_COLORS_MAP[entry.name] ?? "#52525b" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function HevcByCameraChart({ d }: { d: DashboardData["codecStats"] }) {
+  const CAM_ACCENT: Record<string, string> = { GoPro: "#3b82f6", iPhone: AMBER, Android: "#22c55e", Unknown: "#52525b" };
+  return (
+    <Card tooltip="For each camera type, how many error events came from HEVC files vs H.264 files. High HEVC on Android = users recorded in 'Efficient format' mode. iPhone HEVC is handled natively by Safari but may cause issues in other browsers.">
+      <ChartTitle>HEVC vs H.264 by Camera Type</ChartTitle>
+      {d.hevcByCamera.length === 0 ? <EmptyState label="No camera-codec data yet" /> : (
+        <div className="space-y-4">
+          {d.hevcByCamera.map(row => {
+            const barMax = Math.max(...d.hevcByCamera.map(r => r.total), 1);
+            return (
+              <div key={row.name}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[11px] font-black" style={{ color: CAM_ACCENT[row.name] ?? "#71717a" }}>{row.name}</span>
+                  <span className="text-zinc-600 text-[10px]">{row.total} total</span>
+                </div>
+                <div className="flex gap-1 h-5">
+                  {row.hevc > 0 && (
+                    <div
+                      className="h-full rounded flex items-center justify-center text-[9px] font-black text-black"
+                      style={{ width: `${(row.hevc / barMax) * 100}%`, background: HEVC_ORANGE, minWidth: row.hevc > 0 ? "28px" : 0 }}
+                    >
+                      {row.hevc}
+                    </div>
+                  )}
+                  {row.h264 > 0 && (
+                    <div
+                      className="h-full rounded flex items-center justify-center text-[9px] font-black text-black"
+                      style={{ width: `${(row.h264 / barMax) * 100}%`, background: H264_CYAN, minWidth: row.h264 > 0 ? "28px" : 0 }}
+                    >
+                      {row.h264}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          <div className="flex gap-4 pt-1">
+            <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: HEVC_ORANGE }} /><span className="text-[10px] text-zinc-400 font-mono">HEVC / H.265</span></div>
+            <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: H264_CYAN }} /><span className="text-[10px] text-zinc-400 font-mono">H.264</span></div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function HevcByOsChart({ d }: { d: DashboardData["codecStats"] }) {
+  const OS_ACCENT: Record<string, string> = { iOS: AMBER, Android: "#22c55e", macOS: "#a855f7", Windows: "#3b82f6", Linux: "#06b6d4" };
+  return (
+    <Card tooltip="Codec breakdown by operating system. iOS Safari supports HEVC natively — errors there may be unrelated to codec. Android Chrome may lack hardware HEVC decoding on older devices.">
+      <ChartTitle>HEVC vs H.264 by OS</ChartTitle>
+      {d.hevcByOs.length === 0 ? <EmptyState label="No OS-codec data yet" /> : (
+        <div className="space-y-4">
+          {d.hevcByOs.map(row => {
+            const barMax = Math.max(...d.hevcByOs.map(r => r.total), 1);
+            return (
+              <div key={row.name}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[11px] font-black" style={{ color: OS_ACCENT[row.name] ?? "#71717a" }}>{row.name}</span>
+                  <span className="text-zinc-600 text-[10px]">{row.total} total</span>
+                </div>
+                <div className="flex gap-1 h-5">
+                  {row.hevc > 0 && (
+                    <div
+                      className="h-full rounded flex items-center justify-center text-[9px] font-black text-black"
+                      style={{ width: `${(row.hevc / barMax) * 100}%`, background: HEVC_ORANGE, minWidth: row.hevc > 0 ? "28px" : 0 }}
+                    >
+                      {row.hevc}
+                    </div>
+                  )}
+                  {row.h264 > 0 && (
+                    <div
+                      className="h-full rounded flex items-center justify-center text-[9px] font-black text-black"
+                      style={{ width: `${(row.h264 / barMax) * 100}%`, background: H264_CYAN, minWidth: row.h264 > 0 ? "28px" : 0 }}
+                    >
+                      {row.h264}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          <div className="flex gap-4 pt-1">
+            <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: HEVC_ORANGE }} /><span className="text-[10px] text-zinc-400 font-mono">HEVC / H.265</span></div>
+            <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: H264_CYAN }} /><span className="text-[10px] text-zinc-400 font-mono">H.264</span></div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ResolutionChart({ d }: { d: DashboardData["codecStats"] }) {
+  const total = d.resolutionBreakdown.reduce((s, r) => s + r.value, 0);
+  const RES_COLORS: Record<string, string> = {
+    "4K (2160p+)": "#a855f7",
+    "1440p":        "#3b82f6",
+    "1080p":        HEVC_ORANGE,
+    "720p":         H264_CYAN,
+    "< 720p":       "#52525b",
+  };
+  return (
+    <Card tooltip="Resolution of videos that triggered errors, bucketed by height. 4K and 1440p files are more likely to be HEVC-encoded and exceed older device memory limits.">
+      <ChartTitle>Resolution Breakdown</ChartTitle>
+      <p className="text-[10px] text-zinc-600 mb-3 -mt-2">Bucketed by video height from error events.</p>
+      {total === 0 ? <EmptyState label="No resolution data yet" /> : (
+        <div className="space-y-2.5">
+          {d.resolutionBreakdown.map(row => {
+            const pct = total > 0 ? Math.round(row.value / total * 100) : 0;
+            return (
+              <div key={row.name}>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <span className="font-mono font-black text-zinc-300">{row.name}</span>
+                  <span className="font-black text-white tabular-nums">{row.value}
+                    <span className="text-zinc-600 font-normal ml-1">({pct}%)</span>
+                  </span>
+                </div>
+                <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: RES_COLORS[row.name] ?? "#71717a" }} />
+                </div>
+              </div>
+            );
+          })}
+          <p className="text-[10px] text-zinc-600 pt-1">{total} errors with resolution data</p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function FpsChart({ d }: { d: DashboardData["codecStats"] }) {
+  const total = d.fpsBreakdown.reduce((s, r) => s + r.value, 0);
+  return (
+    <Card tooltip="Frame rate distribution of videos that triggered errors. 60fps and 120fps files are more likely to be HEVC-encoded (modern slow-motion modes).">
+      <ChartTitle>Frame Rate Breakdown</ChartTitle>
+      <p className="text-[10px] text-zinc-600 mb-3 -mt-2">FPS of videos from error events.</p>
+      {total === 0 ? <EmptyState label="No FPS data yet" /> : (
+        <ResponsiveContainer width="100%" height={180}>
+          <BarChart data={d.fpsBreakdown} layout="vertical">
+            <CartesianGrid strokeDasharray="3 3" stroke={ZINC700} horizontal={false} />
+            <XAxis type="number" tick={{ fill: "#71717a", fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
+            <YAxis dataKey="name" type="category" tick={{ fill: "#a1a1aa", fontSize: 10, fontFamily: "monospace" }} tickLine={false} axisLine={false} width={48} />
+            <Tooltip contentStyle={tooltipStyle} />
+            <Bar dataKey="value" fill={HEVC_ORANGE} radius={[0, 4, 4, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      )}
+    </Card>
+  );
+}
+
+function HevcErrorCodesChart({ d }: { d: DashboardData["codecStats"] }) {
+  const total = d.hevcErrorCodes.reduce((s, r) => s + r.value, 0);
+  return (
+    <Card
+      className="col-span-full"
+      tooltip="Which error codes are triggered specifically by HEVC (H.265) files. WRONG_VIDEO_FORMAT = file rejected before processing. NO_GPS_VIDEO = file reached the parser but had no embedded GPS. This tells you where in the pipeline HEVC causes the most pain."
+    >
+      <ChartTitle>Error Codes — HEVC Files Only</ChartTitle>
+      <p className="text-[10px] text-zinc-600 mb-4 -mt-2">
+        Only errors from H.265 / HEVC files. Identifies which pipeline stage fails most with HEVC.
+      </p>
+      {total === 0 ? <EmptyState label="No HEVC error code data yet" /> : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          {d.hevcErrorCodes.map(row => {
+            const pct = total > 0 ? Math.round(row.value / total * 100) : 0;
+            return (
+              <div key={row.name} className="bg-zinc-800/50 border border-zinc-700/40 rounded-2xl p-4 flex flex-col gap-1">
+                <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">{row.name.replace(/_/g, " ")}</span>
+                <span className="text-xl font-black tabular-nums" style={{ color: ERROR_COLORS[row.name] ?? HEVC_ORANGE }}>{row.value}</span>
+                <div className="h-1 bg-zinc-800 rounded-full overflow-hidden mt-1">
+                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: ERROR_COLORS[row.name] ?? HEVC_ORANGE }} />
+                </div>
+                <span className="text-[10px] text-zinc-600">{pct}% of HEVC errors</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function TranscodeTimingSection({ t }: { t: DashboardData["hevcTranscodeStats"] }) {
+  const fmtMs = (ms: number | null) => {
+    if (ms == null) return "—";
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+    return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+  };
+
+  const maxMs = Math.max(...t.byDevice.map(d => d.avgMs), ...t.byOs.map(d => d.avgMs), 1);
+
+  return (
+    <section>
+      <SectionLabel accent={HEVC_ORANGE}>Transcoding Time — HEVC → H.264</SectionLabel>
+      <p className="text-[10px] text-zinc-600 mb-3 -mt-4">
+        Wall-clock duration of FFmpeg.wasm transcoding on the user's device.
+        Source: <span className="font-mono text-zinc-500">HEVC_TRANSCODE_OK</span> events (success) +{" "}
+        <span className="font-mono text-zinc-500">WRONG_VIDEO_FORMAT</span> with timing (failure).
+        {t.totalEvents === 0 && " — No transcode timing data yet. Events are logged after the first user transcodes a HEVC video."}
+      </p>
+
+      {t.totalEvents === 0 ? (
+        <EmptyState label="No transcode timing data yet — appears after the first HEVC transcoding session." />
+      ) : (
+        <div className="space-y-4">
+
+          {/* ── Stat tiles ──────────────────────────────────────────────────── */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            {[
+              { label: "Sessions",   value: t.totalEvents.toLocaleString(), accent: "#71717a",    sub: `${t.successCount} ok · ${t.failureCount} failed` },
+              { label: "Average",    value: fmtMs(t.avgMs),                 accent: HEVC_ORANGE,  sub: "all events" },
+              { label: "Median p50", value: fmtMs(t.p50Ms),                 accent: H264_CYAN,    sub: "half faster than this" },
+              { label: "p90",        value: fmtMs(t.p90Ms),                 accent: "#a855f7",    sub: "90% finish by here" },
+              { label: "p95",        value: fmtMs(t.p95Ms),                 accent: "#ef4444",    sub: "worst-case tail" },
+              { label: "Max",        value: fmtMs(t.maxMs),                 accent: "#f43f5e",    sub: "longest recorded" },
+            ].map(tile => (
+              <Card key={tile.label} className="flex flex-col gap-1">
+                <p className="text-[9px] font-black uppercase tracking-widest text-zinc-600">{tile.label}</p>
+                <p className="text-xl font-black tabular-nums leading-tight" style={{ color: tile.accent }}>{tile.value}</p>
+                <p className="text-[9px] text-zinc-600 font-mono">{tile.sub}</p>
+              </Card>
+            ))}
+          </div>
+
+          {/* ── Time buckets ────────────────────────────────────────────────── */}
+          {t.buckets.length > 0 && (
+            <Card tooltip="Distribution of successful transcode durations. A long tail (> 2 min) signals that large 4K HEVC files are slow on FFmpeg.wasm — consider adding a file-size warning or recommending H.264 recording.">
+              <ChartTitle>Transcode Duration Distribution</ChartTitle>
+              <p className="text-[10px] text-zinc-600 mb-3 -mt-2">Successful transcodes only.</p>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                {t.buckets.map(b => {
+                  const pct = t.successCount > 0 ? Math.round(b.value / t.successCount * 100) : 0;
+                  return (
+                    <div key={b.name} className="bg-zinc-800/40 border border-zinc-700/30 rounded-2xl p-3 text-center">
+                      <p className="text-[10px] font-mono font-black text-zinc-400 mb-1">{b.name}</p>
+                      <p className="text-2xl font-black tabular-nums" style={{ color: HEVC_ORANGE }}>{b.value}</p>
+                      <p className="text-[10px] text-zinc-600">{pct}%</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* ── By device + by OS ───────────────────────────────────────────── */}
+          {(t.byDevice.length > 0 || t.byOs.length > 0) && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+              {t.byDevice.length > 0 && (
+                <Card tooltip="Average transcoding time per camera type (successful transcodes). Android HEVC tends to be larger files; iPhone HEVC is usually skipped on real devices (Safari plays natively).">
+                  <ChartTitle>Avg Transcode Time by Camera</ChartTitle>
+                  <div className="space-y-3 mt-2">
+                    {t.byDevice.map(d => {
+                      const CAM_ACCENT: Record<string, string> = { GoPro: "#3b82f6", iPhone: AMBER, Android: "#22c55e", Unknown: "#52525b" };
+                      return (
+                        <div key={d.name}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[11px] font-black" style={{ color: CAM_ACCENT[d.name] ?? "#71717a" }}>
+                              {d.name}
+                            </span>
+                            <span className="text-white font-black text-[11px] tabular-nums">
+                              {fmtMs(d.avgMs)}
+                              <span className="text-zinc-600 font-normal ml-1">({d.count}×)</span>
+                            </span>
+                          </div>
+                          <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full" style={{
+                              width: `${(d.avgMs / maxMs) * 100}%`,
+                              background: CAM_ACCENT[d.name] ?? "#71717a",
+                            }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              )}
+
+              {t.byOs.length > 0 && (
+                <Card tooltip="Average transcoding time per operating system. Android is typically slower because FFmpeg.wasm runs on lower-end hardware. Desktop Chrome benefits from faster CPUs.">
+                  <ChartTitle>Avg Transcode Time by OS</ChartTitle>
+                  <div className="space-y-3 mt-2">
+                    {t.byOs.map(d => {
+                      const OS_ACCENT: Record<string, string> = { iOS: AMBER, Android: "#22c55e", macOS: "#a855f7", Windows: "#3b82f6", Linux: "#06b6d4" };
+                      return (
+                        <div key={d.name}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[11px] font-black" style={{ color: OS_ACCENT[d.name] ?? "#71717a" }}>
+                              {d.name}
+                            </span>
+                            <span className="text-white font-black text-[11px] tabular-nums">
+                              {fmtMs(d.avgMs)}
+                              <span className="text-zinc-600 font-normal ml-1">({d.count}×)</span>
+                            </span>
+                          </div>
+                          <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full" style={{
+                              width: `${(d.avgMs / maxMs) * 100}%`,
+                              background: OS_ACCENT[d.name] ?? "#71717a",
+                            }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              )}
+
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CodecTab({ data }: { data: DashboardData }) {
+  const d = data.codecStats;
+  return (
+    <div className="space-y-8">
+
+      {/* ── KPI strip ───────────────────────────────────────────────────────── */}
+      <CodecKpiStrip d={d} />
+
+      {/* ── Codec split + camera breakdown ──────────────────────────────────── */}
+      <section>
+        <SectionLabel accent={HEVC_ORANGE}>Codec Distribution</SectionLabel>
+        <p className="text-[10px] text-zinc-600 mb-3 -mt-4">
+          HEVC vs H.264 breakdown across all error events where codec was detected.
+          Data source: <span className="font-mono text-zinc-500">error_events.video_codec</span>.
+        </p>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <CodecSplitDonut  d={d} />
+          <HevcByCameraChart d={d} />
+          <HevcByOsChart     d={d} />
+        </div>
+      </section>
+
+      {/* ── Video specs ─────────────────────────────────────────────────────── */}
+      <section>
+        <SectionLabel accent="#a855f7">Video Specs</SectionLabel>
+        <p className="text-[10px] text-zinc-600 mb-3 -mt-4">
+          Resolution and frame rate of videos that triggered errors.
+          Higher resolution / higher fps = more likely to be HEVC.
+        </p>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <ResolutionChart d={d} />
+          <FpsChart        d={d} />
+        </div>
+      </section>
+
+      {/* ── HEVC error codes ────────────────────────────────────────────────── */}
+      <section>
+        <SectionLabel accent="#ef4444">HEVC Failure Points</SectionLabel>
+        <p className="text-[10px] text-zinc-600 mb-3 -mt-4">
+          Which pipeline errors are caused specifically by HEVC / H.265 files.
+          Each card = one error code, count, and share of total HEVC errors.
+        </p>
+        <HevcErrorCodesChart d={d} />
+      </section>
+
+      {/* ── Transcode timing ────────────────────────────────────────────────── */}
+      <TranscodeTimingSection t={data.hevcTranscodeStats} />
+
+    </div>
+  );
+}
+
 // ── Main export: DashboardCharts (two-column layout) ─────────────────────────
 
 // Navbar height: py-[14px] + text-xl (~28px line-height) + border ≈ 57px
@@ -2477,6 +2944,7 @@ export function DashboardCharts({ data }: { data: DashboardData }) {
           {activeTab === "errors"   && <ErrorsTab       data={data} />}
           {activeTab === "video"    && <VideoDevicesTab data={data} />}
           {activeTab === "gps"      && <GpsTrackersTab  data={data} />}
+          {activeTab === "codec"    && <CodecTab        data={data} />}
           {activeTab === "engine"   && <EngineTab       data={data} />}
         </div>
 

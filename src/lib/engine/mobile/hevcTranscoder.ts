@@ -100,15 +100,29 @@ let _ffmpeg: unknown = null;
 async function getFFmpeg(): Promise<any> {
   if (_ffmpeg) return _ffmpeg;
 
-  const { FFmpeg }              = await import('@ffmpeg/ffmpeg');
-  const { toBlobURL }           = await import('@ffmpeg/util');
-  const ff                      = new FFmpeg();
-  const base = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+  const { FFmpeg }    = await import('@ffmpeg/ffmpeg');
+  const { toBlobURL } = await import('@ffmpeg/util');
+  const ff            = new FFmpeg();
 
-  await ff.load({
-    coreURL: await toBlobURL(`${base}/ffmpeg-core.js`,   'text/javascript'),
-    wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
-  });
+  // Use multi-threaded build when SharedArrayBuffer is available (requires COOP+COEP headers).
+  // MT build uses all CPU cores via pthreads — typically 2-4× faster on mobile.
+  // Falls back to single-threaded UMD build when SAB is not available.
+  const hasSAB = typeof SharedArrayBuffer !== 'undefined';
+
+  if (hasSAB) {
+    const base = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.6/dist/esm';
+    await ff.load({
+      coreURL:   await toBlobURL(`${base}/ffmpeg-core.js`,        'text/javascript'),
+      wasmURL:   await toBlobURL(`${base}/ffmpeg-core.wasm`,      'application/wasm'),
+      workerURL: await toBlobURL(`${base}/ffmpeg-core.worker.js`, 'text/javascript'),
+    });
+  } else {
+    const base = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+    await ff.load({
+      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`,   'text/javascript'),
+      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+    });
+  }
 
   _ffmpeg = ff;
   return ff;

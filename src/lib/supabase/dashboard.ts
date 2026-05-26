@@ -1434,6 +1434,200 @@ export async function getUnsupportedSources() {
   };
 }
 
+// ── HEVC transcode timing ─────────────────────────────────────────────────────
+// Queries HEVC_TRANSCODE_OK events (success) and WRONG_VIDEO_FORMAT events that
+// carry hevc_transcode_ms (failure with partial timing). Computes avg, p50, p90,
+// p95, max and breaks down by device type and OS for comparison.
+
+export async function getHevcTranscodeStats() {
+  const { data } = await db()
+    .from("error_events")
+    .select("error_code, hevc_transcode_ms, file_size_bytes, device_type, browser_os")
+    .not("hevc_transcode_ms", "is", null);
+
+  const rows = (data ?? []) as Array<{
+    error_code: string;
+    hevc_transcode_ms: number;
+    file_size_bytes: number | null;
+    device_type: string | null;
+    browser_os: string | null;
+  }>;
+
+  if (rows.length === 0) {
+    return {
+      totalEvents: 0, successCount: 0, failureCount: 0,
+      avgMs: null, p50Ms: null, p90Ms: null, p95Ms: null, maxMs: null,
+      byDevice: [], byOs: [], buckets: [],
+    };
+  }
+
+  const successRows = rows.filter(r => r.error_code === "HEVC_TRANSCODE_OK");
+  const failureRows = rows.filter(r => r.error_code !== "HEVC_TRANSCODE_OK");
+  const allMs = rows.map(r => r.hevc_transcode_ms).sort((a, b) => a - b);
+
+  const pct = (arr: number[], p: number) => arr[Math.floor((p / 100) * arr.length)] ?? null;
+  const avg = (arr: number[]) => arr.length ? Math.round(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
+
+  // Breakdown by device type (successful transcodes only — failures skew time)
+  const devMap: Record<string, number[]> = {};
+  successRows.forEach(r => {
+    const k = r.device_type === "gopro" ? "GoPro"
+            : r.device_type === "iphone" ? "iPhone"
+            : r.device_type === "android" ? "Android"
+            : "Unknown";
+    if (!devMap[k]) devMap[k] = [];
+    devMap[k].push(r.hevc_transcode_ms);
+  });
+  const byDevice = Object.entries(devMap)
+    .map(([name, ms]) => ({ name, avgMs: avg(ms)!, count: ms.length }))
+    .sort((a, b) => b.avgMs - a.avgMs);
+
+  // Breakdown by OS
+  const osMap: Record<string, number[]> = {};
+  successRows.forEach(r => {
+    const k = r.browser_os ?? "Unknown";
+    if (!osMap[k]) osMap[k] = [];
+    osMap[k].push(r.hevc_transcode_ms);
+  });
+  const byOs = Object.entries(osMap)
+    .map(([name, ms]) => ({ name, avgMs: avg(ms)!, count: ms.length }))
+    .sort((a, b) => b.avgMs - a.avgMs);
+
+  // Time buckets (success only)
+  const successMs = successRows.map(r => r.hevc_transcode_ms).sort((a, b) => a - b);
+  const timeBuckets: Record<string, number> = {
+    "< 30s": 0, "30s–1m": 0, "1–2 min": 0, "2–5 min": 0, "> 5 min": 0,
+  };
+  successMs.forEach(ms => {
+    if      (ms < 30_000)   timeBuckets["< 30s"]++;
+    else if (ms < 60_000)   timeBuckets["30s–1m"]++;
+    else if (ms < 120_000)  timeBuckets["1–2 min"]++;
+    else if (ms < 300_000)  timeBuckets["2–5 min"]++;
+    else                    timeBuckets["> 5 min"]++;
+  });
+  const buckets = Object.entries(timeBuckets)
+    .filter(([, v]) => v > 0)
+    .map(([name, value]) => ({ name, value }));
+
+  return {
+    totalEvents: rows.length,
+    successCount: successRows.length,
+    failureCount: failureRows.length,
+    avgMs:  avg(allMs),
+    p50Ms:  pct(allMs, 50),
+    p90Ms:  pct(allMs, 90),
+    p95Ms:  pct(allMs, 95),
+    maxMs:  allMs[allMs.length - 1] ?? null,
+    byDevice,
+    byOs,
+    buckets,
+  };
+}
+
+// ── Codec / HEVC intelligence ─────────────────────────────────────────────────
+// Single query over error_events — all codec KPIs computed in JS.
+// Note: only error events carry video_codec today; successful sessions are not
+// counted here. This gives us the codec breakdown of everything that went wrong.
+
+export async function getCodecStats() {
+  const { data } = await db()
+    .from("error_events")
+    .select("video_codec, video_width, video_height, video_fps, device_type, browser_os, error_code")
+    .not("video_codec", "is", null);
+
+  const rows = data ?? [];
+
+  // 1. Overall codec split
+  const codecMap: Record<string, number> = {};
+  rows.forEach(r => {
+    const k = r.video_codec === "hevc" ? "HEVC / H.265"
+            : r.video_codec === "h264" ? "H.264"
+            : "Other";
+    codecMap[k] = (codecMap[k] ?? 0) + 1;
+  });
+  const codecSplit = Object.entries(codecMap)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value]) => ({ name, value }));
+
+  // 2. Codec × camera type
+  const camMap: Record<string, { hevc: number; h264: number }> = {};
+  rows.forEach(r => {
+    if (!r.device_type) return;
+    const cam = r.device_type === "gopro"   ? "GoPro"
+              : r.device_type === "iphone"  ? "iPhone"
+              : r.device_type === "android" ? "Android"
+              : "Unknown";
+    if (!camMap[cam]) camMap[cam] = { hevc: 0, h264: 0 };
+    if (r.video_codec === "hevc")       camMap[cam].hevc++;
+    else if (r.video_codec === "h264")  camMap[cam].h264++;
+  });
+  const hevcByCamera = Object.entries(camMap)
+    .map(([name, v]) => ({ name, hevc: v.hevc, h264: v.h264, total: v.hevc + v.h264 }))
+    .sort((a, b) => b.total - a.total);
+
+  // 3. Codec × OS
+  const osMap: Record<string, { hevc: number; h264: number }> = {};
+  rows.forEach(r => {
+    if (!r.browser_os) return;
+    if (!osMap[r.browser_os]) osMap[r.browser_os] = { hevc: 0, h264: 0 };
+    if (r.video_codec === "hevc")       osMap[r.browser_os].hevc++;
+    else if (r.video_codec === "h264")  osMap[r.browser_os].h264++;
+  });
+  const hevcByOs = Object.entries(osMap)
+    .map(([name, v]) => ({ name, hevc: v.hevc, h264: v.h264, total: v.hevc + v.h264 }))
+    .sort((a, b) => b.total - a.total);
+
+  // 4. Resolution breakdown (bucket by height)
+  const resMap: Record<string, number> = {};
+  rows.forEach(r => {
+    if (!r.video_height) return;
+    const bucket = r.video_height >= 2160 ? "4K (2160p+)"
+                 : r.video_height >= 1440 ? "1440p"
+                 : r.video_height >= 1080 ? "1080p"
+                 : r.video_height >= 720  ? "720p"
+                 : "< 720p";
+    resMap[bucket] = (resMap[bucket] ?? 0) + 1;
+  });
+  const resOrder = ["4K (2160p+)", "1440p", "1080p", "720p", "< 720p"];
+  const resolutionBreakdown = resOrder
+    .filter(k => resMap[k] > 0)
+    .map(name => ({ name, value: resMap[name] }));
+
+  // 5. FPS breakdown
+  const fpsMap: Record<string, number> = {};
+  rows.forEach(r => {
+    if (!r.video_fps) return;
+    const k = `${Math.round(r.video_fps)} fps`;
+    fpsMap[k] = (fpsMap[k] ?? 0) + 1;
+  });
+  const fpsBreakdown = Object.entries(fpsMap)
+    .sort((a, b) => parseInt(b[0]) - parseInt(a[0]))
+    .map(([name, value]) => ({ name, value }));
+
+  // 6. Error codes for HEVC-only rows
+  const hevcErrMap: Record<string, number> = {};
+  rows.filter(r => r.video_codec === "hevc").forEach(r => {
+    const k = r.error_code ?? "UNKNOWN";
+    hevcErrMap[k] = (hevcErrMap[k] ?? 0) + 1;
+  });
+  const hevcErrorCodes = Object.entries(hevcErrMap)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value]) => ({ name, value }));
+
+  const total   = rows.length;
+  const hevcN   = rows.filter(r => r.video_codec === "hevc").length;
+  const h264N   = rows.filter(r => r.video_codec === "h264").length;
+  const hevcPct = total > 0 ? Math.round((hevcN / total) * 100) : 0;
+
+  return {
+    codecSplit, hevcByCamera, hevcByOs, resolutionBreakdown, fpsBreakdown, hevcErrorCodes,
+    totalWithCodec: total,
+    hevcCount: hevcN,
+    h264Count: h264N,
+    hevcPct,
+  };
+}
+
 export type DashboardData = Awaited<ReturnType<typeof getAllDashboardData>>;
 
 export async function getAllDashboardData() {
@@ -1453,6 +1647,7 @@ export async function getAllDashboardData() {
     pipelineFunnel, failedSessions,
     growthMetrics, shareRate, platformComparison, timeToValue,
     fileSizeByPlatform, unsupportedSources, fileSizeByDevice,
+    codecStats, hevcTranscodeStats,
   ] = await Promise.all([
     getKPIs(), getSessionsOverTime(), getSessionSuccessOverTime(), getRenderStatus(),
     getRenderDurationBuckets(), getCameraModels(), getGpsDevices(), getGpsLockStats(),
@@ -1469,6 +1664,7 @@ export async function getAllDashboardData() {
     getCompletePipelineFunnel(), getFailedSessions(),
     getGrowthMetrics(), getShareRate(), getPlatformComparison(), getTimeToValue(),
     getFileSizeByPlatform(), getUnsupportedSources(), getFileSizeByDevice(),
+    getCodecStats(), getHevcTranscodeStats(),
   ]);
 
   return {
@@ -1486,5 +1682,6 @@ export async function getAllDashboardData() {
     pipelineFunnel, failedSessions,
     growthMetrics, shareRate, platformComparison, timeToValue,
     fileSizeByPlatform, unsupportedSources, fileSizeByDevice,
+    codecStats, hevcTranscodeStats,
   };
 }

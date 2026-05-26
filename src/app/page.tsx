@@ -13,7 +13,7 @@ import {
   PlayCircle,
 } from "lucide-react";
 import dynamic from "next/dynamic";
-import { trackProcessingSession, trackGpxSession, computeGpxMetrics, trackVideoExport, trackVideoUpload, trackError } from "@/lib/supabase/tracking";
+import { trackProcessingSession, trackGpxSession, computeGpxMetrics, trackVideoExport, trackVideoUpload, trackError, trackHevcTranscode } from "@/lib/supabase/tracking";
 import { getBrowserInfo } from "@/lib/utils/browserInfo";
 import type { RenderResult } from "@/components/MapEngine";
 
@@ -541,6 +541,76 @@ export default function ProRefuelPage() {
     // GPMF/GPS/EXIF extraction always uses the original `file`.
     let processVideoFile: File = file;
 
+    // ── GoPro GPS pre-validation ──────────────────────────────────────────────
+    // For GoPro files, validate GPS BEFORE any HEVC transcoding.
+    // GPMF telemetry lives in the MP4 container (not the video codec stream) so
+    // it can be extracted from the original HEVC file in a few seconds.
+    // This prevents wasting minutes on transcoding a video that will ultimately
+    // fail GPS validation.
+    let preExtractedGoProResult: { points: any[]; syncPoints: any[]; cameraModel: string; gpsVideoOffsetMs: number } | null = null;
+
+    if (earlyDetection.type === "gopro") {
+      if (!vmeta.hasEmbeddedGPS) {
+        // No GPMF track at all — GPS was disabled on the camera
+        void trackError("NO_GPS_VIDEO",
+          `[${file.name}] GoPro has no GPMF telemetry track. GPS was disabled during recording. ` +
+          `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | ` +
+          `size: ${(file.size / 1024 / 1024).toFixed(0)}MB.`,
+          "video_upload", { ...richCtx });
+        setUploadError("This GoPro video has no GPS data.\n\nEnable GPS on your camera: Settings → GPS → On, then re-record.");
+        e.target.value = "";
+        return;
+      }
+
+      // GPMF track exists — extract GPS points to validate quality before committing to transcoding.
+      // Takes a few seconds; saves minutes of FFmpeg work if GPS is bad.
+      setHevcStatus("Checking GPS data…");
+      setHevcConverting(true);
+      try {
+        const { GoProEngineClient: _GPC } = await import("@/lib/media/GoProEngineClient");
+        const preResult = await _GPC.extractTelemetry(file);
+        setHevcConverting(false);
+        setHevcStatus("");
+
+        if (!preResult.points || preResult.points.length === 0) {
+          void trackError("NO_GPS_VIDEO",
+            `[${file.name}] GoPro GPMF track exists but contains 0 GPS points. ` +
+            `GPS lock never acquired (indoor start, tunnel, no sky view). ` +
+            `codec: ${vmeta.codec} | size: ${(file.size / 1024 / 1024).toFixed(0)}MB.`,
+            "video_upload", { ...richCtx });
+          setUploadError(
+            "No GPS points found in this GoPro video.\n\n" +
+            "The camera started recording before GPS locked. " +
+            "Wait until the GPS icon on your GoPro turns solid before pressing Record."
+          );
+          e.target.value = "";
+          return;
+        }
+
+        const { VideoGPSAnalyzer: _VGA } = await import("@/lib/engine/VideoGPSAnalyzer");
+        const preProfile = _VGA.analyze(preResult.points, preResult.gpsVideoOffsetMs);
+        if (!preProfile.hasGPSLock || preProfile.postLockPoints === 0) {
+          void trackError("GPS_WEAK",
+            `[${file.name}] GoPro GPS pre-check: lock never acquired. ` +
+            `pre-lock: ${preProfile.preLockPoints} pts, post-lock: ${preProfile.postLockPoints} pts. ` +
+            `codec: ${vmeta.codec} | size: ${(file.size / 1024 / 1024).toFixed(0)}MB.`,
+            "video_upload", { ...richCtx });
+          setUploadError(
+            "GPS signal too weak — the camera never acquired a stable fix.\n\n" +
+            "Wait for the GPS icon on your GoPro to turn solid before starting your activity."
+          );
+          e.target.value = "";
+          return;
+        }
+
+        preExtractedGoProResult = preResult;
+      } catch {
+        setHevcConverting(false);
+        setHevcStatus("");
+        // Pre-validation threw unexpectedly — continue and let the engine handle it
+      }
+    }
+
     // HEVC check covers both .mp4 AND .mov — iPhone records HEVC in .mov by default.
     // Uses file-content scanning (not canPlayType) so the codec detection is
     // browser-independent. canPlayType is only used to skip transcoding when the
@@ -561,12 +631,19 @@ export default function ProRefuelPage() {
           setHevcConverting(true);
           setHevcProgress(0);
           setHevcStatus("Loading converter…");
+          const transcodeStart = Date.now();
           try {
             processVideoFile = await transcodeHevcToH264(file, (pct, status) => {
               setHevcProgress(pct);
               setHevcStatus(status);
             }, { maxHeight: 1080 });
+            const transcodeMs = Date.now() - transcodeStart;
             setHevcConverting(false);
+            void trackHevcTranscode(transcodeMs, {
+              ...richCtx,
+              file_size_bytes: file.size,
+              file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
+            });
           } catch (err: any) {
             setHevcConverting(false);
             void trackError(
@@ -576,7 +653,7 @@ export default function ProRefuelPage() {
               `size: ${(file.size/1024/1024).toFixed(1)}MB, camera: ${earlyDetection.make || "unknown"} ${earlyDetection.model || ""}. ` +
               `FFmpeg error: ${err.message}`,
               "video_upload",
-              { ...richCtx, video_codec: "hevc" },
+              { ...richCtx, video_codec: "hevc", hevc_transcode_ms: Date.now() - transcodeStart },
             );
             setUploadError(
               `⚠ Could not prepare this video for editing.\n\n` +
@@ -690,7 +767,8 @@ export default function ProRefuelPage() {
         }
       } else {
         setStatusMsg("Analysing GPMF...");
-        const result = await GoProEngineClient.extractTelemetry(file);
+        // Reuse GPS data already extracted during pre-validation — avoids reading the file twice.
+        const result = preExtractedGoProResult ?? await GoProEngineClient.extractTelemetry(file);
         vpts             = result.points;
         syncPoints       = result.syncPoints;
         cameraModel      = result.cameraModel;

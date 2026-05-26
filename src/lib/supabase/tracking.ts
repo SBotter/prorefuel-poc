@@ -344,9 +344,10 @@ export async function trackError(
       browser_os_version:  ctx?.browser_os_version  ?? null,
       browser_name:        ctx?.browser_name         ?? null,
       browser_version:     ctx?.browser_version      ?? null,
-      device_memory_gb: ctx?.device_memory_gb ?? null,
-      cpu_cores:        ctx?.cpu_cores        ?? null,
-      gpx_creator:      ctx?.gpx_creator      ?? null,
+      device_memory_gb:  ctx?.device_memory_gb  ?? null,
+      cpu_cores:         ctx?.cpu_cores         ?? null,
+      gpx_creator:       ctx?.gpx_creator       ?? null,
+      hevc_transcode_ms: ctx?.hevc_transcode_ms ?? null,
     };
     await fetch("/api/track-error", {
       method: "POST",
@@ -356,6 +357,30 @@ export async function trackError(
   } catch {
     // Silently ignore — tracking must never break the user flow
   }
+}
+
+/**
+ * Logs a successful HEVC→H.264 transcode as a performance event.
+ * Uses error_events with code HEVC_TRANSCODE_OK — not an error, but reuses the same
+ * table / route so we don't need a separate endpoint or table.
+ * Fire-and-forget — never throws.
+ */
+export async function trackHevcTranscode(
+  transcodeMs: number,
+  ctx: Pick<ErrorContext,
+    | "device_type" | "device_make" | "device_model"
+    | "file_size_bytes" | "file_extension"
+    | "video_codec" | "video_width" | "video_height" | "video_fps"
+    | "browser_os" | "browser_os_version" | "browser_name" | "browser_version"
+    | "device_memory_gb" | "cpu_cores"
+  >,
+): Promise<void> {
+  await trackError(
+    "HEVC_TRANSCODE_OK",
+    `HEVC transcode completed in ${(transcodeMs / 1000).toFixed(1)}s`,
+    "video_upload",
+    { ...ctx, video_codec: "hevc", hevc_transcode_ms: transcodeMs },
+  );
 }
 
 /**
