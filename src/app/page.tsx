@@ -550,19 +550,12 @@ export default function ProRefuelPage() {
     let preExtractedGoProResult: { points: any[]; syncPoints: any[]; cameraModel: string; gpsVideoOffsetMs: number } | null = null;
 
     if (earlyDetection.type === "gopro") {
-      if (!vmeta.hasEmbeddedGPS) {
-        // No GPMF track at all — GPS was disabled on the camera
-        void trackError("NO_GPS_VIDEO",
-          `[${file.name}] GoPro has no GPMF telemetry track. GPS was disabled during recording. ` +
-          `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | ` +
-          `size: ${(file.size / 1024 / 1024).toFixed(0)}MB.`,
-          "video_upload", { ...richCtx });
-        setUploadError("This GoPro video has no GPS data.\n\nEnable GPS on your camera: Settings → GPS → On, then re-record.");
-        e.target.value = "";
-        return;
-      }
+      // GoPro files are non-faststart: moov (and GPMF) is at the END of the file.
+      // parseVideoMeta only reads the first 2MB so hasEmbeddedGPS is unreliable here —
+      // it returns false even for perfectly valid GoPro recordings.
+      // Skip the hasEmbeddedGPS fast-exit and go straight to full GPMF extraction.
 
-      // GPMF track exists — extract GPS points to validate quality before committing to transcoding.
+      // Extract GPS points to validate quality before committing to transcoding.
       // Takes a few seconds; saves minutes of FFmpeg work if GPS is bad.
       setHevcStatus("Checking GPS data…");
       setHevcConverting(true);
