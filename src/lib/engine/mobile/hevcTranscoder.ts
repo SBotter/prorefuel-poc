@@ -54,19 +54,60 @@ function findMoovWalk(buf: Uint8Array, start: number, end: number): [number, num
 }
 
 // For non-faststart files the tail buffer starts mid-mdat (unparseable from offset 0).
-// Scan for a 'moov' box header by looking for the fourcc at any position and
-// validating that the preceding size field is plausible (≥ 1 KB).
+// Scan for a 'moov' box header — search BACKWARDS from the end so that the real moov
+// (which sits at EOF) is found before any coincidental 'moov' byte sequences in mdat data.
 function findMoovSearch(buf: Uint8Array): [number, number] | null {
-  for (let i = 0; i + 8 <= buf.length; i++) {
+  for (let i = buf.length - 8; i >= 0; i--) {
     if (buf[i+4] === 0x6D && buf[i+5] === 0x6F && buf[i+6] === 0x6F && buf[i+7] === 0x76) {
       const size = readU32BE(buf, i);
-      if (size >= 1_000) {
+      if (size >= 1_000 && size <= buf.length) {
         // moov found — use whatever we have (may be truncated if larger than tail read)
         return [i, Math.min(i + size, buf.length)];
       }
     }
   }
   return null;
+}
+
+/**
+ * Probes whether the current browser can actually decode the given video file.
+ * Creates a hidden <video> element, loads the blob, and seeks to 0.1 s to
+ * trigger real frame decoding — not just container parsing.
+ *
+ * Why not canPlayType()? It returns "maybe"/"probably" based on codec strings
+ * alone and ignores hardware availability. On Android Chrome it claims HEVC
+ * support even on devices that silently fail to decode it. This function
+ * confirms actual decode success with a 3-second timeout fallback.
+ *
+ * Usage: if canBrowserPlay() returns false, transcode before rendering.
+ */
+export async function canBrowserPlay(file: File, timeoutMs = 3000): Promise<boolean> {
+  const url = URL.createObjectURL(file);
+  try {
+    return await new Promise<boolean>(resolve => {
+      const video = document.createElement('video');
+      let resolved = false;
+      const done = (result: boolean) => {
+        if (resolved) return;
+        resolved = true;
+        video.src = '';
+        video.load();
+        resolve(result);
+      };
+      const timer = setTimeout(() => done(false), timeoutMs);
+      video.onerror = () => { clearTimeout(timer); done(false); };
+      video.onloadedmetadata = () => {
+        if (video.videoWidth === 0) { clearTimeout(timer); done(false); return; }
+        video.currentTime = 0.1;
+      };
+      video.onseeked = () => { clearTimeout(timer); done(video.videoWidth > 0); };
+      video.muted    = true;
+      video.preload  = 'metadata';
+      video.src      = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export async function isHevcVideo(file: File): Promise<boolean> {

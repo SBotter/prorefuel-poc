@@ -72,13 +72,6 @@ export async function parseVideoMeta(file: File): Promise<VideoMeta> {
     const readSize = Math.min(2_097_152, file.size); // first 2 MB
     const buf = new Uint8Array(await file.slice(0, readSize).arrayBuffer());
 
-    // ── Codec detection (reuse fourcc scan) ──────────────────────────────────
-    if (hasTag(buf, 'hvc1') || hasTag(buf, 'hev1') || hasTag(buf, 'dvhe')) {
-      result.codec = 'hevc';
-    } else if (hasTag(buf, 'avc1') || hasTag(buf, 'H264') || hasTag(buf, 'avc3')) {
-      result.codec = 'h264';
-    }
-
     // ── Embedded GPS telemetry (GPMF / GoPro) ────────────────────────────────
     result.hasEmbeddedGPS = hasTag(buf, 'gpmd');
 
@@ -88,7 +81,28 @@ export async function parseVideoMeta(file: File): Promise<VideoMeta> {
       if (type === 'moov') { moovStart = boxStart; moovEnd = boxStart + size; }
     });
 
-    if (moovStart < 0) return result; // moov not in first 2 MB (non-faststart)
+    // ── Codec detection — scan ONLY within moov to avoid mdat false-positives ──
+    // Scanning the full 2 MB buffer hits raw mdat video frames, which can
+    // coincidentally contain HEVC fourcc byte sequences inside H.264 entropy-coded
+    // content, causing H.264 files to be misreported as HEVC.
+    if (moovStart >= 0) {
+      const moov = buf.subarray(moovStart, moovEnd);
+      if (hasTag(moov, 'hvc1') || hasTag(moov, 'hev1') || hasTag(moov, 'dvhe')) {
+        result.codec = 'hevc';
+      } else if (hasTag(moov, 'avc1') || hasTag(moov, 'H264') || hasTag(moov, 'avc3')) {
+        result.codec = 'h264';
+      }
+    } else {
+      // moov not in first 2 MB (non-faststart GoPro) — scan only the ftyp box
+      // which is always at the start and contains a safe, small amount of data.
+      const ftyp = buf.subarray(0, Math.min(256, buf.length));
+      if (hasTag(ftyp, 'hvc1') || hasTag(ftyp, 'hev1') || hasTag(ftyp, 'dvhe')) {
+        result.codec = 'hevc';
+      } else if (hasTag(ftyp, 'avc1') || hasTag(ftyp, 'H264') || hasTag(ftyp, 'avc3')) {
+        result.codec = 'h264';
+      }
+      return result; // moov not in first 2 MB — resolution/fps/recordedAt unavailable
+    }
 
     // ── Parse mvhd (movie header) ─────────────────────────────────────────────
     walkBoxes(buf, moovStart + 8, moovEnd, (type, _, cs) => {

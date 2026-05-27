@@ -548,136 +548,69 @@ export default function ProRefuelPage() {
     // GPMF/GPS/EXIF extraction always uses the original `file`.
     let processVideoFile: File = file;
 
-    // ── GoPro GPS pre-validation ──────────────────────────────────────────────
-    // For GoPro files, validate GPS BEFORE any HEVC transcoding.
-    // GPMF telemetry lives in the MP4 container (not the video codec stream) so
-    // it can be extracted from the original HEVC file in a few seconds.
-    // This prevents wasting minutes on transcoding a video that will ultimately
-    // fail GPS validation.
-    let preExtractedGoProResult: { points: any[]; syncPoints: any[]; cameraModel: string; gpsVideoOffsetMs: number } | null = null;
-
-    if (earlyDetection.type === "gopro") {
-      // GoPro files are non-faststart: moov (and GPMF) is at the END of the file.
-      // parseVideoMeta only reads the first 2MB so hasEmbeddedGPS is unreliable here —
-      // it returns false even for perfectly valid GoPro recordings.
-      // Skip the hasEmbeddedGPS fast-exit and go straight to full GPMF extraction.
-
-      // Extract GPS points to validate quality before committing to transcoding.
-      // Takes a few seconds; saves minutes of FFmpeg work if GPS is bad.
-      try {
-        const { GoProEngineClient: _GPC } = await import("@/lib/media/GoProEngineClient");
-        const preResult = await _GPC.extractTelemetry(file);
-
-        if (!preResult.points || preResult.points.length === 0) {
-          void trackError("NO_GPS_VIDEO",
-            `[${file.name}] GoPro GPMF track exists but contains 0 GPS points. ` +
-            `GPS lock never acquired (indoor start, tunnel, no sky view). ` +
-            `codec: ${vmeta.codec} | size: ${(file.size / 1024 / 1024).toFixed(0)}MB.`,
-            "video_upload", { ...richCtx });
-          setLoading(false);
-          setUploadError(
-            "No GPS points found in this GoPro video.\n\n" +
-            "The camera started recording before GPS locked. " +
-            "Wait until the GPS icon on your GoPro turns solid before pressing Record."
-          );
-          e.target.value = "";
-          return;
-        }
-
-        const { VideoGPSAnalyzer: _VGA } = await import("@/lib/engine/VideoGPSAnalyzer");
-        const preProfile = _VGA.analyze(preResult.points, preResult.gpsVideoOffsetMs);
-        if (!preProfile.hasGPSLock || preProfile.postLockPoints === 0) {
-          void trackError("GPS_WEAK",
-            `[${file.name}] GoPro GPS pre-check: lock never acquired. ` +
-            `pre-lock: ${preProfile.preLockPoints} pts, post-lock: ${preProfile.postLockPoints} pts. ` +
-            `codec: ${vmeta.codec} | size: ${(file.size / 1024 / 1024).toFixed(0)}MB.`,
-            "video_upload", { ...richCtx });
-          setLoading(false);
-          setUploadError(
-            "GPS signal too weak — the camera never acquired a stable fix.\n\n" +
-            "Wait for the GPS icon on your GoPro to turn solid before starting your activity."
-          );
-          e.target.value = "";
-          return;
-        }
-
-        preExtractedGoProResult = preResult;
-      } catch {
-        // Pre-validation threw unexpectedly — continue and let the engine handle it
-      }
-    }
-
-    // HEVC check covers both .mp4 AND .mov — iPhone records HEVC in .mov by default.
-    // Uses file-content scanning (not canPlayType) so the codec detection is
-    // browser-independent. canPlayType is only used to skip transcoding when the
-    // browser already supports HEVC natively (e.g. Safari, Chrome on Apple Silicon).
+    // Codec compatibility check — covers both .mp4 AND .mov.
+    // canBrowserPlay() loads the actual file into a hidden <video> and seeks to
+    // trigger real frame decoding. This catches HEVC on Windows Chrome and any
+    // other codec the browser claims to support but cannot hardware-decode.
     if (isMP4 || isMOV) {
-      const testVid = document.createElement("video");
-      const canHevc = testVid.canPlayType('video/mp4; codecs="hvc1"') ||
-                      testVid.canPlayType('video/mp4; codecs="hev1"') ||
-                      testVid.canPlayType('video/quicktime; codecs="hvc1"') ||
-                      testVid.canPlayType('video/quicktime; codecs="hev1"');
-      if (!canHevc) {
-        const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
-        const fileIsHevc = await isHevcVideo(file);
-        if (fileIsHevc) {
-          // GoPro records H.264 by default — HEVC requires explicit firmware opt-in (very rare).
-          // Desktop browser transcoding of 800MB+ GoPro files will always OOM.
-          // Reject immediately with clear instructions instead of a 12-minute doomed transcode.
-          if (earlyDetection.type === "gopro") {
-            void trackError(
-              "WRONG_VIDEO_FORMAT",
-              `[${file.name}] GoPro HEVC detected on desktop — rejecting (OOM risk). size: ${(file.size/1024/1024).toFixed(1)}MB.`,
-              "video_upload",
-              { ...richCtx, video_codec: "hevc" },
-            );
-            setLoading(false);
-            setUploadError(
-              "This GoPro video uses H.265 encoding, which cannot be converted in the browser.\n\n" +
-              "Switch to H.264 before recording: on the camera go to Preferences → Video → Codec → H.264."
-            );
-            e.target.value = "";
-            return;
-          }
-          // Transcode H.265 → H.264 at 1080p so every browser can decode it.
-          // Original file is always kept for GPMF/GPS/EXIF extraction.
-          // processVideoFile (the H.264 output) is what gets rendered.
-          setHevcConverting(true);
-          setHevcProgress(0);
-          setHevcStatus("Loading converter…");
-          const transcodeStart = Date.now();
-          try {
-            processVideoFile = await transcodeHevcToH264(file, (pct, status) => {
-              setHevcProgress(pct);
-              setHevcStatus(status);
-            }, { maxHeight: 1080 });
-            const transcodeMs = Date.now() - transcodeStart;
-            setHevcConverting(false);
-            void trackHevcTranscode(transcodeMs, {
-              ...richCtx,
-              file_size_bytes: file.size,
-              file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
-            });
-          } catch (err: any) {
-            setHevcConverting(false);
-            setLoading(false);
-            void trackError(
-              "WRONG_VIDEO_FORMAT",
-              `[${file.name}] HEVC transcoding failed — codec: ${vmeta.codec}, ` +
-              `resolution: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"}, fps: ${vmeta.fps ?? "?"}, ` +
-              `size: ${(file.size/1024/1024).toFixed(1)}MB, camera: ${earlyDetection.make || "unknown"} ${earlyDetection.model || ""}. ` +
-              `FFmpeg error: ${err.message}`,
-              "video_upload",
-              { ...richCtx, video_codec: "hevc", hevc_transcode_ms: Date.now() - transcodeStart },
-            );
-            setUploadError(
-              `⚠ Could not prepare this video for editing.\n\n` +
-              `The file uses H.265 encoding which requires conversion. This usually fails for very large clips (>400 MB). ` +
-              `Try trimming the clip or, on GoPro, switching to H.264: Preferences → Video → Codec → H.264.`
-            );
-            e.target.value = "";
-            return;
-          }
+      const { canBrowserPlay, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
+      const canPlay = await canBrowserPlay(file);
+      if (!canPlay) {
+        if (earlyDetection.type === "gopro") {
+          // GoPro files are often 400MB-2GB — WASM transcoding would OOM.
+          // Reject with clear instructions to re-record in H.264.
+          void trackError(
+            "WRONG_VIDEO_FORMAT",
+            `[${file.name}] GoPro file not playable in this browser — likely H.265. size: ${(file.size/1024/1024).toFixed(1)}MB.`,
+            "video_upload",
+            { ...richCtx },
+          );
+          setLoading(false);
+          setUploadError(
+            "This GoPro video cannot be played in this browser.\n\n" +
+            "Most likely cause: recorded in H.265. Switch to H.264 before recording: " +
+            "Preferences → Video → Codec → H.264."
+          );
+          e.target.value = "";
+          return;
+        }
+        // iPhone / Android: transcode to H.264 at 1080p so the browser can render it.
+        setHevcConverting(true);
+        setHevcProgress(0);
+        setHevcStatus("Loading converter…");
+        const transcodeStart = Date.now();
+        try {
+          processVideoFile = await transcodeHevcToH264(file, (pct, status) => {
+            setHevcProgress(pct);
+            setHevcStatus(status);
+          }, { maxHeight: 1080 });
+          const transcodeMs = Date.now() - transcodeStart;
+          setHevcConverting(false);
+          void trackHevcTranscode(transcodeMs, {
+            ...richCtx,
+            file_size_bytes: file.size,
+            file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
+          });
+        } catch (err: any) {
+          setHevcConverting(false);
+          setLoading(false);
+          const transcodeMs = Date.now() - transcodeStart;
+          void trackError(
+            "WRONG_VIDEO_FORMAT",
+            `[${file.name}] Video transcoding failed — codec: ${vmeta.codec}, ` +
+            `resolution: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"}, fps: ${vmeta.fps ?? "?"}, ` +
+            `size: ${(file.size/1024/1024).toFixed(1)}MB, camera: ${earlyDetection.make || "unknown"} ${earlyDetection.model || ""}. ` +
+            `FFmpeg error: ${err.message}`,
+            "video_upload",
+            { ...richCtx, hevc_transcode_ms: transcodeMs },
+          );
+          setUploadError(
+            `⚠ Could not prepare this video for editing.\n\n` +
+            `The video format requires conversion which failed (likely file too large for browser memory). ` +
+            `Try trimming the clip, or use a different recording format.`
+          );
+          e.target.value = "";
+          return;
         }
       }
     }
@@ -782,7 +715,7 @@ export default function ProRefuelPage() {
       } else {
         setStatusMsg("Analysing GPMF...");
         // Reuse GPS data already extracted during pre-validation — avoids reading the file twice.
-        const result = preExtractedGoProResult ?? await GoProEngineClient.extractTelemetry(file);
+        const result = await GoProEngineClient.extractTelemetry(file);
         vpts             = result.points;
         syncPoints       = result.syncPoints;
         cameraModel      = result.cameraModel;
