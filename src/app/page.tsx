@@ -1444,7 +1444,15 @@ export default function ProRefuelPage() {
                         ) : uploadError ? (
                           <p className="text-[11px] font-semibold mt-1 text-red-400 whitespace-pre-line leading-relaxed">{uploadError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>
                         ) : loading ? (
-                          <p className="text-[11px] font-semibold mt-1 text-zinc-500">{statusMsg}</p>
+                          <>
+                            <div className="mt-2 w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-amber-500 rounded-full transition-all duration-300 ease-out"
+                                style={{ width: `${progress}%` }}
+                              />
+                            </div>
+                            <p className="text-[10px] font-black text-zinc-500 mt-1">{statusMsg}</p>
+                          </>
                         ) : activityPoints.length === 0 ? (
                           <p className="text-[11px] font-semibold mt-1 text-zinc-600">Load GPX first</p>
                         ) : (
