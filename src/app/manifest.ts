@@ -8,17 +8,17 @@ export default function manifest(): MetadataRoute.Manifest {
       "Cinematic GPS video editor for cyclists, MTB & trail runners",
     start_url: "/",
     display: "standalone",
-    background_color: "#ffffff",
+    background_color: "#000000",
     theme_color: "#000000",
     icons: [
       {
-        src: "/LENS_name_circle_white.png",
+        src: "/LENS_name_circle_blk.png",
         sizes: "192x192",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/LENS_name_circle_white.png",
+        src: "/LENS_name_circle_blk.png",
         sizes: "512x512",
         type: "image/png",
         purpose: "any",
