@@ -412,6 +412,13 @@ export default function MobilePage() {
       return;
     }
 
+    // Show loading immediately — camera detection + HEVC scan happen before the main
+    // engine and take 0.5-2s. Without this the UI looks frozen after file selection.
+    setLoading(true);
+    setUploadError(null);
+    setStatusMsg("Checking video…");
+    setProgress(0);
+
     // ── Camera detection on ORIGINAL file (before any transcoding) ──────────────
     // Must run on the original file so that Android container metadata (com.android.*)
     // is available. After FFmpeg transcoding, these tags may be stripped.
@@ -478,6 +485,7 @@ export default function MobilePage() {
       setHevcConverting(false);
       setHevcProgress(0);
       setHevcStatus("");
+      setLoading(false);
       mlog("HEVC", `transcoding failed: ${err.message}`);
       void trackError("WRONG_VIDEO_FORMAT",
         `[${file.name}] H.265 transcoding failed: ${err.message}`,
@@ -516,7 +524,8 @@ export default function MobilePage() {
       gpx_creator:     gpxMetricsRef.current?.creator ?? null,
     };
 
-    setLoading(true); setUploadError(null); setProgress(0);
+    // Pre-checks done — start animated progress for the engine phase
+    setProgress(0);
     mlogClear();
     mlog("UPLOAD", `file=${processFile.name} size=${(processFile.size/1_048_576).toFixed(1)}MB`);
     const interval        = setInterval(() => setProgress(p => Math.min(p + 2, 92)), 200);

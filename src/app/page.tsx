@@ -502,6 +502,13 @@ export default function ProRefuelPage() {
       return;
     }
 
+    // Show loading immediately — pre-checks (camera detection, GPS scan, HEVC detection)
+    // take 1-5s on large files. Without this the UI looks frozen after file selection.
+    setLoading(true);
+    setUploadError(null);
+    setStatusMsg("Checking video…");
+    setProgress(0);
+
     // ── Camera detection — reads FILE CONTENT, never filename ────────────────
     const { CameraDetector: CD } = await import("@/lib/media/CameraDetector");
     const earlyDetection = await CD.detect(file);
@@ -567,6 +574,7 @@ export default function ProRefuelPage() {
             `GPS lock never acquired (indoor start, tunnel, no sky view). ` +
             `codec: ${vmeta.codec} | size: ${(file.size / 1024 / 1024).toFixed(0)}MB.`,
             "video_upload", { ...richCtx });
+          setLoading(false);
           setUploadError(
             "No GPS points found in this GoPro video.\n\n" +
             "The camera started recording before GPS locked. " +
@@ -584,6 +592,7 @@ export default function ProRefuelPage() {
             `pre-lock: ${preProfile.preLockPoints} pts, post-lock: ${preProfile.postLockPoints} pts. ` +
             `codec: ${vmeta.codec} | size: ${(file.size / 1024 / 1024).toFixed(0)}MB.`,
             "video_upload", { ...richCtx });
+          setLoading(false);
           setUploadError(
             "GPS signal too weak — the camera never acquired a stable fix.\n\n" +
             "Wait for the GPS icon on your GoPro to turn solid before starting your activity."
@@ -622,6 +631,7 @@ export default function ProRefuelPage() {
               "video_upload",
               { ...richCtx, video_codec: "hevc" },
             );
+            setLoading(false);
             setUploadError(
               "This GoPro video uses H.265 encoding, which cannot be converted in the browser.\n\n" +
               "Switch to H.264 before recording: on the camera go to Preferences → Video → Codec → H.264."
@@ -650,6 +660,7 @@ export default function ProRefuelPage() {
             });
           } catch (err: any) {
             setHevcConverting(false);
+            setLoading(false);
             void trackError(
               "WRONG_VIDEO_FORMAT",
               `[${file.name}] HEVC transcoding failed — codec: ${vmeta.codec}, ` +
@@ -671,8 +682,7 @@ export default function ProRefuelPage() {
       }
     }
 
-    setLoading(true);
-    setUploadError(null);
+    // Pre-checks done — start animated progress for the engine phase
     setProgress(0);
     const processingStart = Date.now();
     const interval = setInterval(() => setProgress((p) => (p >= 98 ? 98 : p + 1)), 150);
