@@ -24,6 +24,7 @@ import type { UnitSystem }     from "@/lib/utils/units";
 import type { MobileCapabilities } from "@/lib/engine/mobile/mobileCapabilities";
 import type { RenderResult }   from "@/components/MapEngine";
 import { StravaConnect }        from "@/components/StravaConnect";
+import { InstallPrompt }       from "@/components/InstallPrompt";
 
 // MobileCanvasRenderer — only loaded when user reaches the EXPERIENCE step
 const MobileCanvasRenderer = dynamic(
@@ -240,6 +241,7 @@ export default function MobilePage() {
   const [hevcConverting, setHevcConverting] = useState(false);
   const [hevcProgress,   setHevcProgress]   = useState(0);
   const [hevcStatus,     setHevcStatus]     = useState("");
+  const [videoSuccess,   setVideoSuccess]   = useState(false);
 
   // ── Capability detection + debug mode ──────────────────────────────────────
   useEffect(() => {
@@ -818,6 +820,14 @@ export default function MobilePage() {
       download_action:       result.downloadAction ?? null,
     });
 
+    if (result.status === "success") setVideoSuccess(true);
+
+    // Surface render errors to the user — without this the component unmounts
+    // silently and the user lands on the upload form with no explanation.
+    if (result.status === "error" && result.errorMessage) {
+      setUploadError(`Export failed: ${result.errorMessage}. Please try again.`);
+    }
+
     // Reset all state — clean slate for next video
     setVideoFile(null);    setHighlights([]);      setStoryPlan(null);
     setVideoLoaded(false); setUploadError(null);   setGpxError(null);
@@ -867,6 +877,7 @@ export default function MobilePage() {
 
   // ── Render: UPLOAD / READY form ─────────────────────────────────────────────
   return (
+    <>
     <main className="min-h-screen bg-[#050505] text-white font-sans overflow-x-hidden">
 
       {/* Ambient glow */}
@@ -1170,5 +1181,8 @@ export default function MobilePage() {
       </footer>
 
     </main>
+
+    <InstallPrompt show={videoSuccess} />
+    </>
   );
 }

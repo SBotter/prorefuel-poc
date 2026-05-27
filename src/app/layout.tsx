@@ -90,9 +90,9 @@ export const metadata: Metadata = {
   },
 
   icons: {
-    icon: "/LENS.ico",
-    shortcut: "/LENS.ico",
-    apple: "/LENS.ico",
+    icon: "/LENS_circle.png",
+    shortcut: "/LENS_circle.png",
+    apple: "/LENS_name_circle.png",
   },
 
   category: "sports, multimedia, video editing",
@@ -111,6 +111,11 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col">
         {children}
         <Analytics />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');`,
+          }}
+        />
       </body>
     </html>
   );

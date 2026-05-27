@@ -28,6 +28,7 @@ import type { UnitSystem }      from "@/lib/utils/units";
 import type { GPXProfile }      from "@/lib/engine/GPXAnalyzer";
 import type { VideoGPSProfile } from "@/lib/engine/VideoGPSAnalyzer";
 import { StravaConnect }         from "@/components/StravaConnect";
+import { InstallPrompt }        from "@/components/InstallPrompt";
 // Engine modules are loaded on-demand inside the upload handlers (never on mobile)
 
 // ── Instagram icon (inline SVG — lucide-react may not export it) ─────────
@@ -445,6 +446,7 @@ export default function ProRefuelPage() {
   const [hevcConverting, setHevcConverting] = useState(false);
   const [hevcProgress,   setHevcProgress]   = useState(0);
   const [hevcStatus,     setHevcStatus]     = useState("");
+  const [videoSuccess,   setVideoSuccess]   = useState(false);
 
   const mapEngineRef           = useRef<{ start: () => void; startRecording: () => Promise<void>; isRecording: boolean }>(null);
   const gpxMetricsRef          = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
@@ -1507,6 +1509,11 @@ export default function ProRefuelPage() {
                           output_size_bytes: result.outputSizeBytes,
                           output_duration_s: storyPlan ? storyPlan.segments.reduce((s, seg) => s + (seg.durationSec ?? 0), 0) : null,
                         });
+                        if (result.status === "success") setVideoSuccess(true);
+                        if (result.status === "error" && result.errorMessage) {
+                          setUploadError(`Export failed: ${result.errorMessage}. Please try again.`);
+                          setStep("UPLOAD");
+                        }
                         // After successful download: full reset to initial state
                         if (result.status === "success") {
                           setTimeout(() => {
@@ -1729,6 +1736,8 @@ export default function ProRefuelPage() {
         .animate-glow-pulse { animation: glow-pulse 2.2s ease-in-out infinite; }
       `}</style>
     </main>
+
+    <InstallPrompt show={videoSuccess} />
     </>
   );
 }
