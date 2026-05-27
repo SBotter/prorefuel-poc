@@ -557,13 +557,9 @@ export default function ProRefuelPage() {
 
       // Extract GPS points to validate quality before committing to transcoding.
       // Takes a few seconds; saves minutes of FFmpeg work if GPS is bad.
-      setHevcStatus("Checking GPS data…");
-      setHevcConverting(true);
       try {
         const { GoProEngineClient: _GPC } = await import("@/lib/media/GoProEngineClient");
         const preResult = await _GPC.extractTelemetry(file);
-        setHevcConverting(false);
-        setHevcStatus("");
 
         if (!preResult.points || preResult.points.length === 0) {
           void trackError("NO_GPS_VIDEO",
@@ -598,8 +594,6 @@ export default function ProRefuelPage() {
 
         preExtractedGoProResult = preResult;
       } catch {
-        setHevcConverting(false);
-        setHevcStatus("");
         // Pre-validation threw unexpectedly — continue and let the engine handle it
       }
     }
@@ -618,6 +612,23 @@ export default function ProRefuelPage() {
         const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
         const fileIsHevc = await isHevcVideo(file);
         if (fileIsHevc) {
+          // GoPro records H.264 by default — HEVC requires explicit firmware opt-in (very rare).
+          // Desktop browser transcoding of 800MB+ GoPro files will always OOM.
+          // Reject immediately with clear instructions instead of a 12-minute doomed transcode.
+          if (earlyDetection.type === "gopro") {
+            void trackError(
+              "WRONG_VIDEO_FORMAT",
+              `[${file.name}] GoPro HEVC detected on desktop — rejecting (OOM risk). size: ${(file.size/1024/1024).toFixed(1)}MB.`,
+              "video_upload",
+              { ...richCtx, video_codec: "hevc" },
+            );
+            setUploadError(
+              "This GoPro video uses H.265 encoding, which cannot be converted in the browser.\n\n" +
+              "Switch to H.264 before recording: on the camera go to Preferences → Video → Codec → H.264."
+            );
+            e.target.value = "";
+            return;
+          }
           // Transcode H.265 → H.264 at 1080p so every browser can decode it.
           // Original file is always kept for GPMF/GPS/EXIF extraction.
           // processVideoFile (the H.264 output) is what gets rendered.
@@ -1196,33 +1207,6 @@ export default function ProRefuelPage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
 
-      {/* HEVC TRANSCODING OVERLAY */}
-      {hevcConverting && (
-        <div className="fixed inset-0 z-[300] bg-[#050505] flex flex-col items-center justify-center p-8 text-white">
-          {/* Brand */}
-          <h2 className="text-5xl font-black tracking-tight uppercase text-white mb-2">LENS</h2>
-          <img src="/prorefuel_logo.png" alt="ProRefuel" className="w-28 opacity-60 mb-8" />
-
-          {/* Status */}
-          <p className="text-lg font-black uppercase tracking-[0.15em] mb-1">Preparing Video</p>
-          <p className="text-amber-500 font-black text-sm uppercase tracking-widest mb-6 animate-pulse">
-            {hevcStatus || 'Converting…'}
-          </p>
-
-          {/* Progress bar */}
-          <div className="w-full max-w-[320px] h-2 bg-zinc-800 rounded-full overflow-hidden mb-3">
-            <div
-              className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out"
-              style={{ width: `${hevcProgress}%` }}
-            />
-          </div>
-          <p className="text-zinc-500 font-black text-sm mb-8">{hevcProgress}%</p>
-
-          <p className="text-zinc-600 text-[11px] text-center max-w-[280px] leading-relaxed">
-            Converting H.265 to H.264 at 1080p — this may take 3–5 minutes for large 4K footage.
-          </p>
-        </div>
-      )}
 
     <main className="min-h-screen bg-[#050505] text-white font-sans selection:bg-amber-500/40 overflow-x-hidden">
 
@@ -1436,14 +1420,28 @@ export default function ProRefuelPage() {
                       origin="desktop"
                     />
 
-                    <label className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all cursor-pointer ${uploadError ? "border-red-500 bg-red-500/8" : highlights.length > 0 ? "border-green-500 bg-green-500/8" : activityPoints.length === 0 ? "border-zinc-800 bg-zinc-900/40 cursor-not-allowed opacity-60" : "border-amber-500 bg-amber-500/5 hover:bg-amber-500/10"}`}>
+                    <label className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all ${hevcConverting ? "cursor-default pointer-events-none border-amber-500 bg-amber-500/5" : uploadError ? "cursor-pointer border-red-500 bg-red-500/8" : highlights.length > 0 ? "cursor-pointer border-green-500 bg-green-500/8" : activityPoints.length === 0 ? "cursor-not-allowed border-zinc-800 bg-zinc-900/40 opacity-60" : "cursor-pointer border-amber-500 bg-amber-500/5 hover:bg-amber-500/10"}`}>
                       <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${highlights.length > 0 ? "bg-green-500 text-black" : activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" : "bg-amber-500 text-black shadow-lg"}`}>
-                        {loading ? <Loader2 className="animate-spin" size={28} /> : highlights.length > 0 ? <CheckCircle2 size={28} /> : <Upload size={28} />}
+                        {loading || hevcConverting ? <Loader2 className="animate-spin" size={28} /> : highlights.length > 0 ? <CheckCircle2 size={28} /> : <Upload size={28} />}
                       </div>
                       <div className="flex-1 min-w-0">
                         <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${uploadError ? "text-red-400" : activityPoints.length === 0 ? "text-zinc-600" : "text-amber-500"}`}>Step 02</span>
-                        <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>Import Video</p>
-                        {uploadError ? (
+                        <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>
+                          {hevcConverting ? "Preparing Video" : "Import Video"}
+                        </p>
+                        {hevcConverting ? (
+                          <>
+                            <div className="mt-2 w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out"
+                                style={{ width: `${hevcProgress}%` }}
+                              />
+                            </div>
+                            <p className="text-[10px] font-black text-amber-500/80 mt-1 animate-pulse">
+                              {hevcStatus || 'Converting…'} · {hevcProgress}%
+                            </p>
+                          </>
+                        ) : uploadError ? (
                           <p className="text-[11px] font-semibold mt-1 text-red-400 whitespace-pre-line leading-relaxed">{uploadError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>
                         ) : loading ? (
                           <p className="text-[11px] font-semibold mt-1 text-zinc-500">{statusMsg}</p>
@@ -1459,7 +1457,7 @@ export default function ProRefuelPage() {
                           </div>
                         )}
                       </div>
-                      <input type="file" accept=".mp4,.mov,video/mp4,video/quicktime" disabled={activityPoints.length === 0} onChange={handleVideoUpload} className="hidden" />
+                      <input type="file" accept=".mp4,.mov,video/mp4,video/quicktime" disabled={activityPoints.length === 0 || hevcConverting} onChange={handleVideoUpload} className="hidden" />
                       {activityPoints.length === 0 && <Lock size={16} className="text-zinc-700 shrink-0" />}
                     </label>
 

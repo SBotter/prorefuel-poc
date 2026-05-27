@@ -21,7 +21,7 @@ const nextConfig: NextConfig = {
       // credentialless supported: Chrome 96+, Edge 96+, Firefox 119+.
       // Safari supports HEVC natively so never reaches FFmpeg.wasm.
       {
-        source: "/(mobile)?(.*)",
+        source: "/mobile(.*)",
         headers: [
           { key: "Cross-Origin-Opener-Policy",   value: "same-origin" },
           { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },

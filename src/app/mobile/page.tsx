@@ -832,46 +832,6 @@ export default function MobilePage() {
     setStep("UPLOAD");
   };
 
-  // ── Render: H.265 conversion overlay ────────────────────────────────────────
-  if (hevcConverting) {
-    return (
-      <div className="fixed inset-0 z-[200] bg-[#050505] flex flex-col items-center justify-center p-8 text-white">
-        {/* Brand */}
-        <div className="flex flex-col items-center mb-10">
-          <span className="text-4xl font-black tracking-tight leading-none mb-1">LENS</span>
-          <div className="flex items-center gap-1.5">
-            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Developed by</span>
-            <img src="/prorefuel_logo.png" alt="ProRefuel" className="h-[13px] opacity-50" />
-          </div>
-        </div>
-
-        {/* Icon */}
-        <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mb-6">
-          <svg viewBox="0 0 24 24" className="w-8 h-8 text-amber-400 animate-spin" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 12a9 9 0 11-6.219-8.56"/>
-          </svg>
-        </div>
-
-        <p className="text-lg font-black uppercase tracking-[0.15em] mb-1">Preparing Video</p>
-        <p className="text-amber-500 font-black text-sm uppercase tracking-widest mb-6 animate-pulse">
-          {hevcStatus || "Converting…"}
-        </p>
-
-        {/* Progress bar */}
-        <div className="w-full max-w-[280px] h-2 bg-zinc-800 rounded-full overflow-hidden mb-3">
-          <div
-            className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out"
-            style={{ width: `${hevcProgress}%` }}
-          />
-        </div>
-        <p className="text-zinc-500 font-black text-sm mb-8">{hevcProgress}%</p>
-
-        <p className="text-zinc-600 text-[11px] text-center max-w-[240px] leading-relaxed">
-          Your video uses H.265 encoding. Converting to a compatible format — this happens only once per clip.
-        </p>
-      </div>
-    );
-  }
 
   // ── Render: debug panel (overlay — shown on top of any state) ─────────────
   if (showDebug) return <DebugPanel />;
@@ -979,6 +939,7 @@ export default function MobilePage() {
 
           {/* Step 2 — Video */}
           <label className={`flex items-center gap-4 p-4 rounded-2xl border-2 transition-all ${
+            hevcConverting ? "border-amber-500 bg-amber-500/5 cursor-default pointer-events-none" :
             !gpxLoaded ? "border-zinc-800 opacity-50 cursor-not-allowed" :
             uploadError ? "border-red-500 bg-red-500/8 cursor-pointer" :
             videoLoaded ? "border-green-500 bg-green-500/8 cursor-pointer" :
@@ -988,10 +949,10 @@ export default function MobilePage() {
             <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 font-black text-lg ${
               !gpxLoaded ? "bg-zinc-800 text-zinc-600" :
               videoLoaded ? "bg-green-500 text-black" :
-              loading ? "bg-zinc-700 text-zinc-400" :
+              loading || hevcConverting ? "bg-amber-500 text-black" :
               "bg-amber-500 text-black"
             }`}>
-              {loading ? (
+              {loading || hevcConverting ? (
                 <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
@@ -1000,8 +961,22 @@ export default function MobilePage() {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-0.5">Step 02</p>
-              <p className={`font-black text-sm ${!gpxLoaded ? "text-zinc-600" : "text-white"}`}>Import Video</p>
-              {uploadError ? (
+              <p className={`font-black text-sm ${!gpxLoaded ? "text-zinc-600" : "text-white"}`}>
+                {hevcConverting ? "Preparing Video" : "Import Video"}
+              </p>
+              {hevcConverting ? (
+                <>
+                  <div className="mt-1.5 w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out"
+                      style={{ width: `${hevcProgress}%` }}
+                    />
+                  </div>
+                  <p className="text-[10px] font-black text-amber-500/80 mt-1 animate-pulse">
+                    {hevcStatus || "Converting…"} · {hevcProgress}%
+                  </p>
+                </>
+              ) : uploadError ? (
                 <p className="text-[11px] text-red-400 mt-0.5">{uploadError}</p>
               ) : loading ? (
                 <p className="text-[11px] text-amber-400 mt-0.5 animate-pulse">{statusMsg}</p>
@@ -1015,7 +990,7 @@ export default function MobilePage() {
             </div>
             <input
               type="file" accept=".mp4,.mov,video/mp4,video/quicktime"
-              disabled={!gpxLoaded || loading}
+              disabled={!gpxLoaded || loading || hevcConverting}
               onChange={handleVideoUpload}
               className="hidden"
             />
