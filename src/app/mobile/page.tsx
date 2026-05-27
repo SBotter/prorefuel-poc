@@ -24,6 +24,7 @@ import type { UnitSystem }     from "@/lib/utils/units";
 import type { MobileCapabilities } from "@/lib/engine/mobile/mobileCapabilities";
 import type { RenderResult }   from "@/components/MapEngine";
 import { StravaConnect }        from "@/components/StravaConnect";
+import { InstallPrompt }       from "@/components/InstallPrompt";
 
 // MobileCanvasRenderer — only loaded when user reaches the EXPERIENCE step
 const MobileCanvasRenderer = dynamic(
@@ -240,6 +241,7 @@ export default function MobilePage() {
   const [hevcConverting, setHevcConverting] = useState(false);
   const [hevcProgress,   setHevcProgress]   = useState(0);
   const [hevcStatus,     setHevcStatus]     = useState("");
+  const [videoSuccess,   setVideoSuccess]   = useState(false);
 
   // ── Capability detection + debug mode ──────────────────────────────────────
   useEffect(() => {
@@ -818,6 +820,8 @@ export default function MobilePage() {
       download_action:       result.downloadAction ?? null,
     });
 
+    if (result.status === "success") setVideoSuccess(true);
+
     // Reset all state — clean slate for next video
     setVideoFile(null);    setHighlights([]);      setStoryPlan(null);
     setVideoLoaded(false); setUploadError(null);   setGpxError(null);
@@ -1170,5 +1174,7 @@ export default function MobilePage() {
       </footer>
 
     </main>
+
+    <InstallPrompt show={videoSuccess} />
   );
 }
