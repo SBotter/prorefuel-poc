@@ -434,66 +434,57 @@ export default function MobilePage() {
       device_model: originalCamDetection.model || null,
     };
 
-    // ── H.265 / HEVC pre-transcoding ─────────────────────────────────────────────
-    // Only transcodes when the file IS H.265 (byte scan) AND the browser cannot
-    // play H.265 natively. Android Chrome usually has hardware H.265 support —
-    // skip the expensive FFmpeg step when not needed.
+    // ── Codec compatibility check ─────────────────────────────────────────────────
+    // canBrowserPlay() loads the actual file into a hidden <video> and seeks to
+    // trigger real frame decoding. This is more reliable than canPlayType() or UA
+    // sniffing — Android Chrome claims HEVC support on devices that silently fail.
     //
-    // GoPro always records H.264 (HEVC requires explicit firmware opt-in, extremely rare).
-    // Skip the byte-scan entirely for GoPro to restore pre-HEVC behaviour.
+    // GoPro always records H.264 — skip the probe entirely (saves ~0.5s).
     let processFile = file;
     let detectedCodec: "h264" | "hevc" | null = null;
     let transcodeStart: number | null = null;
     try {
       const isGoPro = originalCamDetection.type === "gopro";
-      const { isHevcVideo, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
-      const hevc = isGoPro ? false : await isHevcVideo(file);
-      detectedCodec = hevc ? "hevc" : "h264";
-      if (hevc) {
-        // iOS: every browser (Safari, Chrome, Firefox) runs on WebKit and supports HEVC natively.
-        // canPlayType() returns "" in Chrome DevTools device simulator despite iPhone UA — UA is authoritative here.
-        const isIOSDevice = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-        const testVid  = document.createElement("video");
-        const canH265  = isIOSDevice ||
-                         testVid.canPlayType('video/mp4; codecs="hvc1"') !== '' ||
-                         testVid.canPlayType('video/mp4; codecs="hev1"') !== '';
-        if (canH265) {
-          mlog("HEVC", `detected H.265 but browser supports it natively${isIOSDevice ? " (iOS)" : ""} — skipping transcode`);
-        } else {
-          mlog("HEVC", `detected H.265, browser cannot play it — transcoding to H.264`);
-          setHevcConverting(true);
-          setHevcProgress(0);
-          setHevcStatus("Loading converter…");
-          transcodeStart = Date.now();
-          processFile = await transcodeHevcToH264(file, (pct, status) => {
-            setHevcProgress(pct);
-            setHevcStatus(status);
-          });
-          const transcodeMs = Date.now() - transcodeStart;
-          mlog("HEVC", `transcoding done in ${(transcodeMs/1000).toFixed(1)}s — ${(processFile.size/1024/1024).toFixed(1)}MB`);
-          void trackHevcTranscode(transcodeMs, {
-            ...errCtxCam,
-            file_size_bytes: file.size,
-            file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
-          });
-          setHevcConverting(false);
-          setHevcProgress(0);
-          setHevcStatus("");
-        }
+      const { canBrowserPlay, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
+      const canPlay = isGoPro ? true : await canBrowserPlay(file);
+      detectedCodec = canPlay ? "h264" : "hevc";
+
+      if (!canPlay) {
+        mlog("CODEC", `browser cannot decode file — transcoding to H.264`);
+        setHevcConverting(true);
+        setHevcProgress(0);
+        setHevcStatus("Loading converter…");
+        transcodeStart = Date.now();
+        processFile = await transcodeHevcToH264(file, (pct, status) => {
+          setHevcProgress(pct);
+          setHevcStatus(status);
+        });
+        const transcodeMs = Date.now() - transcodeStart;
+        mlog("CODEC", `transcoding done in ${(transcodeMs/1000).toFixed(1)}s — ${(processFile.size/1024/1024).toFixed(1)}MB`);
+        void trackHevcTranscode(transcodeMs, {
+          ...errCtxCam,
+          file_size_bytes: file.size,
+          file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
+        });
+        setHevcConverting(false);
+        setHevcProgress(0);
+        setHevcStatus("");
+      } else {
+        mlog("CODEC", `browser can decode file natively${isGoPro ? " (GoPro H.264)" : ""} — skipping transcode`);
       }
     } catch (err: any) {
       setHevcConverting(false);
       setHevcProgress(0);
       setHevcStatus("");
       setLoading(false);
-      mlog("HEVC", `transcoding failed: ${err.message}`);
+      mlog("CODEC", `transcoding failed: ${err.message}`);
       void trackError("WRONG_VIDEO_FORMAT",
-        `[${file.name}] H.265 transcoding failed: ${err.message}`,
+        `[${file.name}] Video transcoding failed: ${err.message}`,
         "video_upload",
-        { ...errCtxCam, video_codec: "hevc",
+        { ...errCtxCam, video_codec: detectedCodec,
           hevc_transcode_ms: transcodeStart != null ? Date.now() - transcodeStart : null });
       setUploadError(
-        "Failed to convert H.265 video. " +
+        "Failed to convert this video for playback. " +
         "Try recording in H.264: Camera app → Settings → Video quality → disable \"Efficient video format\"."
       );
       e.target.value = "";

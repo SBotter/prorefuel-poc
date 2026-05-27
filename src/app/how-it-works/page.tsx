@@ -345,6 +345,7 @@ export default function HowItWorksPage() {
 
         <DeviceCard logo="/devices/logos/gopro_logo.svg" lw={64} name="GoPro" badge="Maximum Data · 18 Hz GPS" badgeColor="amber">
           <Row label="Formats" value=".mp4" />
+          <Row label="Required codec" value="H.264 — H.265/HEVC not supported on Chrome Windows" neutral />
           <Row label="GPS track" value="18 Hz embedded in video" good />
           <Row label="Accelerometer" value="200 Hz" good />
           <Row label="Gyroscope" value="Yes" good />
@@ -358,6 +359,16 @@ export default function HowItWorksPage() {
           <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
             <strong className="text-zinc-300">Important:</strong> Your GoPro clip must be at least 60 seconds long to allow GPS lock. A short clip may have no valid GPS data.
           </p>
+          <div className="mt-3 p-3 rounded-xl bg-amber-500/8 border border-amber-500/20">
+            <p className="text-amber-400 text-[11px] font-bold leading-relaxed">
+              <span className="font-black">⚠ H.265 (HEVC) recording on GoPro:</span> Some firmware versions allow enabling HEVC via <strong className="text-white">Preferences → Video → Codec → H.265</strong>. Chrome on Windows/Linux cannot play H.265 files.
+            </p>
+            <ol className="mt-2 space-y-1 text-zinc-400 text-[11px]">
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> On the camera: <strong className="text-white">Preferences → Video → Codec → H.264</strong></li>
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> Record a new clip — H.264 is then used by default</li>
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> Alternatively, open LENS on Safari / Chrome on Mac (HEVC plays natively)</li>
+            </ol>
+          </div>
           <div className="mt-3 p-3 rounded-xl bg-red-500/8 border border-red-500/20">
             <p className="text-red-400 text-[11px] font-black uppercase tracking-widest mb-1">Do not re-encode or edit before importing</p>
             <p className="text-zinc-400 text-[11px] leading-relaxed">
@@ -533,6 +544,11 @@ export default function HowItWorksPage() {
           <ProblemCard problem="This is a Suunto route file">
             You uploaded the <code className="text-amber-400">*-route.gpx</code> — no timestamps. Upload the <code className="text-amber-400">*-track.gpx</code> file instead.
           </ProblemCard>
+          <ProblemCard problem="This GoPro video cannot be played in this browser">
+            The video was recorded in H.265 (HEVC). Chrome on Windows/Linux cannot play H.265 files and the file is too large to convert in the browser.
+            Fix: on the camera go to <strong className="text-white">Preferences → Video → Codec → H.264</strong> and re-record.
+            Alternatively, open LENS on Safari or Chrome on Mac — HEVC plays natively there.
+          </ProblemCard>
           <ProblemCard problem="Update required (mobile)">
             Your device doesn't meet the minimum requirements for the mobile pipeline. Open LENS on a desktop computer (Chrome recommended) for the full experience without restrictions.
           </ProblemCard>
@@ -563,6 +579,17 @@ export default function HowItWorksPage() {
             </HelpItem>
             <HelpItem error="GPS signal too weak — no valid fix was recorded." title="GPS signal too weak (GoPro)">
               Recording started before GPS lock. Wait until the GPS icon is <strong className="text-white">solid (not blinking)</strong> — 10–30 seconds outdoors.
+            </HelpItem>
+            <HelpItem error="This GoPro video cannot be played in this browser." title="GoPro — H.265 video (HEVC)">
+              Some GoPro firmware versions allow recording in H.265 via <strong className="text-white">Preferences → Video → Codec → H.265</strong>.
+              Chrome on Windows/Linux cannot play H.265 — the file cannot be converted in the browser because GoPro clips are typically too large for browser-based transcoding.
+              <br /><br />
+              <strong className="text-zinc-300">Fix before recording:</strong>
+              <ol className="mt-2 space-y-1 list-none">
+                <ExportStep><strong className="text-white">Preferences → Video → Codec → H.264</strong> on the camera</ExportStep>
+                <ExportStep>Record a new clip — LENS will work immediately</ExportStep>
+              </ol>
+              <p className="mt-3 text-zinc-500">Already recorded in H.265? Open LENS on <strong className="text-white">Safari or Chrome on a Mac</strong> — HEVC plays natively there without any conversion.</p>
             </HelpItem>
             <HelpItem error="H.265 (HEVC) video detected — not supported in Chrome on Windows." title="Pixel phone — H.265 video (HEVC)">
               Google Pixel records in H.265 (HEVC) by default in several modes — Top Shot (<code className="text-amber-400">.TS.mp4</code>), 4K30+, Night Sight, and Motion Video.
