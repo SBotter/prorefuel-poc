@@ -1378,11 +1378,6 @@ export default function ProRefuelPage() {
                             {activityPoints.length > 0 ? <CheckCircle2 size={28} /> : <Gauge size={28} />}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${
-                              gpxError              ? "text-red-400" :
-                              activityPoints.length > 0 ? "text-green-500" :
-                              "text-amber-500"
-                            }`}>Step 01</span>
                             <p className="text-base font-black uppercase text-white leading-none">Import GPX</p>
                             {gpxError ? (
                               <p className="text-[11px] font-semibold mt-1 text-red-400">{gpxError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>
@@ -1420,7 +1415,6 @@ export default function ProRefuelPage() {
                         {loading || hevcConverting ? <Loader2 className="animate-spin" size={28} /> : highlights.length > 0 ? <CheckCircle2 size={28} /> : <Upload size={28} />}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${uploadError ? "text-red-400" : activityPoints.length === 0 ? "text-zinc-600" : "text-amber-500"}`}>Step 02</span>
                         <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>
                           {hevcConverting ? "Preparing Video" : "Import Video"}
                         </p>
