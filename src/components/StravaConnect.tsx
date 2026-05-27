@@ -200,18 +200,24 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
         <Divider />
         <button
           onClick={fetchActivities}
-          className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-[#FC4C02]/40 bg-[#FC4C02]/5 hover:border-[#FC4C02]/70 hover:bg-[#FC4C02]/10 transition-all group"
+          className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-[#FC4C02]/50 bg-[#FC4C02]/8 hover:border-[#FC4C02] hover:bg-[#FC4C02]/12 transition-all group active:scale-[0.98]"
         >
-          <div className="w-10 h-10 rounded-xl bg-[#FC4C02] flex items-center justify-center shrink-0 shadow-lg group-hover:scale-105 transition-transform">
-            <svg viewBox="0 0 24 24" className="w-6 h-6 fill-white">
-              <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
-            </svg>
+          <div className="relative shrink-0">
+            <div className="w-10 h-10 rounded-xl bg-[#FC4C02] flex items-center justify-center shadow-[0_4px_16px_rgba(252,76,2,0.35)] group-hover:shadow-[0_4px_20px_rgba(252,76,2,0.5)] group-hover:scale-105 transition-all">
+              <svg viewBox="0 0 24 24" className="w-6 h-6 fill-white">
+                <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
+              </svg>
+            </div>
+            <div className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-green-400 border-[2.5px] border-[#0f0f0f] shadow-sm" />
           </div>
           <div className="flex-1 text-left">
-            <p className="text-[10px] font-black uppercase tracking-widest text-[#FC4C02]/80 mb-0.5">Strava · Connected</p>
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <p className="text-[10px] font-black uppercase tracking-widest text-[#FC4C02]">Strava</p>
+              <span className="px-1.5 py-0.5 rounded-full bg-green-500/15 border border-green-500/30 text-[8px] font-black uppercase tracking-wider text-green-400">Connected</span>
+            </div>
             <p className="text-sm font-black uppercase text-white leading-none">Open My Activities</p>
           </div>
-          <svg viewBox="0 0 24 24" className="w-4 h-4 text-[#FC4C02]/50 group-hover:text-[#FC4C02] transition-colors shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg viewBox="0 0 24 24" className="w-4 h-4 text-[#FC4C02]/60 group-hover:text-[#FC4C02] transition-colors shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>

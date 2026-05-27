@@ -905,96 +905,138 @@ export default function MobilePage() {
         </div>
 
         {/* Upload card */}
-        <div className="bg-[#0f0f0f] rounded-3xl border border-zinc-800/80 p-5 shadow-2xl ring-1 ring-white/4 space-y-4">
+        <div className="bg-[#0f0f0f] rounded-3xl border border-zinc-800/80 p-5 shadow-2xl ring-1 ring-white/4 space-y-5">
 
-          {/* Step 1 — GPX */}
-          <label className={`flex items-center gap-4 p-4 rounded-2xl border-2 transition-all cursor-pointer active:scale-[0.98] ${
-            gpxError  ? "border-red-500 bg-red-500/8" :
-            gpxLoaded ? "border-green-500 bg-green-500/8" :
-            "border-amber-500 bg-amber-500/5"
-          }`}>
-            <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 font-black text-lg ${
-              gpxLoaded ? "bg-green-500 text-black" : "bg-amber-500 text-black"
+          {/* ── Step 1: GPS Track (GPX file or Strava) ──────────── */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <div className={`w-5 h-5 rounded-md flex items-center justify-center font-black text-[10px] shrink-0 transition-colors ${
+                gpxLoaded ? "bg-green-500 text-black" : "bg-amber-500 text-black"
+              }`}>
+                {gpxLoaded ? "✓" : "1"}
+              </div>
+              <p className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-500">GPS Track</p>
+            </div>
+
+            <label className={`flex items-center gap-4 p-4 rounded-2xl border-2 transition-all cursor-pointer active:scale-[0.98] ${
+              gpxError  ? "border-red-500 bg-red-500/8" :
+              gpxLoaded ? "border-green-500 bg-green-500/8" :
+              "border-amber-500/50 bg-amber-500/5 hover:border-amber-500/80"
             }`}>
-              {gpxLoaded ? "✓" : "1"}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-0.5">Step 01</p>
-              <p className="font-black text-white text-sm">Import GPX</p>
-              {gpxError ? (
-                <p className="text-[11px] text-red-400 mt-0.5">{gpxError}</p>
-              ) : gpxLoaded ? (
-                <p className="text-[11px] text-green-400 mt-0.5 truncate">{gpxNameRef.current}</p>
-              ) : (
-                <p className="text-[11px] text-zinc-600 mt-0.5">Garmin · Strava · Wahoo · Suunto</p>
-              )}
-            </div>
-            <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
-          </label>
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                gpxLoaded ? "bg-green-500 text-black" : "bg-zinc-800 text-zinc-400"
+              }`}>
+                {gpxLoaded ? (
+                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-black text-white text-sm">Upload GPX File</p>
+                {gpxError ? (
+                  <p className="text-[11px] text-red-400 mt-0.5">{gpxError}</p>
+                ) : gpxLoaded ? (
+                  <p className="text-[11px] text-green-400 mt-0.5 truncate">{gpxNameRef.current}</p>
+                ) : (
+                  <p className="text-[11px] text-zinc-600 mt-0.5">Garmin · Wahoo · Suunto</p>
+                )}
+              </div>
+              <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
+            </label>
 
-          <StravaConnect
-            onGpxLoaded={async (text) => { await processGpxText(text); }}
-            origin="mobile"
-          />
-
-          {/* Step 2 — Video */}
-          <label className={`flex items-center gap-4 p-4 rounded-2xl border-2 transition-all ${
-            hevcConverting ? "border-amber-500 bg-amber-500/5 cursor-default pointer-events-none" :
-            !gpxLoaded ? "border-zinc-800 opacity-50 cursor-not-allowed" :
-            uploadError ? "border-red-500 bg-red-500/8 cursor-pointer" :
-            videoLoaded ? "border-green-500 bg-green-500/8 cursor-pointer" :
-            loading ? "border-zinc-700 cursor-wait" :
-            "border-amber-500 bg-amber-500/5 cursor-pointer active:scale-[0.98]"
-          }`}>
-            <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 font-black text-lg ${
-              !gpxLoaded ? "bg-zinc-800 text-zinc-600" :
-              videoLoaded ? "bg-green-500 text-black" :
-              loading || hevcConverting ? "bg-amber-500 text-black" :
-              "bg-amber-500 text-black"
-            }`}>
-              {loading || hevcConverting ? (
-                <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-              ) : videoLoaded ? "✓" : "2"}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-0.5">Step 02</p>
-              <p className={`font-black text-sm ${!gpxLoaded ? "text-zinc-600" : "text-white"}`}>
-                {hevcConverting ? "Preparing Video" : "Import Video"}
-              </p>
-              {hevcConverting ? (
-                <>
-                  <div className="mt-1.5 w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out"
-                      style={{ width: `${hevcProgress}%` }}
-                    />
-                  </div>
-                  <p className="text-[10px] font-black text-amber-500/80 mt-1 animate-pulse">
-                    {hevcStatus || "Converting…"} · {hevcProgress}%
-                  </p>
-                </>
-              ) : uploadError ? (
-                <p className="text-[11px] text-red-400 mt-0.5">{uploadError}</p>
-              ) : loading ? (
-                <p className="text-[11px] text-amber-400 mt-0.5 animate-pulse">{statusMsg}</p>
-              ) : !gpxLoaded ? (
-                <p className="text-[11px] text-zinc-600 mt-0.5">Load GPX first</p>
-              ) : videoLoaded ? (
-                <p className="text-[11px] text-green-400 mt-0.5 truncate">{videoFile?.name}</p>
-              ) : (
-                <p className="text-[11px] text-zinc-600 mt-0.5">GoPro · iPhone · Android</p>
-              )}
-            </div>
-            <input
-              type="file" accept=".mp4,.mov,video/mp4,video/quicktime"
-              disabled={!gpxLoaded || loading || hevcConverting}
-              onChange={handleVideoUpload}
-              className="hidden"
+            <StravaConnect
+              onGpxLoaded={async (text) => { await processGpxText(text); }}
+              origin="mobile"
             />
-          </label>
+          </div>
+
+          {/* ── Separator ─────────────────────────────────────────── */}
+          <div className="border-t border-zinc-800/50" />
+
+          {/* ── Step 2: Video ─────────────────────────────────────── */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <div className={`w-5 h-5 rounded-md flex items-center justify-center font-black text-[10px] shrink-0 transition-colors ${
+                !gpxLoaded ? "bg-zinc-800 text-zinc-600" :
+                videoLoaded ? "bg-green-500 text-black" :
+                "bg-amber-500 text-black"
+              }`}>
+                {videoLoaded ? "✓" : "2"}
+              </div>
+              <p className={`text-[9px] font-black uppercase tracking-[0.3em] transition-colors ${!gpxLoaded ? "text-zinc-700" : "text-zinc-500"}`}>Video</p>
+            </div>
+
+            <label className={`flex items-center gap-4 p-4 rounded-2xl border-2 transition-all ${
+              hevcConverting ? "border-amber-500 bg-amber-500/5 cursor-default pointer-events-none" :
+              !gpxLoaded ? "border-zinc-800 opacity-40 cursor-not-allowed" :
+              uploadError ? "border-red-500 bg-red-500/8 cursor-pointer" :
+              videoLoaded ? "border-green-500 bg-green-500/8 cursor-pointer" :
+              loading ? "border-zinc-700 cursor-wait" :
+              "border-amber-500 bg-amber-500/5 cursor-pointer active:scale-[0.98]"
+            }`}>
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                !gpxLoaded ? "bg-zinc-800 text-zinc-600" :
+                videoLoaded ? "bg-green-500 text-black" :
+                loading || hevcConverting ? "bg-amber-500 text-black" :
+                "bg-amber-500 text-black"
+              }`}>
+                {loading || hevcConverting ? (
+                  <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                  </svg>
+                ) : videoLoaded ? (
+                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                  </svg>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className={`font-black text-sm ${!gpxLoaded ? "text-zinc-600" : "text-white"}`}>
+                  {hevcConverting ? "Preparing Video" : "Import Video"}
+                </p>
+                {hevcConverting ? (
+                  <>
+                    <div className="mt-1.5 w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out"
+                        style={{ width: `${hevcProgress}%` }}
+                      />
+                    </div>
+                    <p className="text-[10px] font-black text-amber-500/80 mt-1 animate-pulse">
+                      {hevcStatus || "Converting…"} · {hevcProgress}%
+                    </p>
+                  </>
+                ) : uploadError ? (
+                  <p className="text-[11px] text-red-400 mt-0.5">{uploadError}</p>
+                ) : loading ? (
+                  <p className="text-[11px] text-amber-400 mt-0.5 animate-pulse">{statusMsg}</p>
+                ) : !gpxLoaded ? (
+                  <p className="text-[11px] text-zinc-600 mt-0.5">Load GPS track first</p>
+                ) : videoLoaded ? (
+                  <p className="text-[11px] text-green-400 mt-0.5 truncate">{videoFile?.name}</p>
+                ) : (
+                  <p className="text-[11px] text-zinc-600 mt-0.5">GoPro · iPhone · Android</p>
+                )}
+              </div>
+              <input
+                type="file" accept=".mp4,.mov,video/mp4,video/quicktime"
+                disabled={!gpxLoaded || loading || hevcConverting}
+                onChange={handleVideoUpload}
+                className="hidden"
+              />
+            </label>
+          </div>
 
           {/* Progress bar (visible during video processing) */}
           {loading && (
