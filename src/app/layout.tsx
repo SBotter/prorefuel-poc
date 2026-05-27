@@ -90,9 +90,9 @@ export const metadata: Metadata = {
   },
 
   icons: {
-    icon: "/LENS.ico",
-    shortcut: "/LENS.ico",
-    apple: "/LENS.ico",
+    icon: "/LENS_circle.png",
+    shortcut: "/LENS_circle.png",
+    apple: "/LENS_name_circle.png",
   },
 
   category: "sports, multimedia, video editing",
