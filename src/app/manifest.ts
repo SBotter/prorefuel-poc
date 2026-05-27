@@ -13,7 +13,12 @@ export default function manifest(): MetadataRoute.Manifest {
     icons: [
       {
         src: "/LENS_name_circle.png",
-        sizes: "any",
+        sizes: "192x192",
+        type: "image/png",
+      },
+      {
+        src: "/LENS_name_circle.png",
+        sizes: "512x512",
         type: "image/png",
       },
     ],
