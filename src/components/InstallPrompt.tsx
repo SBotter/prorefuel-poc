@@ -77,7 +77,7 @@ export function InstallPrompt({ show }: { show: boolean }) {
         <div className="flex items-start gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/LENS_name_circle_blk.png"
+            src="/LENS_name_circle.png"
             alt="LENS"
             width={48}
             height={48}
