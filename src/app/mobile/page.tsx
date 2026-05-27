@@ -871,6 +871,7 @@ export default function MobilePage() {
 
   // ── Render: UPLOAD / READY form ─────────────────────────────────────────────
   return (
+    <>
     <main className="min-h-screen bg-[#050505] text-white font-sans overflow-x-hidden">
 
       {/* Ambient glow */}
@@ -1176,5 +1177,6 @@ export default function MobilePage() {
     </main>
 
     <InstallPrompt show={videoSuccess} />
+    </>
   );
 }
