@@ -1336,39 +1336,85 @@ export default function ProRefuelPage() {
                       <button onClick={() => setUnit("imperial")} className={`flex-1 py-2.5 rounded-xl text-[11px] font-black tracking-widest transition-all ${unit === "imperial" ? "bg-amber-500 text-black shadow-[0_5px_15px_rgba(245,158,11,0.3)]" : "text-zinc-500 hover:text-white"}`}>IMPERIAL</button>
                     </div>
 
-                    <label className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all cursor-pointer ${gpxError ? "border-red-500 bg-red-500/8" : activityPoints.length > 0 ? "border-green-500 bg-green-500/8" : "border-amber-500 bg-amber-500/5 hover:bg-amber-500/10 animate-glow-pulse"}`}>
-                      <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${gpxError ? "bg-red-500 text-white" : activityPoints.length > 0 ? "bg-green-500 text-black" : "bg-amber-500 text-black shadow-lg"}`}>
-                        {activityPoints.length > 0 ? <CheckCircle2 size={28} /> : <Gauge size={28} />}
+                    {/* ── Step 01: GPS Track ──────────────────────────────── */}
+                    <div>
+                      <div className="flex items-center gap-2 mb-2.5">
+                        <div className={`w-5 h-5 rounded-md flex items-center justify-center font-black text-[10px] shrink-0 transition-colors ${
+                          activityPoints.length > 0 ? "bg-green-500 text-black" : "bg-amber-500 text-black"
+                        }`}>
+                          {activityPoints.length > 0 ? "✓" : "1"}
+                        </div>
+                        <p className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-500">Activity</p>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${gpxError ? "text-red-400" : activityPoints.length > 0 ? "text-green-500" : "text-amber-500"}`}>Step 01</span>
-                        <p className="text-base font-black uppercase text-white leading-none">Import GPX</p>
-                        {gpxError ? (
-                          <p className="text-[11px] font-semibold mt-1 text-red-400">{gpxError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>
-                        ) : (
-                          <div className="flex items-center gap-1.5 mt-1.5">
-                            {["/devices/logos/garmin_logo.svg", "/devices/logos/strava_logo.svg", "/devices/logos/suunto_logo.svg"].map((src, i) => (
-                              <div key={i} className="flex items-center justify-center px-2 py-1 rounded bg-white/50 border border-white/40">
-                                <img src={src} alt="" style={{ height: 11, width: "auto", maxWidth: 38, opacity: activityPoints.length > 0 ? 1 : 0.9 }} />
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
-                    </label>
 
-                    <StravaConnect
-                      onGpxLoaded={async (text) => { await processGpxText(text); }}
-                      origin="desktop"
-                    />
+                      {/* GPS card — Strava (primary) and GPX file are two routes to the same goal */}
+                      <div className="rounded-2xl border border-zinc-800/70 overflow-hidden">
+
+                        {/* Strava — first (more important / most used) */}
+                        <StravaConnect
+                          onGpxLoaded={async (text) => { await processGpxText(text); }}
+                          origin="desktop"
+                          embedded
+                        />
+
+                        {/* "or" divider */}
+                        <div className="flex items-center gap-3 px-6 py-2 bg-zinc-900/40">
+                          <div className="flex-1 h-px bg-zinc-800" />
+                          <span className="text-[9px] font-black uppercase tracking-widest text-zinc-700 shrink-0">or</span>
+                          <div className="flex-1 h-px bg-zinc-800" />
+                        </div>
+
+                        {/* GPX file row */}
+                        <label className={`group flex items-center gap-5 px-6 py-5 w-full cursor-pointer transition-colors ${
+                          gpxError              ? "bg-red-500/8  border-l-2 border-l-red-500" :
+                          activityPoints.length > 0 ? "bg-green-500/8 border-l-2 border-l-green-500" :
+                          "hover:bg-amber-500/5 active:bg-amber-500/8 border-l-2 border-l-transparent animate-glow-pulse"
+                        }`}>
+                          <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${
+                            gpxError              ? "bg-red-500 text-white" :
+                            activityPoints.length > 0 ? "bg-green-500 text-black" :
+                            "bg-amber-500 text-black shadow-lg"
+                          }`}>
+                            {activityPoints.length > 0 ? <CheckCircle2 size={28} /> : <Gauge size={28} />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-base font-black uppercase text-white leading-none">Import GPX</p>
+                            {gpxError ? (
+                              <p className="text-[11px] font-semibold mt-1 text-red-400">{gpxError}{" "}<a href="/how-it-works#help" className="underline text-amber-400 hover:text-amber-300 whitespace-nowrap">Learn more →</a></p>
+                            ) : (
+                              <div className="flex items-center gap-1.5 mt-1.5">
+                                {["/devices/logos/garmin_logo.svg", "/devices/logos/suunto_logo.svg"].map((src, i) => (
+                                  <div key={i} className="flex items-center justify-center px-2 py-1 rounded bg-white/50 border border-white/40">
+                                    <img src={src} alt="" style={{ height: 11, width: "auto", maxWidth: 38, opacity: activityPoints.length > 0 ? 1 : 0.9 }} />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
+                        </label>
+
+                      </div>
+                    </div>
+
+                    {/* ── Step 02: Video ──────────────────────────────────── */}
+                    <div>
+                      <div className="flex items-center gap-2 mb-2.5">
+                        <div className={`w-5 h-5 rounded-md flex items-center justify-center font-black text-[10px] shrink-0 transition-colors ${
+                          activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" :
+                          highlights.length > 0    ? "bg-green-500 text-black" :
+                          "bg-amber-500 text-black"
+                        }`}>
+                          {highlights.length > 0 ? "✓" : "2"}
+                        </div>
+                        <p className={`text-[9px] font-black uppercase tracking-[0.3em] transition-colors ${activityPoints.length === 0 ? "text-zinc-700" : "text-zinc-500"}`}>Video</p>
+                      </div>
 
                     <label className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all ${hevcConverting ? "cursor-default pointer-events-none border-amber-500 bg-amber-500/5" : uploadError ? "cursor-pointer border-red-500 bg-red-500/8" : highlights.length > 0 ? "cursor-pointer border-green-500 bg-green-500/8" : activityPoints.length === 0 ? "cursor-not-allowed border-zinc-800 bg-zinc-900/40 opacity-60" : "cursor-pointer border-amber-500 bg-amber-500/5 hover:bg-amber-500/10"}`}>
                       <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${highlights.length > 0 ? "bg-green-500 text-black" : activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" : "bg-amber-500 text-black shadow-lg"}`}>
                         {loading || hevcConverting ? <Loader2 className="animate-spin" size={28} /> : highlights.length > 0 ? <CheckCircle2 size={28} /> : <Upload size={28} />}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <span className={`block text-[10px] font-black uppercase tracking-widest mb-0.5 ${uploadError ? "text-red-400" : activityPoints.length === 0 ? "text-zinc-600" : "text-amber-500"}`}>Step 02</span>
                         <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>
                           {hevcConverting ? "Preparing Video" : "Import Video"}
                         </p>
@@ -1411,6 +1457,7 @@ export default function ProRefuelPage() {
                       <input type="file" accept=".mp4,.mov,video/mp4,video/quicktime" disabled={activityPoints.length === 0 || hevcConverting} onChange={handleVideoUpload} className="hidden" />
                       {activityPoints.length === 0 && <Lock size={16} className="text-zinc-700 shrink-0" />}
                     </label>
+                    </div>
 
                     <button
                       onClick={() => {
