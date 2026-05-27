@@ -14,36 +14,79 @@
  */
 
 // ── HEVC Detection ────────────────────────────────────────────────────────────
-// Reads the first 16 KB of the file and searches for H.265 codec fourcc codes
-// ('hvc1', 'hev1', 'dvhe') in the MP4 container. This is faster and more
-// reliable than canPlayType() which reflects browser capability, not file codec.
+// Parses the MP4 box structure to locate the moov box, then searches for
+// H.265 codec fourccs ('hvc1', 'hev1', 'dvhe') ONLY within that box.
+//
+// Why box-aware? A naive byte scan of the full file (or last 1 MB) also hits
+// the mdat payload — raw entropy-coded H.264 frames — which can coincidentally
+// contain those 4-byte sequences, producing false positives that cause H.264
+// files to be mistakenly sent through the transcoding path.
+
+const HEVC_FOURCCS = ['hvc1', 'hev1', 'dvhe'] as const;
+
+function readU32BE(buf: Uint8Array, offset: number): number {
+  return ((buf[offset] << 24) | (buf[offset+1] << 16) | (buf[offset+2] << 8) | buf[offset+3]) >>> 0;
+}
+
+function hasHevcInRange(buf: Uint8Array, from: number, to: number): boolean {
+  for (const tag of HEVC_FOURCCS) {
+    const a = tag.charCodeAt(0), b = tag.charCodeAt(1), c = tag.charCodeAt(2), d = tag.charCodeAt(3);
+    for (let i = from; i <= to - 4; i++) {
+      if (buf[i] === a && buf[i+1] === b && buf[i+2] === c && buf[i+3] === d) return true;
+    }
+  }
+  return false;
+}
+
+// Walk flat box list starting at `start` within `buf`, returns moov bounds or null.
+function findMoovWalk(buf: Uint8Array, start: number, end: number): [number, number] | null {
+  let i = start;
+  while (i + 8 <= end) {
+    let size = readU32BE(buf, i);
+    const type = String.fromCharCode(buf[i+4], buf[i+5], buf[i+6], buf[i+7]);
+    if (size === 1 && i + 16 <= end) size = readU32BE(buf, i + 12); // 64-bit extended size (low 32)
+    if (size < 8) break;
+    if (type === 'moov') return [i, Math.min(i + size, buf.length)];
+    if (i + size > end) break;
+    i += size;
+  }
+  return null;
+}
+
+// For non-faststart files the tail buffer starts mid-mdat (unparseable from offset 0).
+// Scan for a 'moov' box header by looking for the fourcc at any position and
+// validating that the preceding size field is plausible (≥ 1 KB).
+function findMoovSearch(buf: Uint8Array): [number, number] | null {
+  for (let i = 0; i + 8 <= buf.length; i++) {
+    if (buf[i+4] === 0x6D && buf[i+5] === 0x6F && buf[i+6] === 0x6F && buf[i+7] === 0x76) {
+      const size = readU32BE(buf, i);
+      if (size >= 1_000) {
+        // moov found — use whatever we have (may be truncated if larger than tail read)
+        return [i, Math.min(i + size, buf.length)];
+      }
+    }
+  }
+  return null;
+}
 
 export async function isHevcVideo(file: File): Promise<boolean> {
-  // H.265 codec fourccs are stored in the MP4 moov/trak/mdia/stbl/stsd box.
-  // For files with -movflags +faststart (moov at start), the first 16 KB suffices.
-  // For files without faststart (moov at end — common on Android), we must also
-  // check the last 64 KB. Both reads are fast (<5ms combined).
-  const find = (bytes: Uint8Array, tag: string): boolean => {
-    const c = [tag.charCodeAt(0), tag.charCodeAt(1), tag.charCodeAt(2), tag.charCodeAt(3)];
-    for (let i = 0; i <= bytes.length - 4; i++) {
-      if (bytes[i] === c[0] && bytes[i+1] === c[1] && bytes[i+2] === c[2] && bytes[i+3] === c[3]) return true;
-    }
-    return false;
-  };
-  const scan = (b: Uint8Array) => find(b, 'hvc1') || find(b, 'hev1') || find(b, 'dvhe');
-
   try {
-    // Check beginning (faststart files — moov at start)
-    const head = new Uint8Array(await file.slice(0, 16_384).arrayBuffer());
-    if (scan(head)) return true;
+    // Phase 1: faststart files — moov is at the start
+    // 128 KB covers ftyp + moov header for virtually all GoPro, iPhone, and modern Android files.
+    const headSize = Math.min(131_072, file.size);
+    const head = new Uint8Array(await file.slice(0, headSize).arrayBuffer());
+    const moovH = findMoovWalk(head, 0, head.length);
+    if (moovH) return hasHevcInRange(head, moovH[0], moovH[1]);
 
-    // Check end (non-faststart — moov at EOF).
-    // The moov box of a typical mobile video is 300–600 KB.
-    // hvc1 lives near the BEGINNING of moov (stsd box), which can be
-    // 300–500 KB before EOF. Reading 1 MB ensures we always capture it.
-    const tailSize = Math.min(1_048_576, file.size); // last 1 MB
+    // Phase 2: non-faststart — moov is at EOF (some older Android recordings).
+    // Read last 1.2 MB. Because the buffer starts mid-mdat we cannot walk from
+    // offset 0 — use a search-and-validate approach instead.
+    const tailSize = Math.min(1_258_291, file.size);
     const tail = new Uint8Array(await file.slice(file.size - tailSize).arrayBuffer());
-    return scan(tail);
+    const moovT = findMoovSearch(tail);
+    if (moovT) return hasHevcInRange(tail, moovT[0], moovT[1]);
+
+    return false; // moov not found in either probe — assume H.264
   } catch {
     return false;
   }
@@ -57,15 +100,29 @@ let _ffmpeg: unknown = null;
 async function getFFmpeg(): Promise<any> {
   if (_ffmpeg) return _ffmpeg;
 
-  const { FFmpeg }              = await import('@ffmpeg/ffmpeg');
-  const { toBlobURL }           = await import('@ffmpeg/util');
-  const ff                      = new FFmpeg();
-  const base = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+  const { FFmpeg }    = await import('@ffmpeg/ffmpeg');
+  const { toBlobURL } = await import('@ffmpeg/util');
+  const ff            = new FFmpeg();
 
-  await ff.load({
-    coreURL: await toBlobURL(`${base}/ffmpeg-core.js`,   'text/javascript'),
-    wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
-  });
+  // Use multi-threaded build when SharedArrayBuffer is available (requires COOP+COEP headers).
+  // MT build uses all CPU cores via pthreads — typically 2-4× faster on mobile.
+  // Falls back to single-threaded UMD build when SAB is not available.
+  const hasSAB = typeof SharedArrayBuffer !== 'undefined';
+
+  if (hasSAB) {
+    const base = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.6/dist/esm';
+    await ff.load({
+      coreURL:   await toBlobURL(`${base}/ffmpeg-core.js`,        'text/javascript'),
+      wasmURL:   await toBlobURL(`${base}/ffmpeg-core.wasm`,      'application/wasm'),
+      workerURL: await toBlobURL(`${base}/ffmpeg-core.worker.js`, 'text/javascript'),
+    });
+  } else {
+    const base = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+    await ff.load({
+      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`,   'text/javascript'),
+      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+    });
+  }
 
   _ffmpeg = ff;
   return ff;
@@ -78,6 +135,7 @@ async function getFFmpeg(): Promise<any> {
 export async function transcodeHevcToH264(
   file:       File,
   onProgress: (percent: number, status: string) => void,
+  options?:   { maxHeight?: number },
 ): Promise<File> {
   const { fetchFile } = await import('@ffmpeg/util');
 
@@ -95,9 +153,13 @@ export async function transcodeHevcToH264(
     onProgress(10, 'Reading video…');
     await ff.writeFile('input.mp4', await fetchFile(file));
 
-    onProgress(12, 'Converting H.265 → H.264…');
-    const exitCode = await ff.exec([
+    const scaleFilter = options?.maxHeight ? `scale=-2:${options.maxHeight}` : null;
+    const label = scaleFilter ? `Converting H.265 → H.264 (1080p)…` : 'Converting H.265 → H.264…';
+    onProgress(12, label);
+
+    const ffArgs = [
       '-i',        'input.mp4',
+      ...(scaleFilter ? ['-vf', scaleFilter] : []),
       '-c:v',      'libx264',
       '-preset',   'ultrafast',
       '-crf',      '26',
@@ -106,7 +168,8 @@ export async function transcodeHevcToH264(
       '-movflags', '+faststart',
       '-map_metadata', '0',
       'output.mp4',
-    ]);
+    ];
+    const exitCode = await ff.exec(ffArgs);
 
     if (exitCode !== 0) throw new Error(`Transcoding failed (exit code ${exitCode})`);
 

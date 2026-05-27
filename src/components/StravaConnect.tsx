@@ -15,7 +15,7 @@ interface StravaActivity {
   has_heartrate: boolean;
 }
 
-type State = "idle" | "loading_activities" | "picker" | "loading_gpx" | "error";
+type State = "idle" | "connected" | "loading_activities" | "picker" | "loading_gpx" | "error";
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -87,11 +87,11 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
     }
 
     // No OAuth callback — check if there is already a valid session cookie.
-    // If the user connected previously (within the session or via refresh token),
-    // skip the OAuth flow entirely and show activities directly.
+    // If connected, show the "connected" button so the user can open the list on demand.
+    // Never auto-open the list on page load — only on explicit click.
     fetch("/api/strava/status")
       .then(r => r.json())
-      .then(d => { if (d.connected) fetchActivities(); })
+      .then(d => { if (d.connected) setState("connected"); })
       .catch(() => { /* network error — stay on idle */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -162,35 +162,56 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
   };
 
   const reset = () => {
-    setState("idle");
+    setState("connected");
     setActivities([]);
     setError(null);
   };
 
-  // ── Render: idle — show "Import from Strava" button ──────────────────────
+  // ── Render: idle — not authenticated ────────────────────────────────────
   if (state === "idle") {
     return (
       <div className="space-y-3">
-        <div className="flex items-center gap-3">
-          <div className="flex-1 border-t border-zinc-800/60" />
-          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600 shrink-0">or</span>
-          <div className="flex-1 border-t border-zinc-800/60" />
-        </div>
+        <Divider />
         <button
           onClick={connect}
-          className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-zinc-800 bg-zinc-900/40 hover:border-[#FC4C02]/60 hover:bg-[#FC4C02]/5 transition-all group"
+          className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-zinc-800 bg-zinc-900/40 hover:border-[#FC4C02]/40 hover:bg-[#FC4C02]/5 transition-all group"
         >
-          {/* Strava logo */}
+          <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center shrink-0 group-hover:bg-[#FC4C02]/20 transition-colors">
+            <svg viewBox="0 0 24 24" className="w-6 h-6 fill-zinc-500 group-hover:fill-[#FC4C02] transition-colors">
+              <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
+            </svg>
+          </div>
+          <div className="flex-1 text-left">
+            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-600 mb-0.5">Strava</p>
+            <p className="text-sm font-black uppercase text-zinc-400 group-hover:text-white leading-none transition-colors">Connect to Strava</p>
+          </div>
+          <svg viewBox="0 0 24 24" className="w-4 h-4 text-zinc-700 group-hover:text-[#FC4C02] transition-colors shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
+
+  // ── Render: connected — authenticated, list not open yet ─────────────────
+  if (state === "connected") {
+    return (
+      <div className="space-y-3">
+        <Divider />
+        <button
+          onClick={fetchActivities}
+          className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-[#FC4C02]/40 bg-[#FC4C02]/5 hover:border-[#FC4C02]/70 hover:bg-[#FC4C02]/10 transition-all group"
+        >
           <div className="w-10 h-10 rounded-xl bg-[#FC4C02] flex items-center justify-center shrink-0 shadow-lg group-hover:scale-105 transition-transform">
             <svg viewBox="0 0 24 24" className="w-6 h-6 fill-white">
               <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
             </svg>
           </div>
           <div className="flex-1 text-left">
-            <p className="text-[10px] font-black uppercase tracking-widest text-[#FC4C02]/70 mb-0.5">Strava</p>
-            <p className="text-sm font-black uppercase text-white leading-none">Import from Strava</p>
+            <p className="text-[10px] font-black uppercase tracking-widest text-[#FC4C02]/80 mb-0.5">Strava · Connected</p>
+            <p className="text-sm font-black uppercase text-white leading-none">Open My Activities</p>
           </div>
-          <svg viewBox="0 0 24 24" className="w-4 h-4 text-zinc-600 group-hover:text-[#FC4C02] transition-colors shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg viewBox="0 0 24 24" className="w-4 h-4 text-[#FC4C02]/50 group-hover:text-[#FC4C02] transition-colors shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>
@@ -311,7 +332,7 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
               onClick={reset}
               className="text-[11px] font-black uppercase tracking-wider text-zinc-500 hover:text-zinc-300 transition-colors"
             >
-              ← Use file upload instead
+              ← Close
             </button>
           </div>
         </div>

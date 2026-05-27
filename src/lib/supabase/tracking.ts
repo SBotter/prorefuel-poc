@@ -1,4 +1,5 @@
-import type { ErrorCode, ErrorEventInsert, GpxSessionInsert, ProcessingSessionInsert, VideoExportInsert, VideoUploadInsert } from "./types";
+import type { ErrorCode, ErrorContext, ErrorEventInsert, GpxSessionInsert, ProcessingSessionInsert, VideoExportInsert, VideoUploadInsert } from "./types";
+export type { ErrorContext };
 
 const APP_VERSION = "1.0.31";
 
@@ -253,29 +254,100 @@ export async function trackVideoExport(
 }
 
 /**
+ * Captures browser and hardware context for error tracking.
+ * Call once at the start of an upload handler and reuse the result.
+ * Works in any browser — unknown fields are null rather than throwing.
+ */
+export function buildBrowserCtx(caps: {
+  isIOS: boolean;
+  isAndroid: boolean;
+  isChrome: boolean;
+  iosVersion: number | null;
+  androidVersion: number | null;
+}): Pick<ErrorContext,
+  | "browser_os" | "browser_os_version"
+  | "browser_name" | "browser_version"
+  | "device_memory_gb" | "cpu_cores"
+> {
+  if (typeof navigator === "undefined") return {};
+
+  const ua          = navigator.userAgent;
+  const edgeMatch   = ua.match(/Edg\/(\d+)/i);
+  const chromeMatch = ua.match(/Chrome\/(\d+)/i);
+  const safariMatch = ua.match(/Version\/(\d+(?:\.\d+)?)/i);
+  const ffMatch     = ua.match(/Firefox\/(\d+)/i);
+
+  const browserName = edgeMatch       ? "Edge"
+    : caps.isChrome                   ? "Chrome"
+    : caps.isIOS && !caps.isChrome    ? "Safari"
+    : ffMatch                         ? "Firefox"
+    : "Unknown";
+
+  const browserVersion = edgeMatch?.[1]
+    ?? (caps.isChrome ? chromeMatch?.[1] : null)
+    ?? safariMatch?.[1]
+    ?? ffMatch?.[1]
+    ?? null;
+
+  return {
+    browser_os:         caps.isIOS ? "iOS" : caps.isAndroid ? "Android" : null,
+    browser_os_version: caps.isIOS
+      ? (caps.iosVersion?.toString() ?? null)
+      : caps.isAndroid
+        ? (caps.androidVersion?.toString() ?? null)
+        : null,
+    browser_name:    browserName,
+    browser_version: browserVersion ?? null,
+    device_memory_gb: (navigator as any).deviceMemory != null
+      ? (navigator as any).deviceMemory
+      : null,
+    cpu_cores: navigator.hardwareConcurrency > 0
+      ? navigator.hardwareConcurrency
+      : null,
+  };
+}
+
+/**
  * Logs a user-facing error event to Supabase via /api/track-error.
  * Fire-and-forget — never throws. Call right before setXxxError / throw.
+ *
+ * Pass an ErrorContext built with buildBrowserCtx() + camera detection
+ * for structured diagnostics. All fields are optional.
  */
 export async function trackError(
   code: ErrorCode,
   message: string,
   source: "gpx_upload" | "video_upload" | "render" | "worker" | "unknown" = "unknown",
-  deviceCtx?: {
-    device_type?: string | null;
-    device_make?: string | null;
-    device_model?: string | null;
-    file_extension?: string | null;
-  }
+  ctx?: ErrorContext,
 ): Promise<void> {
   try {
     const payload: Omit<ErrorEventInsert, "app_version" | "user_agent"> = {
-      error_code: code,
+      error_code:    code,
       error_message: message,
-      error_source: source,
-      device_type: (deviceCtx?.device_type as ErrorEventInsert["device_type"]) ?? null,
-      device_make: deviceCtx?.device_make ?? null,
-      device_model: deviceCtx?.device_model ?? null,
-      file_extension: deviceCtx?.file_extension ?? null,
+      error_source:  source,
+      device_type:   (ctx?.device_type as ErrorEventInsert["device_type"]) ?? null,
+      device_make:   ctx?.device_make   ?? null,
+      device_model:  ctx?.device_model  ?? null,
+      file_extension:  ctx?.file_extension  ?? null,
+      file_size_bytes: ctx?.file_size_bytes ?? null,
+      file_mime_type:  ctx?.file_mime_type  ?? null,
+      video_codec:         ctx?.video_codec         ?? null,
+      video_width:         ctx?.video_width         ?? null,
+      video_height:        ctx?.video_height        ?? null,
+      video_fps:           ctx?.video_fps           ?? null,
+      video_has_gps:       ctx?.video_has_gps       ?? null,
+      video_recorded_at:   ctx?.video_recorded_at   ?? null,
+      gpx_start_at:        ctx?.gpx_start_at        ?? null,
+      gpx_end_at:          ctx?.gpx_end_at          ?? null,
+      gpx_point_count:     ctx?.gpx_point_count     ?? null,
+      browser_os:          ctx?.browser_os          ?? null,
+      browser_os_version:  ctx?.browser_os_version  ?? null,
+      browser_name:        ctx?.browser_name         ?? null,
+      browser_version:     ctx?.browser_version      ?? null,
+      device_memory_gb:  ctx?.device_memory_gb  ?? null,
+      cpu_cores:         ctx?.cpu_cores         ?? null,
+      gpx_creator:       ctx?.gpx_creator       ?? null,
+      hevc_transcode_ms: ctx?.hevc_transcode_ms ?? null,
     };
     await fetch("/api/track-error", {
       method: "POST",
@@ -285,6 +357,30 @@ export async function trackError(
   } catch {
     // Silently ignore — tracking must never break the user flow
   }
+}
+
+/**
+ * Logs a successful HEVC→H.264 transcode as a performance event.
+ * Uses error_events with code HEVC_TRANSCODE_OK — not an error, but reuses the same
+ * table / route so we don't need a separate endpoint or table.
+ * Fire-and-forget — never throws.
+ */
+export async function trackHevcTranscode(
+  transcodeMs: number,
+  ctx: Pick<ErrorContext,
+    | "device_type" | "device_make" | "device_model"
+    | "file_size_bytes" | "file_extension"
+    | "video_codec" | "video_width" | "video_height" | "video_fps"
+    | "browser_os" | "browser_os_version" | "browser_name" | "browser_version"
+    | "device_memory_gb" | "cpu_cores"
+  >,
+): Promise<void> {
+  await trackError(
+    "HEVC_TRANSCODE_OK",
+    `HEVC transcode completed in ${(transcodeMs / 1000).toFixed(1)}s`,
+    "video_upload",
+    { ...ctx, video_codec: "hevc", hevc_transcode_ms: transcodeMs },
+  );
 }
 
 /**

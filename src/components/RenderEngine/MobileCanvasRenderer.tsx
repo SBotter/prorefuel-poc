@@ -107,6 +107,9 @@ export function MobileCanvasRenderer({
   const [progress, setProgress] = useState(0);
   // After encoding: hold the blob so user can save via a fresh gesture
   const [readyBlob, setReadyBlob] = useState<{ blob: Blob; filename: string } | null>(null);
+  // Total render duration (recording start → blob ready) stored via ref so it
+  // is accessible both inside the useEffect closure and in the Save/Share handlers.
+  const renderDurationMsRef = useRef(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1141,10 +1144,14 @@ export function MobileCanvasRenderer({
           isStopped = true;
           mlog("STOP", `encEst=${((recorder?.estimatedEncodedBytes ?? 0) / 1_048_576).toFixed(1)}MB — flushing`);
           setStatus("Encoding…");
-          const renderStart = Date.now();
+          const flushStart = Date.now();
+          // Total duration = recording loop + flush (recStartMs is performance.now())
+          const totalStartMs = recStartMs;
           recorder!.stop()
             .then((blob) => {
-              mlog("STOP", `done ${Date.now()-renderStart}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
+              const totalMs = Math.round(performance.now() - totalStartMs);
+              renderDurationMsRef.current = totalMs;
+              mlog("STOP", `done flush=${Date.now()-flushStart}ms total=${totalMs}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
               setProgress(100); setStatus("Video ready!");
               // Store blob — show "Video Ready!" screen. onRenderComplete is called
               // only when the user taps "Done", not here, so the screen stays visible.
@@ -1240,7 +1247,7 @@ export function MobileCanvasRenderer({
       if (typeof navigator.share === "function" && navigator.canShare?.({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: "LENS Video" });
-          onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
+          onRenderComplete({ durationMs: renderDurationMsRef.current, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
           return;
         } catch (e: any) {
           if (e?.name === "AbortError") return; // user dismissed — stay on screen
@@ -1256,7 +1263,7 @@ export function MobileCanvasRenderer({
       const a = document.createElement("a"); a.href = url; a.download = filename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-      onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
+      onRenderComplete({ durationMs: renderDurationMsRef.current, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "save" });
     };
 
     return (
@@ -1306,7 +1313,7 @@ export function MobileCanvasRenderer({
                   try {
                     await navigator.share({ files: [file], title: "LENS Video" });
                     // Track share action — triggers state reset same as save
-                    onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "share" });
+                    onRenderComplete({ durationMs: renderDurationMsRef.current, outputFormat: "mp4", outputSizeBytes: blob.size, status: "success", downloadAction: "share" });
                   } catch (e: any) {
                     if (e?.name !== "AbortError") console.warn("Share failed:", e);
                   }

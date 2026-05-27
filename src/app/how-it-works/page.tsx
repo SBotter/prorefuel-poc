@@ -356,8 +356,17 @@ export default function HowItWorksPage() {
             <strong className="text-zinc-300">Compatible models:</strong> Hero 5 Black, Hero 7–13, Hero 12 Black, GoPro Max. Enable GPS in <strong className="text-white">Settings → Preferences → GPS → On</strong> and wait for the solid satellite icon before recording.
           </p>
           <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
-            <strong className="text-zinc-300">Important:</strong> Your GoPro clip must be at least 60 seconds long to allow GPS lock. A 14-second clip will have no valid GPS data and cannot be synced.
+            <strong className="text-zinc-300">Important:</strong> Your GoPro clip must be at least 60 seconds long to allow GPS lock. A short clip may have no valid GPS data.
           </p>
+          <div className="mt-3 p-3 rounded-xl bg-red-500/8 border border-red-500/20">
+            <p className="text-red-400 text-[11px] font-black uppercase tracking-widest mb-1">Do not re-encode or edit before importing</p>
+            <p className="text-zinc-400 text-[11px] leading-relaxed">
+              GoPro GPS data lives in a proprietary metadata track (GPMF) inside the original .mp4.
+              Any re-encoding — exporting from <strong className="text-white">CapCut, iMovie, the GoPro Quik app, or any video editor</strong> — permanently destroys this track.
+              The resulting file looks like a normal video but contains zero GPS data.
+              Always import the original file directly from the SD card or camera roll.
+            </p>
+          </div>
         </DeviceCard>
 
         <DeviceCard logo="/devices/logos/iphone_logo.svg" lw={72} name="iPhone" badge="Timestamp sync" badgeColor="blue">
@@ -508,8 +517,12 @@ export default function HowItWorksPage() {
         {/* ── COMMON ISSUES ─────────────────────────────────────────────────── */}
         <SectionTitle>Common issues</SectionTitle>
         <div className="space-y-4 mb-14">
-          <ProblemCard problem="No GPS in this video">
-            GoPro only: GPS was not enabled or never acquired a lock. Enable GPS, power on outdoors, wait for the solid icon, and record for at least 60 seconds.
+          <ProblemCard problem="No GPS in this GoPro video">
+            GPS was not enabled, never acquired a lock, or the video was re-encoded before importing.
+            Always use the original, unedited .mp4 directly from the GoPro SD card —
+            exporting through CapCut, iMovie, or the GoPro Quik app permanently erases GPS metadata.
+            Enable GPS in <strong className="text-white">Settings → Preferences → GPS → On</strong>,
+            power on outdoors, wait for the solid satellite icon, then record for at least 60 seconds.
           </ProblemCard>
           <ProblemCard problem="Video and GPX don't match">
             The video and GPX are from different days or sessions. Use the GPX from the same activity during which you recorded the video. Also check that your device clock is set to automatic time.
@@ -533,8 +546,20 @@ export default function HowItWorksPage() {
             <HelpItem error="Unsupported format. Use GoPro .mp4, iPhone .mov, or Android .mp4." title="Wrong video format">
               LENS accepts <code className="text-amber-400">.mp4</code> from GoPro and Android, and <code className="text-amber-400">.mov</code> from iPhone. Do not re-encode — telemetry data is lost in conversion.
             </HelpItem>
-            <HelpItem error="No GPS data found in this video." title="No GPS in GoPro video">
-              GPS was not enabled or recording started before lock. Enable GPS, power on outdoors, wait for the solid icon, then record for at least 60 seconds.
+            <HelpItem error="No GPS data found in this GoPro file." title="No GPS in GoPro video">
+              <p className="mb-3">There are two causes for this error:</p>
+              <p className="font-black text-zinc-300 mb-1">1 — Video was re-encoded or edited (most common)</p>
+              <p className="mb-3">
+                Exporting through <strong className="text-white">CapCut, iMovie, the GoPro Quik app, Adobe Premiere, or any video editor</strong> permanently
+                destroys the GPMF metadata track that carries GPS. The file looks like a normal video but contains zero GPS data.
+                Always import the <strong className="text-white">original, unedited .mp4 directly from the SD card or camera roll</strong>.
+              </p>
+              <p className="font-black text-zinc-300 mb-1">2 — GPS was off or never locked</p>
+              <p>
+                Enable GPS: <strong className="text-white">Settings → Preferences → GPS → On</strong>.
+                Power on outdoors with clear sky, wait until the GPS icon is <strong className="text-white">solid (not blinking)</strong> — 10–30 seconds.
+                Record for at least 60 seconds to accumulate valid GPS samples.
+              </p>
             </HelpItem>
             <HelpItem error="GPS signal too weak — no valid fix was recorded." title="GPS signal too weak (GoPro)">
               Recording started before GPS lock. Wait until the GPS icon is <strong className="text-white">solid (not blinking)</strong> — 10–30 seconds outdoors.

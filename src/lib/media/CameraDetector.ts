@@ -80,6 +80,10 @@ export class CameraDetector {
     // ── Layer 2: EXIF Make/Model (reads file content) ─────────────────────────
     // Standard EXIF data — readable by exifr for GoPro, some iPhones, some Android.
     // Android phones often skip EXIF entirely → Layer 3 handles those.
+    // rawExifMake/rawExifModel are preserved even when brand is not in our map
+    // so the caller can log them as demand signals for unsupported cameras.
+    let rawExifMake  = '';
+    let rawExifModel = '';
     try {
       const exifr = await import('exifr');
       const opts: Record<string, any> = {
@@ -95,15 +99,16 @@ export class CameraDetector {
       const tags = await exifr.parse(file, opts) as Record<string, any> | undefined;
 
       if (tags) {
-        const make   = String(tags.Make  || tags.make  || '').trim();
-        const model  = String(tags.Model || tags.model || '').trim();
-        const makeLc = make.toLowerCase();
+        rawExifMake  = String(tags.Make  || tags.make  || '').trim();
+        rawExifModel = String(tags.Model || tags.model || '').trim();
+        const makeLc = rawExifMake.toLowerCase();
 
         for (const [substr, type, normalizedMake] of EXIF_MAKE_MAP) {
           if (makeLc.includes(substr)) {
-            return { type, make: make || normalizedMake, model };
+            return { type, make: rawExifMake || normalizedMake, model: rawExifModel };
           }
         }
+        // Brand not in map — rawExifMake/rawExifModel preserved for fallback return
       }
     } catch { /* exifr failed — continue to next layer */ }
 
@@ -124,7 +129,9 @@ export class CameraDetector {
       return { type: 'gopro', make: 'GoPro', model: '' };
     }
 
-    return { type: 'unknown', make: '', model: '' };
+    // Return whatever EXIF told us even if the camera is unsupported.
+    // This lets callers log the raw make/model as a demand signal.
+    return { type: 'unknown', make: rawExifMake, model: rawExifModel };
   }
 
   // ── Android container scan ───────────────────────────────────────────────────
