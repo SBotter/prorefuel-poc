@@ -23,6 +23,12 @@ interface StravaConnectProps {
   onGpxLoaded: (gpxText: string) => Promise<void>;
   /** "desktop" or "mobile" — determines where to redirect back after OAuth */
   origin?: "desktop" | "mobile";
+  /**
+   * When true, renders as flat rows without outer borders — designed to sit
+   * inside a parent card that already provides the container and border.
+   * The standalone (default) mode wraps itself in its own bordered card.
+   */
+  embedded?: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -54,9 +60,16 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+const StravaLogo = ({ className }: { className: string }) => (
+  <svg viewBox="0 0 24 24" className={className}>
+    <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
+  </svg>
+);
+
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnectProps) {
+export function StravaConnect({ onGpxLoaded, origin = "desktop", embedded = false }: StravaConnectProps) {
   const [state,        setState]        = useState<State>("idle");
   const [activities,   setActivities]   = useState<StravaActivity[]>([]);
   const [error,        setError]        = useState<string | null>(null);
@@ -167,7 +180,186 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
     setError(null);
   };
 
-  // ── Render: idle — not authenticated ────────────────────────────────────
+  // ── Embedded mode — flat rows inside a parent card ────────────────────────
+  // Each state renders without outer borders/containers; the parent card provides those.
+  // Sizing adapts to origin: desktop uses larger padding/icons, mobile uses compact sizes.
+
+  if (embedded) {
+    const lg   = origin === "desktop";
+    const ePx  = lg ? "px-6" : "px-4";
+    const ePy  = lg ? "py-4" : "py-3.5";
+    const icon = lg ? "w-12 h-12" : "w-9 h-9";
+    const logo = lg ? "w-6 h-6" : "w-5 h-5";
+    const gap  = lg ? "gap-5" : "gap-4";
+
+    if (state === "idle") {
+      return (
+        <button
+          onClick={connect}
+          className={`w-full flex items-center ${gap} ${ePx} ${ePy} hover:bg-white/4 active:bg-white/6 transition-colors text-left group`}
+        >
+          <div className={`${icon} rounded-xl bg-zinc-800 flex items-center justify-center shrink-0 group-hover:bg-[#FC4C02]/15 transition-colors`}>
+            <StravaLogo className={`${logo} fill-zinc-500 group-hover:fill-[#FC4C02] transition-colors`} />
+          </div>
+          <div className="flex-1 text-left">
+            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-600 mb-0.5">Strava</p>
+            <p className="text-sm font-black text-zinc-400 group-hover:text-white transition-colors leading-none">Connect with Strava</p>
+          </div>
+          <svg viewBox="0 0 24 24" className="w-4 h-4 text-zinc-700 group-hover:text-zinc-500 transition-colors shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
+      );
+    }
+
+    if (state === "connected") {
+      return (
+        <button
+          onClick={fetchActivities}
+          className={`w-full flex items-center ${gap} ${ePx} ${ePy} hover:bg-[#FC4C02]/6 active:bg-[#FC4C02]/10 transition-colors text-left group`}
+        >
+          <div className="relative shrink-0">
+            <div className={`${icon} rounded-xl bg-[#FC4C02] flex items-center justify-center shadow-[0_2px_12px_rgba(252,76,2,0.3)] group-hover:shadow-[0_2px_18px_rgba(252,76,2,0.45)] transition-all`}>
+              <StravaLogo className={`${logo} fill-white`} />
+            </div>
+            <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-green-400 border-2 border-[#0f0f0f]" />
+          </div>
+          <div className="flex-1 text-left">
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <p className="text-[10px] font-black uppercase tracking-widest text-[#FC4C02]">Strava</p>
+              <span className="px-1.5 py-0.5 rounded-full bg-green-500/15 border border-green-500/30 text-[8px] font-black uppercase tracking-wider text-green-400">Connected</span>
+            </div>
+            <p className="text-sm font-black text-white leading-none">Open My Activities</p>
+          </div>
+          <svg viewBox="0 0 24 24" className="w-4 h-4 text-[#FC4C02]/50 group-hover:text-[#FC4C02] transition-colors shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
+      );
+    }
+
+    if (state === "loading_activities") {
+      return (
+        <div className={`flex items-center ${gap} ${ePx} ${ePy}`}>
+          <div className={`${icon} rounded-xl bg-[#FC4C02]/20 flex items-center justify-center shrink-0`}>
+            <StravaLogo className={`${logo} fill-[#FC4C02] animate-pulse`} />
+          </div>
+          <p className="text-sm font-black text-[#FC4C02] animate-pulse">Connecting to Strava…</p>
+        </div>
+      );
+    }
+
+    if (state === "loading_gpx") {
+      return (
+        <div className={`flex items-center ${gap} ${ePx} ${ePy}`}>
+          <div className={`${icon} rounded-xl bg-[#FC4C02] flex items-center justify-center shrink-0 animate-spin`}>
+            <StravaLogo className={`${logo} fill-white`} />
+          </div>
+          <p className="text-sm font-black text-[#FC4C02]">Loading GPS data…</p>
+        </div>
+      );
+    }
+
+    if (state === "picker") {
+      const listMax = lg ? "max-h-[260px]" : "max-h-[220px]";
+      return (
+        <div>
+          {/* Compact header */}
+          <div className={`flex items-center justify-between ${ePx} py-2.5 border-t border-zinc-800/60 bg-zinc-900/40`}>
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded-md bg-[#FC4C02] flex items-center justify-center shrink-0">
+                <StravaLogo className="w-3 h-3 fill-white" />
+              </div>
+              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Your activities</span>
+            </div>
+            <button
+              onClick={reset}
+              className="text-[10px] font-black uppercase tracking-wider text-zinc-600 hover:text-zinc-300 transition-colors"
+            >
+              ✕ Close
+            </button>
+          </div>
+
+          {/* Error banner */}
+          {error && (
+            <div className={`${ePx} py-2 bg-red-500/10 border-b border-red-500/20`}>
+              <p className="text-[11px] text-red-400">{error}</p>
+            </div>
+          )}
+
+          {/* Activity list */}
+          <div className={`divide-y divide-zinc-800/40 ${listMax} overflow-y-auto`}>
+            {activities.length === 0 ? (
+              <p className={`${ePx} py-5 text-zinc-500 text-sm text-center`}>No recent activities found.</p>
+            ) : (
+              activities.map(a => {
+                const isLoading = loadingId === a.id;
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => selectActivity(a)}
+                    disabled={loadingId !== null}
+                    className={`w-full flex items-center gap-3 ${ePx} py-2.5 hover:bg-white/4 active:bg-white/8 transition-colors text-left disabled:opacity-60`}
+                  >
+                    <span className="text-lg shrink-0">{sportIcon(a.sport_type || a.type)}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[12px] font-black text-white truncate leading-tight">{a.name}</p>
+                      <p className="text-[10px] text-zinc-500 mt-0.5">
+                        {formatDate(a.start_date)} · {formatDist(a.distance)} · {formatTime(a.moving_time)}
+                        {a.has_heartrate && " · ♥"}
+                      </p>
+                    </div>
+                    {isLoading
+                      ? <div className="w-3.5 h-3.5 border-2 border-[#FC4C02] border-t-transparent rounded-full animate-spin shrink-0" />
+                      : <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 text-zinc-600 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+                    }
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          {/* Load more */}
+          {hasMore && (
+            <div className={`${ePx} py-2 border-t border-zinc-800/60`}>
+              <button
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="w-full text-[10px] font-black uppercase tracking-wider text-zinc-500 hover:text-white transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {loadingMore
+                  ? <><div className="w-3 h-3 border-2 border-zinc-500 border-t-transparent rounded-full animate-spin" /> Loading…</>
+                  : "Load 10 more ↓"
+                }
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (state === "error") {
+      return (
+        <div className={`${ePx} py-3`}>
+          <p className="text-[11px] text-red-400 mb-2">{error}</p>
+          <div className="flex gap-3">
+            <button onClick={fetchActivities} className="text-[10px] font-black uppercase tracking-wider text-[#FC4C02] hover:text-white transition-colors">
+              Try again
+            </button>
+            <span className="text-zinc-700">·</span>
+            <button onClick={reset} className="text-[10px] font-black uppercase tracking-wider text-zinc-500 hover:text-zinc-300 transition-colors">
+              Use file upload
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return null;
+  }
+
+  // ── Standalone mode — self-contained with own borders/card ────────────────
+
   if (state === "idle") {
     return (
       <div className="space-y-3">
@@ -177,9 +369,7 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
           className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-zinc-800 bg-zinc-900/40 hover:border-[#FC4C02]/40 hover:bg-[#FC4C02]/5 transition-all group"
         >
           <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center shrink-0 group-hover:bg-[#FC4C02]/20 transition-colors">
-            <svg viewBox="0 0 24 24" className="w-6 h-6 fill-zinc-500 group-hover:fill-[#FC4C02] transition-colors">
-              <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
-            </svg>
+            <StravaLogo className="w-6 h-6 fill-zinc-500 group-hover:fill-[#FC4C02] transition-colors" />
           </div>
           <div className="flex-1 text-left">
             <p className="text-[10px] font-black uppercase tracking-widest text-zinc-600 mb-0.5">Strava</p>
@@ -193,7 +383,6 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
     );
   }
 
-  // ── Render: connected — authenticated, list not open yet ─────────────────
   if (state === "connected") {
     return (
       <div className="space-y-3">
@@ -204,9 +393,7 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
         >
           <div className="relative shrink-0">
             <div className="w-10 h-10 rounded-xl bg-[#FC4C02] flex items-center justify-center shadow-[0_4px_16px_rgba(252,76,2,0.35)] group-hover:shadow-[0_4px_20px_rgba(252,76,2,0.5)] group-hover:scale-105 transition-all">
-              <svg viewBox="0 0 24 24" className="w-6 h-6 fill-white">
-                <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
-              </svg>
+              <StravaLogo className="w-6 h-6 fill-white" />
             </div>
             <div className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-green-400 border-[2.5px] border-[#0f0f0f] shadow-sm" />
           </div>
@@ -225,16 +412,13 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
     );
   }
 
-  // ── Render: loading activities ────────────────────────────────────────────
   if (state === "loading_activities") {
     return (
       <div className="space-y-3">
         <Divider />
         <div className="flex items-center gap-3 p-4 rounded-2xl border-2 border-[#FC4C02]/30 bg-[#FC4C02]/5">
           <div className="w-10 h-10 rounded-xl bg-[#FC4C02] flex items-center justify-center shrink-0">
-            <svg viewBox="0 0 24 24" className="w-6 h-6 fill-white animate-pulse">
-              <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
-            </svg>
+            <StravaLogo className="w-6 h-6 fill-white animate-pulse" />
           </div>
           <p className="text-sm font-black uppercase text-[#FC4C02] animate-pulse">Connecting to Strava…</p>
         </div>
@@ -242,16 +426,13 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
     );
   }
 
-  // ── Render: loading GPX for a specific activity ───────────────────────────
   if (state === "loading_gpx") {
     return (
       <div className="space-y-3">
         <Divider />
         <div className="flex items-center gap-3 p-4 rounded-2xl border-2 border-[#FC4C02]/30 bg-[#FC4C02]/5">
           <div className="w-10 h-10 rounded-xl bg-[#FC4C02] flex items-center justify-center shrink-0 animate-spin">
-            <svg viewBox="0 0 24 24" className="w-6 h-6 fill-white">
-              <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
-            </svg>
+            <StravaLogo className="w-6 h-6 fill-white" />
           </div>
           <p className="text-sm font-black uppercase text-[#FC4C02]">Loading GPS data…</p>
         </div>
@@ -259,7 +440,6 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
     );
   }
 
-  // ── Render: activity picker ───────────────────────────────────────────────
   if (state === "picker") {
     return (
       <div className="space-y-3">
@@ -269,9 +449,7 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
           <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800/60">
             <div className="flex items-center gap-2">
               <div className="w-6 h-6 rounded-md bg-[#FC4C02] flex items-center justify-center">
-                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-white">
-                  <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
-                </svg>
+                <StravaLogo className="w-3.5 h-3.5 fill-white" />
               </div>
               <span className="text-[11px] font-black uppercase tracking-widest text-zinc-300">Your recent activities</span>
             </div>
@@ -346,7 +524,6 @@ export function StravaConnect({ onGpxLoaded, origin = "desktop" }: StravaConnect
     );
   }
 
-  // ── Render: error (not inside picker) ────────────────────────────────────
   if (state === "error") {
     return (
       <div className="space-y-3">

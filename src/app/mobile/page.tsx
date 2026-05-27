@@ -908,52 +908,68 @@ export default function MobilePage() {
         <div className="bg-[#0f0f0f] rounded-3xl border border-zinc-800/80 p-5 shadow-2xl ring-1 ring-white/4 space-y-5">
 
           {/* ── Step 1: GPS Track (GPX file or Strava) ──────────── */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
+          <div>
+            {/* Section header */}
+            <div className="flex items-center gap-2 mb-2.5">
               <div className={`w-5 h-5 rounded-md flex items-center justify-center font-black text-[10px] shrink-0 transition-colors ${
                 gpxLoaded ? "bg-green-500 text-black" : "bg-amber-500 text-black"
               }`}>
                 {gpxLoaded ? "✓" : "1"}
               </div>
-              <p className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-500">GPS Track</p>
+              <p className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-500">Activity</p>
             </div>
 
-            <label className={`flex items-center gap-4 p-4 rounded-2xl border-2 transition-all cursor-pointer active:scale-[0.98] ${
-              gpxError  ? "border-red-500 bg-red-500/8" :
-              gpxLoaded ? "border-green-500 bg-green-500/8" :
-              "border-amber-500/50 bg-amber-500/5 hover:border-amber-500/80"
-            }`}>
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                gpxLoaded ? "bg-green-500 text-black" : "bg-zinc-800 text-zinc-400"
-              }`}>
-                {gpxLoaded ? (
-                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                ) : (
-                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                  </svg>
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-black text-white text-sm">Upload GPX File</p>
-                {gpxError ? (
-                  <p className="text-[11px] text-red-400 mt-0.5">{gpxError}</p>
-                ) : gpxLoaded ? (
-                  <p className="text-[11px] text-green-400 mt-0.5 truncate">{gpxNameRef.current}</p>
-                ) : (
-                  <p className="text-[11px] text-zinc-600 mt-0.5">Garmin · Wahoo · Suunto</p>
-                )}
-              </div>
-              <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
-            </label>
+            {/* GPS card — Strava (primary) and GPX file are two routes to the same goal */}
+            <div className="rounded-2xl border border-zinc-800/70 overflow-hidden">
 
-            <StravaConnect
-              onGpxLoaded={async (text) => { await processGpxText(text); }}
-              origin="mobile"
-            />
+              {/* Strava — first (more important / most used) */}
+              <StravaConnect
+                onGpxLoaded={async (text) => { await processGpxText(text); }}
+                origin="mobile"
+                embedded
+              />
+
+              {/* "or" divider */}
+              <div className="flex items-center gap-3 px-4 py-1.5 bg-zinc-900/40">
+                <div className="flex-1 h-px bg-zinc-800" />
+                <span className="text-[9px] font-black uppercase tracking-widest text-zinc-700 shrink-0">or</span>
+                <div className="flex-1 h-px bg-zinc-800" />
+              </div>
+
+              {/* GPX file upload */}
+              <label className={`flex items-center gap-4 px-4 py-3.5 w-full cursor-pointer transition-colors ${
+                gpxError  ? "bg-red-500/10 border-l-2 border-l-red-500" :
+                gpxLoaded ? "bg-green-500/8 border-l-2 border-l-green-500" :
+                "hover:bg-white/4 active:bg-white/6 border-l-2 border-l-transparent"
+              }`}>
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
+                  gpxLoaded ? "bg-green-500 text-black" : "bg-zinc-800 text-zinc-500"
+                }`}>
+                  {gpxLoaded ? (
+                    <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                    </svg>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-black text-white text-sm leading-none mb-0.5">Upload GPX File</p>
+                  {gpxError ? (
+                    <p className="text-[11px] text-red-400">{gpxError}</p>
+                  ) : gpxLoaded ? (
+                    <p className="text-[11px] text-green-400 truncate">{gpxNameRef.current}</p>
+                  ) : (
+                    <p className="text-[11px] text-zinc-600">Garmin · Wahoo · Suunto</p>
+                  )}
+                </div>
+                <input type="file" accept=".gpx" onChange={handleGPXUpload} className="hidden" />
+              </label>
+
+            </div>
           </div>
 
           {/* ── Separator ─────────────────────────────────────────── */}
