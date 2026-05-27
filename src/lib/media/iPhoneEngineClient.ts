@@ -40,7 +40,16 @@ export class iPhoneEngineClient {
         new URL('../workers/iphone.worker.ts', import.meta.url),
       );
 
+      const timeout = setTimeout(() => {
+        worker.terminate();
+        reject(Object.assign(
+          new Error("iPhone metadata extraction timed out. The file may be too large or corrupted."),
+          { code: 'IPHONE_READ_FAILED' },
+        ));
+      }, 90_000);
+
       worker.onmessage = (e) => {
+        clearTimeout(timeout);
         const data = e.data;
 
         if (data.success) {
@@ -83,6 +92,7 @@ export class iPhoneEngineClient {
       };
 
       worker.onerror = (e) => {
+        clearTimeout(timeout);
         console.error('[iPhoneEngineClient] Worker crash:', e.message);
         reject(
           Object.assign(new Error('iPhone Worker crash: ' + e.message), {

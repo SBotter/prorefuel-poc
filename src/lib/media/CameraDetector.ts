@@ -112,7 +112,14 @@ export class CameraDetector {
       }
     } catch { /* exifr failed — continue to next layer */ }
 
-    // ── Layer 3: Android MP4 container byte scan (reads file content) ─────────
+    // ── Layer 3a: Apple iPhone MP4 container scan ────────────────────────────
+    // iPhones that record or export as .mp4 (not .mov) embed com.apple.quicktime.*
+    // metadata keys in the MP4 container — always present regardless of filename.
+    // This catches renamed files and iOS-exported MP4s where EXIF read failed.
+    const appleResult = await CameraDetector._scanAppleContainer(file);
+    if (appleResult) return appleResult;
+
+    // ── Layer 3b: Android MP4 container byte scan (reads file content) ────────
     // Android writes 'com.android.*' proprietary metadata into the MP4 container
     // regardless of filename. Works even for files renamed to anything.
     //
@@ -132,6 +139,30 @@ export class CameraDetector {
     // Return whatever EXIF told us even if the camera is unsupported.
     // This lets callers log the raw make/model as a demand signal.
     return { type: 'unknown', make: rawExifMake, model: rawExifModel };
+  }
+
+  // ── Apple iPhone container scan ──────────────────────────────────────────────
+  // iPhone MP4 files (exported from Photos, HEVC→H264 conversions, shared via
+  // AirDrop, or recorded in "Most Compatible" mode) always contain
+  // 'com.apple.quicktime' metadata keys in the moov box, regardless of filename.
+  private static async _scanAppleContainer(file: File): Promise<CameraDetection | null> {
+    const decode   = (b: ArrayBuffer) => new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(b));
+    const scanText = (text: string): CameraDetection | null => {
+      if (!text.includes('com.apple.quicktime')) return null;
+      // Extract model from com.apple.quicktime.model if present
+      const model = text.match(/com\.apple\.quicktime\.model\0{0,8}([A-Za-z0-9, ]{2,20})/)?.[1]?.trim() || '';
+      return { type: 'iphone', make: 'Apple', model };
+    };
+    try {
+      const head = await file.slice(0, 65_536).arrayBuffer();
+      const r1   = scanText(decode(head));
+      if (r1) return r1;
+      const tailSize = Math.min(262_144, file.size);
+      const tail     = await file.slice(file.size - tailSize).arrayBuffer();
+      return scanText(decode(tail));
+    } catch {
+      return null;
+    }
   }
 
   // ── Android container scan ───────────────────────────────────────────────────

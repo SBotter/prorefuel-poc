@@ -26,31 +26,20 @@ export class GoProEngineClient {
       // Instancia o Worker gerenciado pelo Next.js (Turbopack suporta via import.meta.url)
       const worker = new Worker(new URL('../workers/gopro.worker.ts', import.meta.url));
 
+      const timeout = setTimeout(() => {
+        worker.terminate();
+        reject(new Error("GoPro telemetry extraction timed out. The file may be too large or corrupted."));
+      }, 90_000);
+
       worker.onmessage = (e) => {
+        clearTimeout(timeout);
         if (e.data.success) {
           const downsampled       = e.data.points;
-          const syncPoints        = e.data.syncPoints ?? downsampled; // fallback: use 1Hz if worker didn't send 5Hz
+          const syncPoints        = e.data.syncPoints ?? downsampled;
           const cameraModel       = e.data.cameraModel || "";
           const gpsVideoOffsetMs  = typeof e.data.gpsVideoOffsetMs === 'number' ? e.data.gpsVideoOffsetMs : 0;
 
-          // --- DEBUGGING: Salvar secretamente na pasta temp_gpx do servidor de testes ---
-          try {
-            let gpxXml = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="ProRefuel Engine">\n  <trk>\n    <name>Video Telemetry Debug (GPXV)</name>\n    <trkseg>\n`;
-            for (const pt of downsampled) {
-                gpxXml += `      <trkpt lat="${pt.lat}" lon="${pt.lon}">\n`;
-                gpxXml += `        <ele>${pt.ele}</ele>\n`;
-                gpxXml += `        <time>${new Date(pt.time).toISOString()}</time>\n`;
-                gpxXml += `      </trkpt>\n`;
-            }
-            gpxXml += `    </trkseg>\n  </trk>\n</gpx>`;
-
-            fetch("/api/debug", { method: "POST", body: gpxXml }).catch(e => console.warn(e));
-          } catch (err) {
-            console.warn("Falha gerando GPX de debug.", err);
-          }
-          // --------------------------------------------------------------------------------
-
-          console.log(`[GoProEngineClient] Web Worker finalizou! ${downsampled.length} pts (1Hz) | ${syncPoints.length} pts (5Hz sync) | câmera: "${cameraModel}" | GPS offset: ${gpsVideoOffsetMs}ms`);
+          console.log(`[GoProEngineClient] Worker done — ${downsampled.length} pts (1Hz) | ${syncPoints.length} pts (sync) | camera: "${cameraModel}" | GPS offset: ${gpsVideoOffsetMs}ms`);
           resolve({ points: downsampled, syncPoints, cameraModel, gpsVideoOffsetMs });
         } else {
           const errMsg: string = e.data.error ?? "Worker returned no data.";
@@ -62,10 +51,11 @@ export class GoProEngineClient {
           reject(new Error(errMsg));
         }
 
-        worker.terminate(); // Limpa recursos silenciosamente
+        worker.terminate();
       };
 
       worker.onerror = (e) => {
+        clearTimeout(timeout);
         const errMsg = e.message || e.error?.message || "Unknown worker crash.";
         console.error("[GoProEngineClient] Worker crash:", { message: e.message, filename: e.filename, lineno: e.lineno, error: e.error });
         void trackError("WORKER_ERROR", `[${file.name}] Worker crash: ${errMsg}`, "worker", {

@@ -822,6 +822,12 @@ export default function MobilePage() {
 
     if (result.status === "success") setVideoSuccess(true);
 
+    // Surface render errors to the user — without this the component unmounts
+    // silently and the user lands on the upload form with no explanation.
+    if (result.status === "error" && result.errorMessage) {
+      setUploadError(`Export failed: ${result.errorMessage}. Please try again.`);
+    }
+
     // Reset all state — clean slate for next video
     setVideoFile(null);    setHighlights([]);      setStoryPlan(null);
     setVideoLoaded(false); setUploadError(null);   setGpxError(null);

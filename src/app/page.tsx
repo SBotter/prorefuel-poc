@@ -1510,6 +1510,10 @@ export default function ProRefuelPage() {
                           output_duration_s: storyPlan ? storyPlan.segments.reduce((s, seg) => s + (seg.durationSec ?? 0), 0) : null,
                         });
                         if (result.status === "success") setVideoSuccess(true);
+                        if (result.status === "error" && result.errorMessage) {
+                          setUploadError(`Export failed: ${result.errorMessage}. Please try again.`);
+                          setStep("UPLOAD");
+                        }
                         // After successful download: full reset to initial state
                         if (result.status === "success") {
                           setTimeout(() => {
