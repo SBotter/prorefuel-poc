@@ -227,20 +227,22 @@ export class StorytellingProcessor {
       }
     }
 
-    // Fallback: no ACTION segments
+    // Fallback: no ACTION segments — use full video with 1.5s trim at each end
+    // so the user always receives a rendered output even on short or flat activities.
     if (segments.filter(s => s.type === "ACTION").length === 0 && videoPoints.length > 0) {
+      const TRIM_SEC = 1.5;
       const vidIdx = videoStart > 0
         ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStart))
         : Math.floor(activityPoints.length / 2);
-      const fallbackDur = Math.min(
-        narrativePlan.acts.find(a => a.act === "CLIMAX")?.targetDurationSec ?? Math.round(effectiveActionBudget * 0.60),
-        effectiveActionBudget,
-      );
+      const trimmedDur = videoDurationSec > 0
+        ? Math.max(0, videoDurationSec - 2 * TRIM_SEC)
+        : effectiveActionBudget;
+      const fallbackDur = Math.min(trimmedDur, effectiveActionBudget);
       segments.push({
         type: "ACTION",
         startIndex: vidIdx,
         endIndex: Math.min(vidIdx + 60, activityPoints.length - 1),
-        videoStartTime: 0,
+        videoStartTime: TRIM_SEC,
         durationSec: fallbackDur,
         title: "RIDE",
         value: "ACTION"
