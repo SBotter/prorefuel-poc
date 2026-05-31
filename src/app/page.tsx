@@ -866,7 +866,7 @@ export default function ProRefuelPage() {
           : "?";
         void trackError(
           "NO_SCENES",
-          `[${file.name}] No highlight scenes found. ` +
+          `[${file.name}] No highlight scenes found — falling back to full video. ` +
           `Camera: ${resolvedModel || cameraDetection.make || "unknown"} | ` +
           `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | ` +
           `Activity: "${activityMeta.name}" (${actDurMin} min, ${activityPoints.length} GPX pts) | ` +
@@ -876,7 +876,7 @@ export default function ProRefuelPage() {
           "video_upload",
           resolvedCtx,
         );
-        throw new Error("No highlight scenes detected. Your activity may be too short or lack speed and elevation variation.");
+        // No highlights detected — StorytellingProcessor will apply full-video fallback
       }
 
       const VIDEO_SEEK_WORKAROUND_SEC = 0;

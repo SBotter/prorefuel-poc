@@ -670,7 +670,7 @@ export default function MobilePage() {
         mlog("ERROR", `no highlights. vpts[0].time=${new Date(vidT0).toISOString()} actPts[0].time=${new Date(actT0).toISOString()} diff=${diffMin}min`);
         void trackError(
           "NO_SCENES",
-          `[${file.name}] No highlight scenes detected. ` +
+          `[${file.name}] No highlight scenes detected — falling back to full video. ` +
           `Camera: ${camResult?.type ?? "unknown"} ${camResult?.make ?? ""} ${camResult?.model ?? ""} | ` +
           `codec: ${vmeta.codec} | res: ${vmeta.width ?? "?"}×${vmeta.height ?? "?"} | fps: ${vmeta.fps ?? "?"} | ` +
           `size: ${(file.size/1024/1024).toFixed(1)}MB | ` +
@@ -679,7 +679,7 @@ export default function MobilePage() {
           "video_upload",
           errCtxFull);
         errorTracked = true;
-        throw new Error(`No highlight scenes detected. Video and GPX may not overlap in time (diff: ${Math.abs(diffMin)} min). Make sure both files are from the same ride.`);
+        // No highlights detected — StorytellingProcessor will apply full-video fallback
       }
 
       setStatusMsg("Building story…");

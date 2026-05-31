@@ -658,20 +658,22 @@ export class StorytellingProcessorV2 {
     }
 
     // Last-resort fallback: if even the video-window scan returned nothing, use
-    // a single full-video clip (videoStartTime: 0, entire video duration).
+    // a full-video clip with 1.5s trim at each end so the user always gets a video.
     if (segments.filter(s => s.type === 'ACTION').length === 0 && videoPoints.length > 0) {
-      fallbacksUsed.push('last-resort: no intensity data in video window — full video clip');
+      const TRIM_SEC = 1.5;
+      fallbacksUsed.push('last-resort: no intensity data in video window — full video clip with trim');
       console.error(`[ProRefuel V2] Last-resort fallback triggered — check activity/video timestamp alignment`);
       const vidIdx      = videoStartGPS > 0
         ? Math.max(0, activityPoints.findIndex(p => p.time >= videoStartGPS))
         : Math.floor(activityPoints.length / 2);
       const videoDurSec = videoEndGPS > videoStartGPS ? (videoEndGPS - videoStartGPS) / 1000 : effectiveActionBudget;
+      const trimmedDur  = Math.max(0, videoDurSec - 2 * TRIM_SEC);
       segments.push({
         type:           'ACTION',
         startIndex:     vidIdx,
         endIndex:       Math.min(vidIdx + Math.round(videoDurSec), activityPoints.length - 1),
-        videoStartTime: 0,
-        durationSec:    effectiveActionBudget,
+        videoStartTime: TRIM_SEC,
+        durationSec:    Math.min(trimmedDur, effectiveActionBudget),
         title:          'RIDE',
         value:          'ACTION',
       });
