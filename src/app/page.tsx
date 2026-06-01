@@ -897,6 +897,43 @@ export default function ProRefuelPage() {
           };
           const spatialOverlap = postLock.some((vp: any) => actSample.some(ap => hav(vp, ap) < 2_000));
           if (!spatialOverlap) {
+            // Mobile video with no embedded GPS + date/position mismatch → almost certainly
+            // a received/social video (WhatsApp, AirDrop, etc.) saved to the camera roll.
+            // iOS stamps the save time as CreateDate, which never matches a past-day GPX.
+            // Route to portrait template (GPX-only) instead of blocking with an error.
+            if (isMobile && !iPhoneHasStartGPS) {
+              const { ActivityPortraitPlanner: _APl } = await import("@/lib/engine/ActivityPortraitPlanner");
+              const sp = _APl.generatePlan(activityPoints as any, iPhoneDurationMs / 1000);
+              setStoryPlan(sp);
+              setVideoFile(processVideoFile);
+              clearInterval(interval);
+              setProgress(100);
+              const _bi = browserInfoRef.current;
+              trackProcessingSession({
+                status: "success", video_filename: file.name,
+                video_duration_s: iPhoneDurationMs / 1000,
+                camera_model: "WhatsApp",
+                activity_name: activityMeta.name ?? null,
+                device_type: "whatsapp", device_make: "WhatsApp", device_model: "WhatsApp",
+                device_os: null, device_os_version: null,
+                browser_os: _bi?.os ?? null, browser_os_version: _bi?.os_version ?? null,
+                browser_name: _bi?.browser ?? null, browser_version: _bi?.browser_version ?? null,
+                browser_is_mobile: _bi?.is_mobile ?? null,
+                gpx_points_count: activityPoints.length || null,
+                gps_device: activityMeta.gpsDevice?.label ?? null,
+                activity_location: activityMeta.location ?? null,
+                sync_strategy: "none", scenes_count: 1, unit_system: unit,
+                processing_time_ms: Date.now() - processingStart, error_message: null,
+              });
+              setTimeout(() => {
+                setHighlights([]);
+                setStep("READY");
+                readyStepStartRef.current = Date.now();
+                setLoading(false);
+              }, 300);
+              return;
+            }
+
             const vidT0 = vpts.length > 0 ? new Date((vpts[0] as any).time).toISOString() : "n/a";
             const actT0 = activityPoints.length > 0 ? new Date(activityPoints[0].time).toISOString() : "n/a";
             void trackError(
