@@ -19,7 +19,7 @@
  *   'unknown' → Not supported — upload is rejected with explanation
  */
 
-export type CameraType = 'gopro' | 'iphone' | 'android' | 'unknown';
+export type CameraType = 'gopro' | 'iphone' | 'android' | 'whatsapp' | 'unknown';
 
 export interface CameraDetection {
   type:  CameraType;
@@ -54,6 +54,15 @@ export class CameraDetector {
    */
   static async detect(file: File): Promise<CameraDetection> {
     const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+
+    // ── Layer 0: WhatsApp beam box scan (MP4 only, reads first 200 bytes) ────
+    // WhatsApp writes a proprietary 'beam' box between ftyp and moov.
+    // This box does not exist in any other mainstream camera app or device.
+    // Reading 200 bytes is near-zero cost and must run before EXIF to short-circuit early.
+    if (ext === 'mp4') {
+      const isWA = await CameraDetector._detectBeamBox(file);
+      if (isWA) return { type: 'whatsapp', make: 'WhatsApp', model: 'WhatsApp' };
+    }
 
     // ── Layer 1: MOV extension → iPhone ──────────────────────────────────────
     // QuickTime MOV is exclusively used by Apple in consumer cameras/phones.
@@ -139,6 +148,29 @@ export class CameraDetector {
     // Return whatever EXIF told us even if the camera is unsupported.
     // This lets callers log the raw make/model as a demand signal.
     return { type: 'unknown', make: rawExifMake, model: rawExifModel };
+  }
+
+  // ── WhatsApp beam box detection ──────────────────────────────────────────────
+  // Reads only the first 200 bytes of the file. Walks top-level MP4 box headers
+  // (8 bytes each) looking for a box whose type is 'beam'. Stops at 'moov' because
+  // the beam box always appears between ftyp and moov — if moov is reached without
+  // finding beam, it is not a WhatsApp file.
+  private static async _detectBeamBox(file: File): Promise<boolean> {
+    try {
+      const buf = await file.slice(0, 200).arrayBuffer();
+      const d   = new Uint8Array(buf);
+      let pos   = 0;
+      for (let i = 0; i < 8 && pos + 8 <= d.length; i++) {
+        const size = ((d[pos] << 24) | (d[pos + 1] << 16) | (d[pos + 2] << 8) | d[pos + 3]) >>> 0;
+        const type = String.fromCharCode(d[pos + 4], d[pos + 5], d[pos + 6], d[pos + 7]);
+        if (type === 'beam') return true;
+        if (type === 'moov' || size < 8) break;
+        pos += size;
+      }
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   // ── Apple iPhone container scan ──────────────────────────────────────────────

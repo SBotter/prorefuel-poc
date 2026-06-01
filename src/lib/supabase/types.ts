@@ -36,7 +36,7 @@ export interface ProcessingSession {
   camera_model: string | null;
 
   // Recording device (camera / phone) — optional for backward compat
-  device_type?: "gopro" | "iphone" | "android" | "unknown" | null;
+  device_type?: "gopro" | "iphone" | "android" | "whatsapp" | "unknown" | null;
   device_make?: string | null;       // 'Apple', 'Samsung', 'GoPro'
   device_model?: string | null;      // 'iPhone 13', 'Galaxy S24 FE', 'HERO12 Black'
   device_os?: string | null;         // 'iOS', 'Android' (null for action cams)
@@ -177,7 +177,7 @@ export interface VideoUpload {
   camera_model: string | null;
 
   // Recording device details — optional for backward compat
-  device_type?: "gopro" | "iphone" | "android" | "unknown" | null;
+  device_type?: "gopro" | "iphone" | "android" | "whatsapp" | "unknown" | null;
   device_make?: string | null;       // 'Apple', 'Samsung', 'GoPro'
   device_model?: string | null;      // 'iPhone 13', 'Galaxy S24 FE', 'HERO12 Black'
   device_os?: string | null;         // 'iOS', 'Android' (null for action cams)
@@ -248,7 +248,7 @@ export interface ErrorEvent {
   error_source: string | null;
 
   // Recording device (the camera that shot the video)
-  device_type?: "gopro" | "iphone" | "android" | "unknown" | null;
+  device_type?: "gopro" | "iphone" | "android" | "whatsapp" | "unknown" | null;
   device_make?: string | null;   // 'GoPro', 'Apple', 'Samsung', …
   device_model?: string | null;  // 'HERO12 Black', 'iPhone 15 Pro', …
 

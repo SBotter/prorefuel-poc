@@ -647,12 +647,77 @@ export default function ProRefuelPage() {
       // Camera already detected from file content before setLoading — reuse result
       setStatusMsg("Identifying camera...");
       const cameraDetection = earlyDetection;
-      const isIPhone  = cameraDetection.type === "iphone";
-      const isAndroid = cameraDetection.type === "android";
-      const isMobile  = isIPhone || isAndroid;
-      setIsMobileVideo(isMobile);
+      const isIPhone    = cameraDetection.type === "iphone";
+      const isAndroid   = cameraDetection.type === "android";
+      const isWhatsApp  = cameraDetection.type === "whatsapp";
+      const isMobile    = isIPhone || isAndroid;
+      setIsMobileVideo(isMobile || isWhatsApp);
 
-      if (!isMobile) setVideoFile(processVideoFile);
+      if (!isMobile && !isWhatsApp) setVideoFile(processVideoFile);
+
+      // ── WhatsApp fast path — no telemetry, no sync, portrait template ────────
+      if (isWhatsApp) {
+        setStatusMsg("WhatsApp video detected — loading activity data…");
+        if (activityPoints.length === 0) {
+          void trackError(
+            "NO_GPS_VIDEO",
+            `[${file.name}] WhatsApp video uploaded without a GPX file — portrait template requires activity data.`,
+            "video_upload",
+            { ...richCtx, device_type: "whatsapp" },
+          );
+          throw new Error("Please upload your GPX activity file first, then add the WhatsApp video.");
+        }
+
+        const { WhatsAppEngineClient } = await import("@/lib/media/WhatsAppEngineClient");
+        const waResult = await WhatsAppEngineClient.extractMetadata(file);
+
+        const { ActivityPortraitPlanner } = await import("@/lib/engine/ActivityPortraitPlanner");
+        const sp = ActivityPortraitPlanner.generatePlan(
+          activityPoints as any,
+          waResult.durationMs / 1000,
+        );
+
+        setStoryPlan(sp);
+        setVideoFile(processVideoFile);
+        clearInterval(interval);
+        setProgress(100);
+
+        const bi2 = browserInfoRef.current;
+        trackProcessingSession({
+          status:               "success",
+          video_filename:       file.name,
+          video_duration_s:     waResult.durationMs / 1000,
+          camera_model:         "WhatsApp",
+          activity_name:        activityMeta.name ?? null,
+          device_type:          "whatsapp",
+          device_make:          "WhatsApp",
+          device_model:         "WhatsApp",
+          device_os:            null,
+          device_os_version:    null,
+          browser_os:           bi2?.os ?? null,
+          browser_os_version:   bi2?.os_version ?? null,
+          browser_name:         bi2?.browser ?? null,
+          browser_version:      bi2?.browser_version ?? null,
+          browser_is_mobile:    bi2?.is_mobile ?? null,
+          gpx_points_count:     activityPoints.length || null,
+          gps_device:           activityMeta.gpsDevice?.label ?? null,
+          activity_location:    activityMeta.location ?? null,
+          sync_strategy:        "none",
+          scenes_count:         1,
+          unit_system:          unit,
+          processing_time_ms:   Date.now() - processingStart,
+          error_message:        null,
+        });
+
+        setTimeout(() => {
+          setHighlights([]);
+          setStep("READY");
+          readyStepStartRef.current = Date.now();
+          setLoading(false);
+        }, 300);
+        return;
+      }
+      // ────────────────────────────────────────────────────────────────────────
 
       if (cameraDetection.type === "unknown") {
         const detected = [cameraDetection.make, cameraDetection.model].filter(Boolean).join(" ") || "unrecognised";

@@ -173,6 +173,9 @@ const MapEngine = forwardRef(
     const [clipIdx, setClipIdx] = useState(0); // increments on each ACTION clip change → triggers cutFlash
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscoding, setIsTranscoding] = useState(false);
+    // Portrait template: 0→1 reveal fraction drives progressive stat display in preview
+    const [portraitReveal, setPortraitReveal] = useState(0);
+    const portraitActionStartRef = useRef(0); // wall-clock ms when ACTION phase began
     const [renderError, setRenderError] = useState<{
       message: string;
       isOOM: boolean;
@@ -485,6 +488,13 @@ const MapEngine = forwardRef(
         if (now - state.current.lastHudUpdateTime > 100) {
           state.current.lastHudUpdateTime = now;
           setCurrentIndex(idx);
+          // Portrait template: track reveal fraction for DOM overlay
+          if (storyPlan?.templateId === 'activity_portrait' && currentSeg?.type === 'ACTION') {
+            if (portraitActionStartRef.current === 0) portraitActionStartRef.current = now;
+            const actionMs = now - portraitActionStartRef.current;
+            const revFrac  = Math.min(actionMs / (currentSeg.durationSec * 1000), 1);
+            setPortraitReveal(revFrac);
+          }
         }
 
         if (currentSeg.type !== state.current.viewMode) {
@@ -620,40 +630,43 @@ const MapEngine = forwardRef(
                     // Layer 1: cached background (dim full route) — stretched to canvas dimensions
                     mc.drawImage(cache.canvas, 0, 0, MW, MH);
 
-                    // Layer 2: amber progress trail — full route from 0→idx (no window cap)
-                    mc.strokeStyle = "rgba(245,158,11,0.85)";
-                    mc.lineWidth = 2.5;
-                    mc.lineJoin = "round";
-                    mc.lineCap = "round";
-                    mc.beginPath();
-                    for (let i = 0; i <= idx; i++) {
-                      const p = activityPoints[i];
-                      const x = toX(p.lon),
-                        y = toY(p.lat);
-                      i === 0 ? mc.moveTo(x, y) : mc.lineTo(x, y);
-                    }
-                    mc.stroke();
+                    // Portrait mode: full static route only — no trail, no cursor
+                    const isPortraitMiniMap = storyPlan?.templateId === 'activity_portrait';
 
-                    // Layer 3: current position dot + glow
-                    const cur = activityPoints[idx];
-                    const cx = toX(cur.lon),
-                      cy = toY(cur.lat);
-                    const glow = mc.createRadialGradient(cx, cy, 0, cx, cy, 14);
-                    glow.addColorStop(0, "rgba(245,158,11,0.55)");
-                    glow.addColorStop(1, "rgba(245,158,11,0)");
-                    mc.fillStyle = glow;
-                    mc.beginPath();
-                    mc.arc(cx, cy, 14, 0, Math.PI * 2);
-                    mc.fill();
-                    mc.strokeStyle = "#ffffff";
-                    mc.lineWidth = 2;
-                    mc.beginPath();
-                    mc.arc(cx, cy, 6, 0, Math.PI * 2);
-                    mc.stroke();
-                    mc.fillStyle = "#f59e0b";
-                    mc.beginPath();
-                    mc.arc(cx, cy, 4, 0, Math.PI * 2);
-                    mc.fill();
+                    if (!isPortraitMiniMap) {
+                      // Layer 2: amber progress trail — full route from 0→idx (no window cap)
+                      mc.strokeStyle = "rgba(245,158,11,0.85)";
+                      mc.lineWidth = 2.5;
+                      mc.lineJoin = "round";
+                      mc.lineCap = "round";
+                      mc.beginPath();
+                      for (let i = 0; i <= idx; i++) {
+                        const p = activityPoints[i];
+                        const x = toX(p.lon), y = toY(p.lat);
+                        i === 0 ? mc.moveTo(x, y) : mc.lineTo(x, y);
+                      }
+                      mc.stroke();
+
+                      // Layer 3: current position dot + glow
+                      const cur = activityPoints[idx];
+                      const cx = toX(cur.lon), cy = toY(cur.lat);
+                      const glow = mc.createRadialGradient(cx, cy, 0, cx, cy, 14);
+                      glow.addColorStop(0, "rgba(245,158,11,0.55)");
+                      glow.addColorStop(1, "rgba(245,158,11,0)");
+                      mc.fillStyle = glow;
+                      mc.beginPath();
+                      mc.arc(cx, cy, 14, 0, Math.PI * 2);
+                      mc.fill();
+                      mc.strokeStyle = "#ffffff";
+                      mc.lineWidth = 2;
+                      mc.beginPath();
+                      mc.arc(cx, cy, 6, 0, Math.PI * 2);
+                      mc.stroke();
+                      mc.fillStyle = "#f59e0b";
+                      mc.beginPath();
+                      mc.arc(cx, cy, 4, 0, Math.PI * 2);
+                      mc.fill();
+                    }
                   }
                 }
               }
@@ -1509,6 +1522,113 @@ const MapEngine = forwardRef(
         );
         ctx.globalAlpha = 1;
         noShadow();
+        ctx.restore();
+      };
+
+      // ── Portrait template HUD — static broadmap + progressive stat cards ────
+      // revealFrac: 0.0 (action start) → 1.0 (action end)
+      const drawPortraitHUD = (revealFrac: number) => {
+        const d = storyPlan?.portraitData;
+        if (!d) return;
+        ctx.save();
+
+        // Map: centered horizontally at top — no trail, no cursor dot
+        const mapW = pipW;
+        const mapH = pipH;
+        const mapX = Math.round((W - mapW) / 2);
+        const mapY = pipY;
+
+        // Map fade-in over first 8% of action
+        const mapAlpha = Math.min(revealFrac / 0.08, 1);
+        ctx.globalAlpha = mapAlpha * 0.88;
+        ctx.drawImage(broadmapCache, mapX, mapY, mapW, mapH);
+        ctx.globalAlpha = 1;
+
+        // Helper: render one stat row with fade-in
+        const statBaseY = mapY + mapH + Math.round(H * 0.045);
+        const rowH      = Math.round(H * 0.095);
+        const labelX    = Math.round(W * 0.06);
+
+        const drawStat = (
+          row: number,
+          threshold: number,
+          value: string,
+          label: string,
+          color = "#ffffff",
+        ) => {
+          const alpha = Math.min(Math.max(revealFrac - threshold, 0) / 0.04, 1);
+          if (alpha <= 0) return;
+          ctx.save();
+          ctx.globalAlpha = alpha;
+
+          // Value
+          ctx.shadowColor  = "rgba(0,0,0,0.95)";
+          ctx.shadowBlur   = 22;
+          ctx.font         = `900 ${Math.round(W * 0.082)}px sans-serif`;
+          ctx.fillStyle    = color;
+          ctx.textAlign    = "left";
+          ctx.textBaseline = "alphabetic";
+          ctx.fillText(value, labelX, statBaseY + row * rowH);
+
+          // Label — smaller, muted
+          ctx.shadowBlur   = 10;
+          ctx.font         = `700 ${Math.round(W * 0.026)}px sans-serif`;
+          ctx.fillStyle    = "rgba(161,161,170,0.85)";
+          ctx.fillText(label.toUpperCase(), labelX, statBaseY + row * rowH + Math.round(W * 0.033));
+
+          ctx.restore();
+        };
+
+        // Format helpers
+        const fmtDist = (m: number) =>
+          unit === "imperial"
+            ? `${(m / 1609.34).toFixed(1)} mi`
+            : `${(m / 1000).toFixed(1)} km`;
+
+        const fmtTime = (sec: number) => {
+          const h  = Math.floor(sec / 3600);
+          const m  = Math.floor((sec % 3600) / 60);
+          const s  = Math.floor(sec % 60);
+          return h > 0
+            ? `${h}h ${m.toString().padStart(2, "0")}min`
+            : `${m}:${s.toString().padStart(2, "0")}`;
+        };
+
+        const fmtSpeed = (kmh: number) =>
+          unit === "imperial"
+            ? `${(kmh * 0.621371).toFixed(1)} mph`
+            : `${kmh.toFixed(1)} km/h`;
+
+        let row = 0;
+        drawStat(row++, 0.10, fmtDist(d.totalDistanceM), "Total Distance", "#ffffff");
+        drawStat(row++, 0.22, fmtTime(d.durationSec),    "Total Time",     "#ffffff");
+        drawStat(row++, 0.35, fmtSpeed(d.avgSpeedKmh),   "Avg Speed",      "#f59e0b");
+        drawStat(row++, 0.48, fmtSpeed(d.maxSpeedKmh),   "Max Speed",      "#fbbf24");
+        drawStat(row++, 0.60, `▲ ${d.elevationGainM} m`, "Elevation Gain", "#ffffff");
+        if (d.hasHeartRate && d.hrAvg !== null && d.hrMax !== null) {
+          drawStat(row,  0.75, `♥ ${d.hrAvg} / ${d.hrMax} bpm`, "HR Avg / Max", "#f87171");
+        }
+
+        // Watermark (same as standard template)
+        {
+          const wmSize = Math.round(W * 0.079);
+          const wmR    = wmSize / 2;
+          const wmCX   = W - wmSize - 5 + wmR;
+          const wmCY   = 5 + wmR;
+          ctx.save();
+          ctx.globalAlpha = 0.30;
+          ctx.beginPath();
+          ctx.arc(wmCX, wmCY, wmR, 0, Math.PI * 2);
+          ctx.fillStyle = "#000000";
+          ctx.fill();
+          ctx.fillStyle = "#ffffff";
+          ctx.font = `900 ${Math.round(wmSize * 0.30)}px sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("LENS", wmCX, wmCY);
+          ctx.restore();
+        }
+
         ctx.restore();
       };
 
@@ -2428,29 +2548,53 @@ const MapEngine = forwardRef(
 
           if (!hideOverlayRef.current) {
             const _t = preBrandFadeRef.current;
+            const isPortrait = storyPlan?.templateId === 'activity_portrait';
 
-            // Telemetry fades out in first 28% (0→0.84s) — synchronized exit
-            const telAlpha = Math.max(1 - _t / 0.28, 0);
-            if (telAlpha > 0) {
-              ctx.save();
-              ctx.globalAlpha = telAlpha;
-              drawBroadMap(idx, pipX, pipY, pipW, pipH);
-              drawAltimetry(idx);
-              drawTelemetry(idx);
-              ctx.restore();
+            if (isPortrait) {
+              // ── Activity Portrait template ───────────────────────────────
+              // Stats fade out only in the last 28% before brand (same timing as standard)
+              const telAlpha = Math.max(1 - _t / 0.28, 0);
+              if (telAlpha > 0) {
+                const INTRO_S      = 6.5;
+                const totalElapsed = (now - recordingStartTime) / 1000;
+                const actionDur    = storyPlan?.segments.find((s: any) => s.type === 'ACTION')?.durationSec ?? 30;
+                const actionElap   = Math.max(0, totalElapsed - INTRO_S);
+                const revealFrac   = Math.min(actionElap / actionDur, 1);
+                ctx.save();
+                ctx.globalAlpha = telAlpha;
+                drawPortraitHUD(revealFrac);
+                ctx.restore();
+              }
+              const darkness = Math.max((_t - 0.55) / 0.45, 0);
+              if (darkness > 0) {
+                ctx.globalAlpha = darkness;
+                ctx.fillStyle   = "#050505";
+                ctx.fillRect(0, 0, W, H);
+                ctx.globalAlpha = 1;
+              }
+              if (_t > 0) drawBrand(_t);
+            } else {
+              // ── Standard template ────────────────────────────────────────
+              // Telemetry fades out in first 28% (0→0.84s) — synchronized exit
+              const telAlpha = Math.max(1 - _t / 0.28, 0);
+              if (telAlpha > 0) {
+                ctx.save();
+                ctx.globalAlpha = telAlpha;
+                drawBroadMap(idx, pipX, pipY, pipW, pipH);
+                drawAltimetry(idx);
+                drawTelemetry(idx);
+                ctx.restore();
+              }
+              // Darkness: starts at 55% (1.65s), reaches 100% at end (3s)
+              const darkness = Math.max((_t - 0.55) / 0.45, 0);
+              if (darkness > 0) {
+                ctx.globalAlpha = darkness;
+                ctx.fillStyle   = "#050505";
+                ctx.fillRect(0, 0, W, H);
+                ctx.globalAlpha = 1;
+              }
+              if (_t > 0) drawBrand(_t);
             }
-
-            // Darkness: starts at 55% (1.65s), reaches 100% at end (3s)
-            const darkness = Math.max((_t - 0.55) / 0.45, 0);
-            if (darkness > 0) {
-              ctx.globalAlpha = darkness;
-              ctx.fillStyle = "#050505";
-              ctx.fillRect(0, 0, W, H);
-              ctx.globalAlpha = 1;
-            }
-
-            // Brand elements enter after telemetry exits
-            if (_t > 0) drawBrand(_t);
           }
         } else {
           // Scenario A: Short Activity or INTRO — frozen video frame as background
@@ -2696,49 +2840,79 @@ const MapEngine = forwardRef(
           style={{ opacity: Math.max((preBrandFade - 0.55) / 0.45, 0) }}
         />
 
-        {/* 2.5 GRÁFICO DE ALTIMETRIA — full width, bottom, always */}
-        <div
-          style={{
-            bottom: 0,
-            left: 0,
-            width: "100%",
-            height: "15vh",
-            transition: "opacity 800ms ease",
-            opacity:
-              viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
-              : Math.max(1 - preBrandFade / 0.28, 0),
-          }}
-          className="absolute z-40 pointer-events-none"
-        >
-          <AltimetryGraph
-            points={activityPoints}
-            currentIndex={currentIndex}
-            unit={unit}
-          />
-        </div>
+        {/* 2.5 GRÁFICO DE ALTIMETRIA — standard template only */}
+        {storyPlan?.templateId !== 'activity_portrait' && (
+          <div
+            style={{
+              bottom: 0, left: 0, width: "100%", height: "15vh",
+              transition: "opacity 800ms ease",
+              opacity: viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
+                : Math.max(1 - preBrandFade / 0.28, 0),
+            }}
+            className="absolute z-40 pointer-events-none"
+          >
+            <AltimetryGraph points={activityPoints} currentIndex={currentIndex} unit={unit} />
+          </div>
+        )}
 
-        {/* 3. ACTIVITY TELEMETRY (Cinematic entry delay) */}
-        <div
-          style={{
-            opacity:
-              viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
-              : Math.max(1 - preBrandFade / 0.28, 0),
-            transition:
-              viewMode === "INTRO" || viewMode === "BRAND" || isEnding
+        {/* 3. ACTIVITY TELEMETRY — standard template */}
+        {storyPlan?.templateId !== 'activity_portrait' && (
+          <div
+            style={{
+              opacity: viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
+                : Math.max(1 - preBrandFade / 0.28, 0),
+              transition: viewMode === "INTRO" || viewMode === "BRAND" || isEnding
                 ? "opacity 500ms ease-in"
                 : preBrandFade > 0 ? "opacity 100ms linear"
                 : "opacity 1500ms ease-out 1500ms",
-          }}
-          className="absolute inset-0 z-50 pointer-events-none"
-        >
-          <TelemetryHUD
-            points={activityPoints as any}
-            currentIndex={currentIndex}
-            hrMax={hrMax}
-            intensityScores={storyPlan?.intensityScores}
-            unit={unit}
-          />
-        </div>
+            }}
+            className="absolute inset-0 z-50 pointer-events-none"
+          >
+            <TelemetryHUD
+              points={activityPoints as any}
+              currentIndex={currentIndex}
+              hrMax={hrMax}
+              intensityScores={storyPlan?.intensityScores}
+              unit={unit}
+            />
+          </div>
+        )}
+
+        {/* 3b. PORTRAIT HUD overlay — activity_portrait template only */}
+        {storyPlan?.templateId === 'activity_portrait' && storyPlan.portraitData && (() => {
+          const d          = storyPlan.portraitData!;
+          const baseOpacity = viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
+            : Math.max(1 - preBrandFade / 0.28, 0);
+          const fmtDist  = (m: number) => unit === "imperial" ? `${(m/1609.34).toFixed(1)} mi` : `${(m/1000).toFixed(1)} km`;
+          const fmtTime  = (sec: number) => { const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.floor(sec%60); return h>0?`${h}h ${m.toString().padStart(2,"0")}min`:`${m}:${s.toString().padStart(2,"0")}`; };
+          const fmtSpeed = (kmh: number) => unit === "imperial" ? `${(kmh*0.621371).toFixed(1)} mph` : `${kmh.toFixed(1)} km/h`;
+          const statStyle = (threshold: number): React.CSSProperties => ({
+            opacity: baseOpacity * Math.min(Math.max(portraitReveal - threshold, 0) / 0.04, 1),
+            transition: "opacity 600ms ease-out",
+            marginBottom: "3.5vh",
+          });
+          return (
+            <div className="absolute inset-0 z-50 pointer-events-none flex flex-col"
+              style={{ padding: "calc(47% + 3vh) 6% 4% 6%", opacity: baseOpacity, transition: "opacity 800ms ease" }}>
+              {/* Stats appear progressively — each has its own threshold */}
+              {[
+                { value: fmtDist(d.totalDistanceM),        label: "Total Distance", color: "#ffffff", t: 0.10 },
+                { value: fmtTime(d.durationSec),           label: "Total Time",     color: "#ffffff", t: 0.22 },
+                { value: fmtSpeed(d.avgSpeedKmh),          label: "Avg Speed",      color: "#f59e0b", t: 0.35 },
+                { value: fmtSpeed(d.maxSpeedKmh),          label: "Max Speed",      color: "#fbbf24", t: 0.48 },
+                { value: `▲ ${d.elevationGainM} m`,        label: "Elevation Gain", color: "#ffffff", t: 0.60 },
+                ...(d.hasHeartRate && d.hrAvg !== null && d.hrMax !== null
+                  ? [{ value: `♥ ${d.hrAvg} / ${d.hrMax} bpm`, label: "HR Avg / Max", color: "#f87171", t: 0.75 }]
+                  : []),
+              ].map(({ value, label, color, t }) => (
+                <div key={label} style={statStyle(t)}>
+                  <div style={{ color, fontWeight: 900, fontSize: "clamp(1.6rem,7vw,2.4rem)", lineHeight: 1.1, textShadow: "0 2px 18px rgba(0,0,0,0.95)" }}>{value}</div>
+                  <div style={{ color: "rgba(161,161,170,0.85)", fontWeight: 700, fontSize: "clamp(0.55rem,2.2vw,0.8rem)", letterSpacing: "0.18em", textTransform: "uppercase", marginTop: "0.15em" }}>{label}</div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
 
         {/* 4. BRANDING FINAL */}
         <div className={`absolute inset-0 z-50 bg-[#050505] pointer-events-none transition-opacity duration-[400ms] ease-in ${viewMode === "BRAND" ? "opacity-100" : "opacity-0"}`} />
