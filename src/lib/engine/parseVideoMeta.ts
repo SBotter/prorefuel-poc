@@ -93,15 +93,74 @@ export async function parseVideoMeta(file: File): Promise<VideoMeta> {
         result.codec = 'h264';
       }
     } else {
-      // moov not in first 2 MB (non-faststart GoPro) — scan only the ftyp box
-      // which is always at the start and contains a safe, small amount of data.
-      const ftyp = buf.subarray(0, Math.min(256, buf.length));
-      if (hasTag(ftyp, 'hvc1') || hasTag(ftyp, 'hev1') || hasTag(ftyp, 'dvhe')) {
-        result.codec = 'hevc';
-      } else if (hasTag(ftyp, 'avc1') || hasTag(ftyp, 'H264') || hasTag(ftyp, 'avc3')) {
-        result.codec = 'h264';
-      }
-      return result; // moov not in first 2 MB — resolution/fps/recordedAt unavailable
+      // moov not in first 2 MB → Phase 2: non-faststart layout (moov at EOF).
+      //
+      // iPhone MOV, Android MP4, and some GoPro files write moov AFTER mdat:
+      //   ftyp → [wide] → mdat (hundreds of MB) → moov
+      //
+      // Reading the last 1.5 MB captures the complete moov for virtually all
+      // real-world recordings (typical moov: iPhone ~300 KB, Android ~200 KB,
+      // GoPro ~500 KB). We search BACKWARDS because the buffer starts mid-mdat
+      // and cannot be walked forward from offset 0.
+      //
+      // Why NOT scanning ftyp for codec: ftyp only contains brand/compatibility
+      // strings ('qt  ', 'mp42', 'isom') — never codec identifiers like 'hvc1'
+      // or 'avc1'. Those only appear inside moov/trak/mdia/minf/stbl/stsd.
+      const TAIL_SIZE = Math.min(1_500_000, file.size);
+      try {
+        const tail = new Uint8Array(await file.slice(file.size - TAIL_SIZE).arrayBuffer());
+
+        // Backward scan: find 'moov' box header (4-byte size + 4-byte type).
+        // We go backward so the real moov (at EOF) is found before any accidental
+        // 'moov' byte sequence in raw mdat video data.
+        for (let i = tail.length - 8; i >= 0; i--) {
+          if (tail[i+4] === 0x6d && tail[i+5] === 0x6f && tail[i+6] === 0x6f && tail[i+7] === 0x76) {
+            const moovSize = readU32BE(tail, i);
+            if (moovSize < 1_000 || moovSize > tail.length) continue; // sanity check
+
+            // Scan codec tags within this moov region (may be truncated at start
+            // if moovSize > TAIL_SIZE, but stsd with codec info is near beginning
+            // of moov content so it's almost always included in the tail window)
+            const moovContent = tail.subarray(i + 8, Math.min(i + moovSize, tail.length));
+
+            if (hasTag(moovContent, 'hvc1') || hasTag(moovContent, 'hev1') || hasTag(moovContent, 'dvhe')) {
+              result.codec = 'hevc';
+            } else if (hasTag(moovContent, 'avc1') || hasTag(moovContent, 'H264') || hasTag(moovContent, 'avc3')) {
+              result.codec = 'h264';
+            }
+
+            // Extract resolution from tkhd if present in the tail fragment
+            // tkhd: [8-byte box header][1 version][3 flags][timestamps...][matrix...][width+height]
+            // width is at offset 76 (v0) or 88 (v1) from start of tkhd box header
+            const tkhdIdx = (() => {
+              // hasTag position: find 'tkhd' bytes
+              const T = [0x74, 0x6b, 0x68, 0x64]; // 't','k','h','d'
+              for (let j = 0; j <= moovContent.length - 92; j++) {
+                if (moovContent[j+4] === T[0] && moovContent[j+5] === T[1] &&
+                    moovContent[j+6] === T[2] && moovContent[j+7] === T[3]) {
+                  const v = moovContent[j + 8]; // version byte
+                  const wOff = j + 8 + (v === 1 ? 88 : 76);
+                  if (wOff + 8 <= moovContent.length) {
+                    const w = readU32BE(moovContent, wOff) >> 16;
+                    const h = readU32BE(moovContent, wOff + 4) >> 16;
+                    if (w > 0 && w < 10_000 && h > 0 && h < 10_000) {
+                      result.width  = w;
+                      result.height = h;
+                    }
+                  }
+                  return j;
+                }
+              }
+              return -1;
+            })();
+            void tkhdIdx; // used via side-effects above
+
+            break; // first valid moov found — stop
+          }
+        }
+      } catch { /* tail read failed on this device — codec stays 'unknown' */ }
+
+      return result; // resolution/fps/recordedAt remain null for non-faststart
     }
 
     // ── Parse mvhd (movie header) ─────────────────────────────────────────────

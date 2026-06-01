@@ -436,6 +436,17 @@ export default function MobilePage() {
       device_model: originalCamDetection.model || null,
     };
 
+    // ── Video metadata scan — runs BEFORE the codec check ────────────────────────
+    // Reading Phase 1 (first 2 MB) + Phase 2 (last 1.5 MB) gives codec, resolution,
+    // fps, creation timestamp and GPS flag. Running it here means vmeta.codec is
+    // available as a redundant HEVC signal in the codec check below.
+    const { parseVideoMeta: _parseVideoMeta } = await import("@/lib/engine/parseVideoMeta");
+    const vmeta = await _parseVideoMeta(file).catch(() => ({
+      codec: "unknown" as const, width: null, height: null,
+      fps: null, hasEmbeddedGPS: false, recordedAt: null,
+    }));
+    mlog("VMETA", `codec=${vmeta.codec} ${vmeta.width}×${vmeta.height} fps=${vmeta.fps} gps=${vmeta.hasEmbeddedGPS}`);
+
     // ── Codec compatibility check ─────────────────────────────────────────────────
     // canBrowserPlay() loads the actual file into a hidden <video> and seeks to
     // trigger real frame decoding. This is more reliable than canPlayType() or UA
@@ -455,12 +466,23 @@ export default function MobilePage() {
       const { canBrowserPlay, transcodeHevcToH264, isHevcVideo } = await import("@/lib/engine/mobile/hevcTranscoder");
       const canPlay = isGoPro ? true : await canBrowserPlay(file);
 
-      // isHevcVideo() reads only the first 128 KB (cheap) — always run even when
-      // canBrowserPlay returns true. iOS Safari CAN play HEVC natively, so
-      // canBrowserPlay returns true — but WebCodecs VideoEncoder conflicts with the
-      // HEVC hardware decoder on iOS Video Toolbox, causing silent render failures.
-      // We must detect and handle HEVC regardless of browser playback capability.
-      const isHEVC = isGoPro ? false : (canPlay ? await isHevcVideo(file) : true);
+      // Dual HEVC detection — redundant signals for robustness.
+      //
+      // Signal A: vmeta.codec (from parseVideoMeta Phase 1+2).
+      //   Reads first 2 MB + last 1.5 MB. Works for both faststart and non-faststart.
+      //   May fail on iOS for PHAsset-backed large files (returns 'unknown').
+      //
+      // Signal B: isHevcVideo() (from hevcTranscoder Phase 1+2).
+      //   Reads first 128 KB + last 1.2 MB. Designed specifically for codec detection.
+      //   May also fail on some iOS PHAsset reads — returns false on error.
+      //
+      // Either signal independently catching HEVC is sufficient to trigger the
+      // rejection/transcode path. Both failing simultaneously is extremely unlikely
+      // since they read different regions and use different parsing logic.
+      const isHEVC = isGoPro ? false : (
+        vmeta.codec === 'hevc' ||                             // Signal A
+        (canPlay ? await isHevcVideo(file) : true)            // Signal B
+      );
       detectedCodec = isHEVC ? "hevc" : "h264";
 
       mlog("CODEC", `canPlay=${canPlay} isHEVC=${isHEVC} size=${(file.size/1024/1024).toFixed(0)}MB`);
@@ -549,15 +571,6 @@ export default function MobilePage() {
       e.target.value = "";
       return;
     }
-
-    // Step 3: video metadata scan — runs once, enriches ALL error paths
-    // Reads the first 2 MB (fast, ~5ms) — gives codec, resolution, fps,
-    // embedded GPS flag, and recording timestamp for every error event.
-    const { parseVideoMeta: _parseVideoMeta } = await import("@/lib/engine/parseVideoMeta");
-    const vmeta = await _parseVideoMeta(file).catch(() => ({
-      codec: "unknown" as const, width: null, height: null,
-      fps: null, hasEmbeddedGPS: false, recordedAt: null,
-    }));
 
     const errCtxFull: ErrorContext = {
       ...errCtxCam,

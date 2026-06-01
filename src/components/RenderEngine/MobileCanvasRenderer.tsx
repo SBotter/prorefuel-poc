@@ -598,9 +598,21 @@ export function MobileCanvasRenderer({
       c.restore();
     }
 
-    // ── Drawing: INTRO phase — identical to desktop MapEngine drawIntro() ────────
-    // Background: frozen grayscale video frame (mobile substitute for Mapbox satellite).
-    // All overlay elements match the desktop exactly: timing, layout, animations.
+    // ── Drawing: INTRO phase ─────────────────────────────────────────────────────
+    // Background: solid dark fill (no video).
+    //
+    // WHY no video background on mobile:
+    //   On iOS, the hardware video decoder and the hardware VideoEncoder share the
+    //   same Video Toolbox pool (VTCompressionSession). Activating the decoder during
+    //   the INTRO (via drawVideoFrame or early videoEl.play()) while the encoder is
+    //   initialising causes "Encoding task did not complete" in 1–2 seconds.
+    //   Even when prefer-software encoding is requested, WebKit may fall back to
+    //   hardware, reintroducing the conflict.
+    //
+    //   Solution: keep the hardware decoder completely idle during INTRO.
+    //   videoEl.play() is only called at ACTION start (main render loop), by which
+    //   time the encoder is fully warm and the decoder/encoder interleave is safe.
+    //   The INTRO is primarily a text+animation screen; the dark background is fine.
     let introLoggedOnce = false;
     function drawIntroPhase(c: CanvasRenderingContext2D, localTime: number, _segDur: number) {
       const elapsed = localTime * 1000; // ms from intro start (matches desktop timing)
@@ -610,44 +622,17 @@ export function MobileCanvasRenderer({
 
       if (!introLoggedOnce) {
         introLoggedOnce = true;
-        mlog("INTRO", `drawIntroPhase called — elapsed=${elapsed.toFixed(0)}ms grayFrameReady=${grayFrameReady} vidW=${videoEl.videoWidth}`);
+        mlog("INTRO", `drawIntroPhase called — elapsed=${elapsed.toFixed(0)}ms`);
       }
 
-      // ── Transition-out parameters ──────────────────────────────────────────────
-      // Starts at 75% of segment duration, completes at 100%.
-      // grayIntensity: 1→0 (grayscale fades to color — NO black flash)
-      // textAlpha:     1→0 (text/overlay elements fade out)
-      // The video frame is ALWAYS visible in color by the time ACTION starts,
-      // so the intro→ACTION cut is seamless.
+      // textAlpha fades out in the last 25% of INTRO so elements exit smoothly.
       const transOutProg = eo(cl((elapsed - (_segDur * 1000 * 0.75)) / (_segDur * 1000 * 0.25)));
-      const grayIntensity = 1 - transOutProg;   // 1=grayscale, 0=full color
-      const textAlpha     = 1 - transOutProg;   // 1=visible,   0=transparent
-
-      // ── Start video playing the moment grayscale begins fading to color ──────
-      // videoEl.play() is normally called when ACTION starts, but the color reveal
-      // happens 1.6s before ACTION. Without this, the color frame is frozen until
-      // ACTION begins — the user sees ~1.6s of a colorized but motionless frame.
-      // Starting play() here means the video is already moving when fully revealed.
-      // The decoder is already warm from pre-warm, so this is instant with no OOM risk.
-      if (transOutProg > 0.01 && videoEl.paused) {
-        videoEl.play().catch(() => {});
-      }
+      const textAlpha    = 1 - transOutProg;
 
       c.save();
 
-      // ── 0. Video background: grayscale during intro, color during transition ──
+      // ── 0. Solid dark background — no video, no decoder activation ────────────
       c.fillStyle = "#050505"; c.fillRect(0, 0, W, H);
-      if (grayFrameReady) {
-        c.save();
-        c.globalAlpha = 0.82;
-        drawVideoFrame(c);
-        if (grayIntensity > 0.01) {
-          c.globalCompositeOperation = "color"; // GPU-side desaturation
-          c.globalAlpha = grayIntensity;
-          c.fillStyle = "#808080"; c.fillRect(0, 0, W, H);
-        }
-        c.restore();
-      }
 
       // ── All overlay elements — wrapped in textAlpha so they fade out together ─
       if (textAlpha < 0.01) { c.restore(); return; }
