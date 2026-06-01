@@ -425,6 +425,40 @@ export default function HowItWorksPage() {
           </div>
         </DeviceCard>
 
+        {/* ── WHATSAPP VIDEOS ───────────────────────────────────────────────── */}
+        <div className="mb-5 p-6 rounded-2xl bg-zinc-900/60 border border-zinc-800">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="min-w-[64px] h-9 flex items-center justify-center bg-[#25D366]/15 border border-[#25D366]/30 rounded-lg px-3">
+                <svg viewBox="0 0 24 24" style={{ height: 18, width: 18 }} fill="#25D366">
+                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/>
+                  <path d="M12 0C5.373 0 0 5.373 0 12c0 2.123.553 4.118 1.522 5.852L0 24l6.338-1.504A11.95 11.95 0 0 0 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22c-1.927 0-3.736-.506-5.3-1.391l-.379-.224-3.764.893.939-3.665-.247-.4A9.97 9.97 0 0 1 2 12C2 6.486 6.486 2 12 2s10 4.486 10 10-4.486 10-10 10z"/>
+                </svg>
+              </div>
+              <span className="font-black text-white text-sm">WhatsApp Videos</span>
+            </div>
+            <span className="px-2 py-1 rounded-full border text-[9px] font-black uppercase tracking-widest bg-[#25D366]/15 border-[#25D366]/40 text-[#25D366]">Activity Portrait</span>
+          </div>
+          <ul className="space-y-1 mb-3">
+            <Row label="Formats"          value=".mp4 (Android) · .mov (iOS)"         neutral />
+            <Row label="GPS in video"     value="Not available — stripped by WhatsApp" neutral />
+            <Row label="Sync method"      value="None — GPX is the sole data source"  neutral />
+            <Row label="Map in output"    value="Full activity route (static, no real-time cursor)" neutral />
+            <Row label="Stats in output"  value="Distance · Time · Speed · Elevation · HR" good />
+          </ul>
+          <p className="text-[11px] text-zinc-500 leading-relaxed">
+            WhatsApp strips all GPS and timestamp data from videos before sending, for privacy reasons. LENS detects this automatically and switches to <strong className="text-white">Activity Portrait</strong> mode — the GPX file provides all the data, and the WhatsApp video plays as the background footage. The output shows your full route on the map, and activity stats animate progressively during the clip.
+          </p>
+          <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
+            Both .mp4 (received on Android or desktop) and .mov (saved from WhatsApp on iOS) are supported.
+          </p>
+          <div className="mt-3 p-3 rounded-xl bg-zinc-800/60 border border-zinc-700/60">
+            <p className="text-zinc-400 text-[11px] leading-relaxed">
+              <strong className="text-zinc-200">Content rights:</strong> When importing a video received via WhatsApp, you confirm that you have the right to use it (personal footage, with the creator&rsquo;s permission, or content you own). LENS processes everything locally — your video is never uploaded to any server.
+            </p>
+          </div>
+        </div>
+
         {/* ── GPS TRACKERS ──────────────────────────────────────────────────── */}
         <SectionTitle>GPS trackers &amp; apps</SectionTitle>
         <p className="text-zinc-400 text-sm leading-relaxed mb-6">
@@ -624,6 +658,9 @@ export default function HowItWorksPage() {
             </HelpItem>
             <HelpItem error="Encoding failed. Please try again. (mobile)" title="Mobile encoding error">
               The hardware video encoder encountered an error. This usually happens on older devices below the recommended minimum. Try again, or switch to desktop Chrome for reliable export.
+            </HelpItem>
+            <HelpItem error="WhatsApp video — using Activity Portrait mode" title="WhatsApp video detected">
+              WhatsApp removes all GPS and timestamp data from videos before sending. LENS detects this automatically and switches to <strong className="text-white">Activity Portrait</strong> mode: your GPX provides all the data, and the video plays as background footage. The output includes your full route, distance, time, speed, elevation, and heart rate. No sync between video frames and GPS is possible — this is a limitation of WhatsApp&rsquo;s privacy processing, not a LENS error.
             </HelpItem>
           </div>
         </div>
