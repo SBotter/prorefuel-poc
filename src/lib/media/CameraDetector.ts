@@ -2,21 +2,30 @@
  * CameraDetector — identifies the camera type from a video file.
  *
  * Detection order (content-first, filename last resort):
+ *   0. WhatsApp beam box — proprietary box written by WA between ftyp and moov.
+ *      Fastest check (~200 bytes). Runs before EXIF to short-circuit early.
  *   1. Extension: .mov → iPhone (unambiguous — only Apple uses QuickTime MOV)
  *   2. EXIF Make/Model — reads actual file content (Make tag)
- *   3. Android MP4 container scan — reads 'com.android.*' metadata from bytes
- *      Works for ANY filename including renamed files (moov at start or end)
+ *   3a. Apple MP4 container scan — 'com.apple.quicktime.*' metadata
+ *       Override: if WA structure is also present → WhatsApp wins (mobile saves
+ *       WA videos to iOS camera roll and iOS adds apple metadata on top)
+ *   3b. Android MP4 container scan — 'com.android.*' metadata
+ *       Override: same as 3a — Android gallery can wrap WA files with its metadata
+ *   3c. WhatsApp structure fallback — for cases where beam was stripped AND no
+ *       Apple/Android metadata was added. Detects: mp42 brand + mvhd.creation_time=0.
+ *       WhatsApp always zeroes out the recording timestamp for privacy. Real
+ *       camera recordings (iPhone, Android, GoPro) always embed a valid timestamp.
  *   4. Filename patterns — last resort only, for GoPro naming convention
- *      (GH/GX/GL/GOPR/GP + digits — too specific to be a false positive)
  *
  * The filename is NEVER used as authoritative source. Users can rename files
  * freely. Only file content determines the camera type.
  *
  * Supported types:
- *   'gopro'   → GoPro cameras (GPMF telemetry pipeline)
- *   'iphone'  → Apple iPhone (CreateDate timestamp pipeline)
- *   'android' → Android phones (Samsung, Google Pixel, etc.)
- *   'unknown' → Not supported — upload is rejected with explanation
+ *   'gopro'     → GoPro cameras (GPMF telemetry pipeline)
+ *   'iphone'    → Apple iPhone (CreateDate timestamp pipeline)
+ *   'android'   → Android phones (Samsung, Google Pixel, etc.)
+ *   'whatsapp'  → WhatsApp-shared video (portrait template, GPX-only pipeline)
+ *   'unknown'   → Not supported — upload is rejected with explanation
  */
 
 export type CameraType = 'gopro' | 'iphone' | 'android' | 'whatsapp' | 'unknown';
@@ -122,20 +131,33 @@ export class CameraDetector {
     } catch { /* exifr failed — continue to next layer */ }
 
     // ── Layer 3a: Apple iPhone MP4 container scan ────────────────────────────
-    // iPhones that record or export as .mp4 (not .mov) embed com.apple.quicktime.*
-    // metadata keys in the MP4 container — always present regardless of filename.
-    // This catches renamed files and iOS-exported MP4s where EXIF read failed.
+    // iPhones that record or export as .mp4 embed com.apple.quicktime.* metadata.
+    // Override: on mobile, iOS adds apple metadata when saving a WA video to the
+    // camera roll. WA structure check (mp42 + ct=0) wins over apple detection.
     const appleResult = await CameraDetector._scanAppleContainer(file);
-    if (appleResult) return appleResult;
+    if (appleResult) {
+      if (await CameraDetector._isWhatsAppStructure(file))
+        return { type: 'whatsapp', make: 'WhatsApp', model: 'WhatsApp' };
+      return appleResult;
+    }
 
     // ── Layer 3b: Android MP4 container byte scan (reads file content) ────────
-    // Android writes 'com.android.*' proprietary metadata into the MP4 container
-    // regardless of filename. Works even for files renamed to anything.
-    //
-    // Scans BOTH the beginning (faststart files — moov at start) AND the end
-    // (non-faststart files — moov at EOF, common on Android camera apps).
+    // Android writes 'com.android.*' proprietary metadata into the MP4 container.
+    // Override: Android gallery can wrap a received WA video with android metadata
+    // while the file itself is still WhatsApp-transcoded (mp42 + ct=0).
     const androidResult = await CameraDetector._scanAndroidContainer(file);
-    if (androidResult) return androidResult;
+    if (androidResult) {
+      if (await CameraDetector._isWhatsAppStructure(file))
+        return { type: 'whatsapp', make: 'WhatsApp', model: 'WhatsApp' };
+      return androidResult;
+    }
+
+    // ── Layer 3c: WhatsApp structure fallback ─────────────────────────────────
+    // Catches WA videos where beam was stripped AND no Apple/Android metadata was
+    // added. mp42 brand + mvhd.creation_time=0 is a reliable WA fingerprint:
+    // every real camera (iPhone, Android, GoPro) embeds a valid creation_time.
+    if (await CameraDetector._isWhatsAppStructure(file))
+      return { type: 'whatsapp', make: 'WhatsApp', model: 'WhatsApp' };
 
     // ── Layer 4: GoPro filename pattern (last resort — content checks failed) ──
     // GoPro's internal naming (GH/GX/GL/GOPR/GP + digits) is camera-generated
@@ -166,6 +188,67 @@ export class CameraDetector {
         if (type === 'beam') return true;
         if (type === 'moov' || size < 8) break;
         pos += size;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  // ── WhatsApp structure fingerprint (beam-independent) ────────────────────────
+  // Conditions: (1) ftyp major brand = 'mp42'  AND  (2) mvhd.creation_time = 0.
+  // WhatsApp zeroes the creation_time on every transcoded video for privacy.
+  // Real camera recordings always embed a valid UTC timestamp in mvhd.
+  // Reads first 64 KB (moov is at file start for faststart/WA files).
+  private static async _isWhatsAppStructure(file: File): Promise<boolean> {
+    try {
+      const buf = new Uint8Array(await file.slice(0, 65_536).arrayBuffer());
+      if (buf.length < 12) return false;
+
+      // Check ftyp major brand = 'mp42'
+      const ftypSz = ((buf[0]<<24)|(buf[1]<<16)|(buf[2]<<8)|buf[3]) >>> 0;
+      if (String.fromCharCode(buf[4], buf[5], buf[6], buf[7]) !== 'ftyp') return false;
+      if (String.fromCharCode(buf[8], buf[9], buf[10], buf[11]) !== 'mp42') return false;
+
+      // Walk top-level boxes to find moov, then mvhd
+      let pos = ftypSz;
+      for (let i = 0; i < 16 && pos + 8 <= buf.length; i++) {
+        const sz   = ((buf[pos]<<24)|(buf[pos+1]<<16)|(buf[pos+2]<<8)|buf[pos+3]) >>> 0;
+        const type = String.fromCharCode(buf[pos+4], buf[pos+5], buf[pos+6], buf[pos+7]);
+        if (sz < 8) break;
+
+        if (type === 'moov') {
+          let mp  = pos + 8;
+          const end = Math.min(pos + sz, buf.length);
+          for (let j = 0; j < 16 && mp + 8 <= end; j++) {
+            const msz  = ((buf[mp]<<24)|(buf[mp+1]<<16)|(buf[mp+2]<<8)|buf[mp+3]) >>> 0;
+            const mtyp = String.fromCharCode(buf[mp+4], buf[mp+5], buf[mp+6], buf[mp+7]);
+            if (mtyp === 'mvhd') {
+              // mvhd layout (after 8-byte box header):
+              //   [0]     version
+              //   [1-3]   flags
+              //   [4-7]   creation_time (version 0, Mac epoch) — 0 = stripped
+              //   [4-11]  creation_time (version 1, Mac epoch, 64-bit)
+              if (mp + 16 > end) return false;
+              const version = buf[mp + 8];
+              if (version === 0) {
+                const ct = ((buf[mp+12]<<24)|(buf[mp+13]<<16)|(buf[mp+14]<<8)|buf[mp+15]) >>> 0;
+                return ct === 0;
+              }
+              if (version === 1 && mp + 24 <= end) {
+                const hi = ((buf[mp+12]<<24)|(buf[mp+13]<<16)|(buf[mp+14]<<8)|buf[mp+15]) >>> 0;
+                const lo = ((buf[mp+16]<<24)|(buf[mp+17]<<16)|(buf[mp+18]<<8)|buf[mp+19]) >>> 0;
+                return hi === 0 && lo === 0;
+              }
+              return false;
+            }
+            if (msz < 8) break;
+            mp += msz;
+          }
+          return false;
+        }
+
+        pos += sz;
       }
       return false;
     } catch {
