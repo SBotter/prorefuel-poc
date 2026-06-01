@@ -592,21 +592,8 @@ export function MobileCanvasRenderer({
       // Mini-map — no background box, matches desktop
       drawMiniMap(c, gpsIdx);
 
-      // Altimetry — matches desktop: globalAlpha 0.45 (desktop does the same)
-      const altCursorX = altProjX[gpsIdx];
-      const altCursorY = altProjY[gpsIdx];
-      c.save();
-      c.globalAlpha = 0.45;
-      c.drawImage(altimetryCache, 0, ALT_Y);
-      c.restore();
-
-      // Altimetry cursor (current position on the curve)
-      c.strokeStyle = "rgba(255,255,255,0.4)"; c.lineWidth = 1.5; c.setLineDash([4, 4]);
-      c.beginPath(); c.moveTo(altCursorX, ALT_Y); c.lineTo(altCursorX, ALT_Y + ALT_PT + ALT_H); c.stroke();
-      c.setLineDash([]);
-      c.fillStyle = "#f59e0b"; c.shadowColor = "rgba(245,158,11,0.6)"; c.shadowBlur = 8;
-      c.beginPath(); c.arc(altCursorX, altCursorY, 5, 0, Math.PI * 2); c.fill();
-      c.shadowBlur = 0;
+      // Altimetry — extracted to helper so portrait template can reuse it
+      drawAltimetryBase(c, gpsIdx);
 
       c.restore();
     }
@@ -944,6 +931,101 @@ export function MobileCanvasRenderer({
       c.restore();
     }
 
+    // ── Drawing: altimetry — extracted so portrait template can call it too ────
+    function drawAltimetryBase(c: CanvasRenderingContext2D, gpsIdx: number) {
+      const altCursorX = altProjX[gpsIdx];
+      const altCursorY = altProjY[gpsIdx];
+      c.save();
+      c.globalAlpha = 0.45;
+      c.drawImage(altimetryCache, 0, ALT_Y);
+      c.restore();
+      // Dashed cursor line
+      c.strokeStyle = "rgba(255,255,255,0.4)"; c.lineWidth = 1.5; c.setLineDash([4, 4]);
+      c.beginPath(); c.moveTo(altCursorX, ALT_Y); c.lineTo(altCursorX, ALT_Y + ALT_PT + ALT_H); c.stroke();
+      c.setLineDash([]);
+      // Amber dot
+      c.fillStyle = "#f59e0b"; c.shadowColor = "rgba(245,158,11,0.6)"; c.shadowBlur = 8;
+      c.beginPath(); c.arc(altCursorX, altCursorY, 5, 0, Math.PI * 2); c.fill();
+      c.shadowBlur = 0;
+    }
+
+    // ── Drawing: Activity Portrait HUD (template 2) ────────────────────────────
+    // Mirrors desktop MapEngine drawPortraitHUD exactly:
+    //   • Map centered at top, full static route, no amber trail, no cursor dot
+    //   • Single-column stats with progressive reveals (revealFrac 0→1)
+    //   • Elevation graph at bottom (same as template 1)
+    function drawPortraitHUD(c: CanvasRenderingContext2D, gpsIdx: number, revealFrac: number) {
+      const pd = storyPlan?.portraitData;
+      if (!pd) return;
+
+      // ── Map: centered, no trail, no cursor ─────────────────────────────────
+      const mapX = Math.round((W - MM_W) / 2);
+      c.save();
+      c.globalAlpha = Math.min(revealFrac / 0.08, 1) * 0.88;
+      c.drawImage(broadmapCache, mapX, MM_Y, MM_W, MM_H);
+      c.globalAlpha = 1;
+      c.restore();
+
+      // ── Format helpers ──────────────────────────────────────────────────────
+      const fmtDist  = (m: number) => `${(m / DIST_DIV).toFixed(1)} ${DIST_UNIT}`;
+      const fmtTime  = (sec: number) => {
+        const h = Math.floor(sec / 3600);
+        const mn = Math.floor((sec % 3600) / 60).toString().padStart(2, "0");
+        const s  = Math.floor(sec % 60).toString().padStart(2, "0");
+        return h > 0 ? `${h}h ${mn}min` : `${mn}:${s}`;
+      };
+      const fmtSpeed = (kmh: number) => `${(kmh * SPEED_DIV).toFixed(1)} ${SPEED_UNIT}`;
+
+      // ── Build stat list (skip null/0 entries) ───────────────────────────────
+      type SI = { value: string; label: string; color: string };
+      const stats: SI[] = [];
+      stats.push({ value: fmtDist(pd.totalDistanceM), label: "Total Distance", color: "#ffffff" });
+      stats.push({ value: fmtTime(pd.durationSec),    label: "Total Time",     color: "#ffffff" });
+      stats.push({ value: fmtSpeed(pd.avgSpeedKmh),   label: "Avg Speed",      color: "#f59e0b" });
+      if (pd.maxSpeedKmh !== null && pd.maxSpeedKmh > 0)
+        stats.push({ value: fmtSpeed(pd.maxSpeedKmh), label: "Max Speed",      color: "#fbbf24" });
+      stats.push({ value: `▲ ${pd.elevationGainM} m`, label: "Elevation Gain", color: "#ffffff" });
+      if (pd.hasHeartRate && pd.hrAvg !== null && pd.hrMax !== null)
+        stats.push({ value: `♥ ${pd.hrAvg} / ${pd.hrMax}`, label: "HR avg / max", color: "#f87171" });
+
+      // ── Geometry: fit stats evenly between map bottom and graph top ─────────
+      const STATS_TOP = MM_Y + MM_H + Math.round(H * 0.04);
+      const STATS_BTM = ALT_Y - Math.round(H * 0.02);
+      const ROW_H     = Math.round((STATS_BTM - STATS_TOP) / stats.length);
+      const PAD_X     = Math.round(W * 0.06);
+      const VAL_SIZE  = Math.round(W * 0.062);
+      const LBL_SIZE  = Math.round(W * 0.020);
+      const LBL_GAP   = Math.round(W * 0.026);
+
+      const revealStart = 0.10;
+      const revealEnd   = 0.75;
+      const revealStep  = stats.length > 1 ? (revealEnd - revealStart) / (stats.length - 1) : 0;
+
+      stats.forEach(({ value, label, color }, i) => {
+        const threshold = revealStart + i * revealStep;
+        const alpha = Math.min(Math.max(revealFrac - threshold, 0) / 0.05, 1);
+        if (alpha <= 0) return;
+        const y = STATS_TOP + Math.round(ROW_H * (i + 0.72));
+        c.save();
+        c.globalAlpha  = alpha;
+        c.shadowColor  = "rgba(0,0,0,0.95)";
+        c.shadowBlur   = 18;
+        c.font         = `900 ${VAL_SIZE}px sans-serif`;
+        c.fillStyle    = color;
+        c.textAlign    = "left";
+        c.textBaseline = "alphabetic";
+        c.fillText(value, PAD_X, y);
+        c.shadowBlur   = 7;
+        c.font         = `700 ${LBL_SIZE}px sans-serif`;
+        c.fillStyle    = "rgba(161,161,170,0.85)";
+        c.fillText(label.toUpperCase(), PAD_X, y + LBL_GAP);
+        c.restore();
+      });
+
+      // ── Elevation graph (identical to template 1) ───────────────────────────
+      drawAltimetryBase(c, gpsIdx);
+    }
+
     // ── LENS watermark — black circle with LENS text, top-right corner ───────────
     function drawWatermark(c: CanvasRenderingContext2D) {
       const wmSize = Math.round(W * 0.079);
@@ -994,7 +1076,13 @@ export function MobileCanvasRenderer({
         vig.addColorStop(0, "rgba(0,0,0,0.02)"); vig.addColorStop(1, "rgba(0,0,0,0.58)");
         ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
 
-        drawTelemetryHUD(ctx, gpsIdx);
+        if (storyPlan?.templateId === 'activity_portrait') {
+          // Portrait template: map (centered, no cursor) + progressive stats + elevation
+          const revealFrac = Math.min(localTime / seg.durationSec, 1);
+          drawPortraitHUD(ctx, gpsIdx, revealFrac);
+        } else {
+          drawTelemetryHUD(ctx, gpsIdx);
+        }
         drawWatermark(ctx);
 
         // No black overlay needed — intro ends with color video visible, ACTION
