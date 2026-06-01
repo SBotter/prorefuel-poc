@@ -1525,91 +1525,82 @@ const MapEngine = forwardRef(
         ctx.restore();
       };
 
-      // ── Portrait template HUD — static broadmap + progressive stat cards ────
+      // ── Portrait template HUD — single column, evenly spaced stats ──────────
       // revealFrac: 0.0 (action start) → 1.0 (action end)
+      // Layout: map (top-center) → single column stats → breathing room → elevation graph
       const drawPortraitHUD = (revealFrac: number) => {
         const d = storyPlan?.portraitData;
         if (!d) return;
         ctx.save();
 
-        // Map: centered horizontally at top — no trail, no cursor dot
-        const mapW = pipW;
-        const mapH = pipH;
-        const mapX = Math.round((W - mapW) / 2);
-        const mapY = pipY;
-
-        // Map fade-in over first 8% of action
+        // ── Map: centered, no trail, no cursor ────────────────────────────────
+        const mapX     = Math.round((W - pipW) / 2);
         const mapAlpha = Math.min(revealFrac / 0.08, 1);
         ctx.globalAlpha = mapAlpha * 0.88;
-        ctx.drawImage(broadmapCache, mapX, mapY, mapW, mapH);
+        ctx.drawImage(broadmapCache, mapX, pipY, pipW, pipH);
         ctx.globalAlpha = 1;
 
-        // Helper: render one stat row with fade-in
-        const statBaseY = mapY + mapH + Math.round(H * 0.045);
-        const rowH      = Math.round(H * 0.095);
-        const labelX    = Math.round(W * 0.06);
+        // ── Format helpers ────────────────────────────────────────────────────
+        const fmtDist = (m: number) =>
+          unit === "imperial" ? `${(m / 1609.34).toFixed(1)} mi` : `${(m / 1000).toFixed(1)} km`;
+        const fmtTime = (sec: number) => {
+          const h = Math.floor(sec / 3600);
+          const m = Math.floor((sec % 3600) / 60);
+          const s = Math.floor(sec % 60);
+          return h > 0 ? `${h}h ${m.toString().padStart(2, "0")}min` : `${m}:${s.toString().padStart(2, "0")}`;
+        };
+        const fmtSpeed = (kmh: number) =>
+          unit === "imperial" ? `${(kmh * 0.621371).toFixed(1)} mph` : `${kmh.toFixed(1)} km/h`;
 
-        const drawStat = (
-          row: number,
-          threshold: number,
-          value: string,
-          label: string,
-          color = "#ffffff",
-        ) => {
-          const alpha = Math.min(Math.max(revealFrac - threshold, 0) / 0.04, 1);
+        // ── Build stat list (skip null/0 entries) ─────────────────────────────
+        type StatItem = { value: string; label: string; color: string };
+        const stats: StatItem[] = [];
+        stats.push({ value: fmtDist(d.totalDistanceM), label: "Total Distance", color: "#ffffff" });
+        stats.push({ value: fmtTime(d.durationSec),    label: "Total Time",     color: "#ffffff" });
+        stats.push({ value: fmtSpeed(d.avgSpeedKmh),   label: "Avg Speed",      color: "#f59e0b" });
+        if (d.maxSpeedKmh !== null && d.maxSpeedKmh > 0)
+          stats.push({ value: fmtSpeed(d.maxSpeedKmh), label: "Max Speed",      color: "#fbbf24" });
+        stats.push({ value: `▲ ${d.elevationGainM} m`, label: "Elevation Gain", color: "#ffffff" });
+        if (d.hasHeartRate && d.hrAvg !== null && d.hrMax !== null)
+          stats.push({ value: `♥ ${d.hrAvg} / ${d.hrMax}`, label: "HR avg / max", color: "#f87171" });
+
+        // ── Geometry: fit n stats evenly between map and elevation graph ───────
+        const STATS_TOP  = pipY + pipH + Math.round(H * 0.04);   // just below map
+        const STATS_BTM  = ALT_Y - Math.round(H * 0.02);          // just above graph
+        const AVAIL      = STATS_BTM - STATS_TOP;
+        const ROW_H      = Math.round(AVAIL / stats.length);
+        const PAD_X      = Math.round(W * 0.06);
+        const VAL_SIZE   = Math.round(W * 0.062);   // smaller than template 1
+        const LBL_SIZE   = Math.round(W * 0.020);
+        const LBL_GAP    = Math.round(W * 0.026);
+
+        // Reveals: first stat at 0.10, last at 0.75, evenly spaced
+        const revealStart = 0.10;
+        const revealEnd   = 0.75;
+        const revealStep  = stats.length > 1 ? (revealEnd - revealStart) / (stats.length - 1) : 0;
+
+        stats.forEach(({ value, label, color }, i) => {
+          const threshold = revealStart + i * revealStep;
+          const alpha     = Math.min(Math.max(revealFrac - threshold, 0) / 0.05, 1);
           if (alpha <= 0) return;
+          const y = STATS_TOP + Math.round(ROW_H * (i + 0.72)); // baseline within each row slot
           ctx.save();
-          ctx.globalAlpha = alpha;
-
-          // Value
+          ctx.globalAlpha  = alpha;
           ctx.shadowColor  = "rgba(0,0,0,0.95)";
-          ctx.shadowBlur   = 22;
-          ctx.font         = `900 ${Math.round(W * 0.082)}px sans-serif`;
+          ctx.shadowBlur   = 18;
+          ctx.font         = `900 ${VAL_SIZE}px sans-serif`;
           ctx.fillStyle    = color;
           ctx.textAlign    = "left";
           ctx.textBaseline = "alphabetic";
-          ctx.fillText(value, labelX, statBaseY + row * rowH);
-
-          // Label — smaller, muted
-          ctx.shadowBlur   = 10;
-          ctx.font         = `700 ${Math.round(W * 0.026)}px sans-serif`;
+          ctx.fillText(value, PAD_X, y);
+          ctx.shadowBlur   = 7;
+          ctx.font         = `700 ${LBL_SIZE}px sans-serif`;
           ctx.fillStyle    = "rgba(161,161,170,0.85)";
-          ctx.fillText(label.toUpperCase(), labelX, statBaseY + row * rowH + Math.round(W * 0.033));
-
+          ctx.fillText(label.toUpperCase(), PAD_X, y + LBL_GAP);
           ctx.restore();
-        };
+        });
 
-        // Format helpers
-        const fmtDist = (m: number) =>
-          unit === "imperial"
-            ? `${(m / 1609.34).toFixed(1)} mi`
-            : `${(m / 1000).toFixed(1)} km`;
-
-        const fmtTime = (sec: number) => {
-          const h  = Math.floor(sec / 3600);
-          const m  = Math.floor((sec % 3600) / 60);
-          const s  = Math.floor(sec % 60);
-          return h > 0
-            ? `${h}h ${m.toString().padStart(2, "0")}min`
-            : `${m}:${s.toString().padStart(2, "0")}`;
-        };
-
-        const fmtSpeed = (kmh: number) =>
-          unit === "imperial"
-            ? `${(kmh * 0.621371).toFixed(1)} mph`
-            : `${kmh.toFixed(1)} km/h`;
-
-        let row = 0;
-        drawStat(row++, 0.10, fmtDist(d.totalDistanceM), "Total Distance", "#ffffff");
-        drawStat(row++, 0.22, fmtTime(d.durationSec),    "Total Time",     "#ffffff");
-        drawStat(row++, 0.35, fmtSpeed(d.avgSpeedKmh),   "Avg Speed",      "#f59e0b");
-        drawStat(row++, 0.48, fmtSpeed(d.maxSpeedKmh),   "Max Speed",      "#fbbf24");
-        drawStat(row++, 0.60, `▲ ${d.elevationGainM} m`, "Elevation Gain", "#ffffff");
-        if (d.hasHeartRate && d.hrAvg !== null && d.hrMax !== null) {
-          drawStat(row,  0.75, `♥ ${d.hrAvg} / ${d.hrMax} bpm`, "HR Avg / Max", "#f87171");
-        }
-
-        // Watermark (same as standard template)
+        // ── Watermark ─────────────────────────────────────────────────────────
         {
           const wmSize = Math.round(W * 0.079);
           const wmR    = wmSize / 2;
@@ -2563,6 +2554,7 @@ const MapEngine = forwardRef(
                 ctx.save();
                 ctx.globalAlpha = telAlpha;
                 drawPortraitHUD(revealFrac);
+                drawAltimetry(idx);
                 ctx.restore();
               }
               const darkness = Math.max((_t - 0.55) / 0.45, 0);
@@ -2840,20 +2832,18 @@ const MapEngine = forwardRef(
           style={{ opacity: Math.max((preBrandFade - 0.55) / 0.45, 0) }}
         />
 
-        {/* 2.5 GRÁFICO DE ALTIMETRIA — standard template only */}
-        {storyPlan?.templateId !== 'activity_portrait' && (
-          <div
-            style={{
-              bottom: 0, left: 0, width: "100%", height: "15vh",
-              transition: "opacity 800ms ease",
-              opacity: viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
-                : Math.max(1 - preBrandFade / 0.28, 0),
-            }}
-            className="absolute z-40 pointer-events-none"
-          >
-            <AltimetryGraph points={activityPoints} currentIndex={currentIndex} unit={unit} />
-          </div>
-        )}
+        {/* 2.5 GRÁFICO DE ALTIMETRIA — all templates */}
+        <div
+          style={{
+            bottom: 0, left: 0, width: "100%", height: "15vh",
+            transition: "opacity 800ms ease",
+            opacity: viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
+              : Math.max(1 - preBrandFade / 0.28, 0),
+          }}
+          className="absolute z-40 pointer-events-none"
+        >
+          <AltimetryGraph points={activityPoints} currentIndex={currentIndex} unit={unit} />
+        </div>
 
         {/* 3. ACTIVITY TELEMETRY — standard template */}
         {storyPlan?.templateId !== 'activity_portrait' && (
@@ -2880,36 +2870,54 @@ const MapEngine = forwardRef(
 
         {/* 3b. PORTRAIT HUD overlay — activity_portrait template only */}
         {storyPlan?.templateId === 'activity_portrait' && storyPlan.portraitData && (() => {
-          const d          = storyPlan.portraitData!;
+          const d           = storyPlan.portraitData!;
           const baseOpacity = viewMode === "INTRO" || viewMode === "BRAND" || isEnding ? 0
             : Math.max(1 - preBrandFade / 0.28, 0);
           const fmtDist  = (m: number) => unit === "imperial" ? `${(m/1609.34).toFixed(1)} mi` : `${(m/1000).toFixed(1)} km`;
-          const fmtTime  = (sec: number) => { const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.floor(sec%60); return h>0?`${h}h ${m.toString().padStart(2,"0")}min`:`${m}:${s.toString().padStart(2,"0")}`; };
+          const fmtTime  = (sec: number) => { const h=Math.floor(sec/3600),mn=Math.floor((sec%3600)/60),s=Math.floor(sec%60); return h>0?`${h}h ${mn.toString().padStart(2,"0")}min`:`${mn}:${s.toString().padStart(2,"0")}`; };
           const fmtSpeed = (kmh: number) => unit === "imperial" ? `${(kmh*0.621371).toFixed(1)} mph` : `${kmh.toFixed(1)} km/h`;
-          const statStyle = (threshold: number): React.CSSProperties => ({
-            opacity: baseOpacity * Math.min(Math.max(portraitReveal - threshold, 0) / 0.04, 1),
-            transition: "opacity 600ms ease-out",
-            marginBottom: "3.5vh",
-          });
+
+          // Build stat list (skip null/0 entries) — same logic as canvas
+          type DomStat = { value: string; label: string; color: string };
+          const domStats: DomStat[] = [];
+          domStats.push({ value: fmtDist(d.totalDistanceM), label: "Total Distance", color: "#ffffff" });
+          domStats.push({ value: fmtTime(d.durationSec),    label: "Total Time",     color: "#ffffff" });
+          domStats.push({ value: fmtSpeed(d.avgSpeedKmh),   label: "Avg Speed",      color: "#f59e0b" });
+          if (d.maxSpeedKmh !== null && d.maxSpeedKmh > 0)
+            domStats.push({ value: fmtSpeed(d.maxSpeedKmh), label: "Max Speed",      color: "#fbbf24" });
+          domStats.push({ value: `▲ ${d.elevationGainM} m`, label: "Elevation Gain", color: "#ffffff" });
+          if (d.hasHeartRate && d.hrAvg !== null && d.hrMax !== null)
+            domStats.push({ value: `♥ ${d.hrAvg} / ${d.hrMax}`, label: "HR avg / max", color: "#f87171" });
+
+          const revealStep = domStats.length > 1 ? 0.65 / (domStats.length - 1) : 0;
+
           return (
-            <div className="absolute inset-0 z-50 pointer-events-none flex flex-col"
-              style={{ padding: "calc(47% + 3vh) 6% 4% 6%", opacity: baseOpacity, transition: "opacity 800ms ease" }}>
-              {/* Stats appear progressively — each has its own threshold */}
-              {[
-                { value: fmtDist(d.totalDistanceM),        label: "Total Distance", color: "#ffffff", t: 0.10 },
-                { value: fmtTime(d.durationSec),           label: "Total Time",     color: "#ffffff", t: 0.22 },
-                { value: fmtSpeed(d.avgSpeedKmh),          label: "Avg Speed",      color: "#f59e0b", t: 0.35 },
-                { value: fmtSpeed(d.maxSpeedKmh),          label: "Max Speed",      color: "#fbbf24", t: 0.48 },
-                { value: `▲ ${d.elevationGainM} m`,        label: "Elevation Gain", color: "#ffffff", t: 0.60 },
-                ...(d.hasHeartRate && d.hrAvg !== null && d.hrMax !== null
-                  ? [{ value: `♥ ${d.hrAvg} / ${d.hrMax} bpm`, label: "HR Avg / Max", color: "#f87171", t: 0.75 }]
-                  : []),
-              ].map(({ value, label, color, t }) => (
-                <div key={label} style={statStyle(t)}>
-                  <div style={{ color, fontWeight: 900, fontSize: "clamp(1.6rem,7vw,2.4rem)", lineHeight: 1.1, textShadow: "0 2px 18px rgba(0,0,0,0.95)" }}>{value}</div>
-                  <div style={{ color: "rgba(161,161,170,0.85)", fontWeight: 700, fontSize: "clamp(0.55rem,2.2vw,0.8rem)", letterSpacing: "0.18em", textTransform: "uppercase", marginTop: "0.15em" }}>{label}</div>
-                </div>
-              ))}
+            <div className="absolute inset-0 z-50 pointer-events-none" style={{ opacity: baseOpacity, transition: "opacity 800ms ease" }}>
+              {/*
+                Single-column stats: top clears mini-map (~28%), bottom clears elevation graph (18vh).
+                space-evenly distributes all rows uniformly in the available space.
+              */}
+              <div style={{
+                position: "absolute",
+                top: "28%",
+                left: "6%",
+                right: "6%",
+                bottom: "18vh",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-evenly",
+              }}>
+                {domStats.map(({ value, label, color }, i) => {
+                  const threshold = 0.10 + i * revealStep;
+                  const alpha = Math.min(Math.max(portraitReveal - threshold, 0) / 0.05, 1);
+                  return (
+                    <div key={label} style={{ opacity: alpha, transition: "opacity 700ms ease-out" }}>
+                      <div style={{ color, fontWeight: 900, fontSize: "clamp(1.1rem,4.8vw,1.6rem)", lineHeight: 1.05, textShadow: "0 2px 14px rgba(0,0,0,0.95)", letterSpacing: "-0.01em" }}>{value}</div>
+                      <div style={{ color: "rgba(161,161,170,0.8)", fontWeight: 700, fontSize: "clamp(0.48rem,1.8vw,0.62rem)", letterSpacing: "0.18em", textTransform: "uppercase", marginTop: "0.2em" }}>{label}</div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           );
         })()}

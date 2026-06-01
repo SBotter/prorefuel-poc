@@ -28,41 +28,48 @@ function haversineM(lat1: number, lon1: number, lat2: number, lon2: number): num
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// GPS spike cap: any single-segment speed above this is noise (applies to all sports)
+const GPS_SPEED_CAP_KMH = 150;
+
 // ── Aggregate stats from raw activity points ───────────────────────────────────
 function computePortraitData(points: EnhancedGPSPoint[]): ActivityPortraitData {
-  let totalDistanceM = 0;
-  let maxSpeedKmh    = 0;
-  let elevationGainM = 0;
-  let hrSum          = 0;
-  let hrCount        = 0;
-  let hrMax          = 0;
+  let totalDistanceM    = 0;
+  let maxSpeedExplicit  = 0;   // from p.speed / p.speedSmoothed fields
+  let hasExplicitSpeed  = false;
+  let elevationGainM    = 0;
+  let hrSum             = 0;
+  let hrCount           = 0;
+  let hrMax             = 0;
+  const gpsSpeedsKmh: number[] = [];  // derived from position deltas
 
   for (let i = 0; i < points.length; i++) {
-    const p = points[i] as any;
+    const p    = points[i] as any;
+    const prev = i > 0 ? points[i - 1] as any : null;
 
-    // Distance
-    if (i > 0) {
-      const prev = points[i - 1];
-      totalDistanceM += haversineM(prev.lat, prev.lon, p.lat, p.lon);
+    // Distance + GPS-derived speed
+    if (prev) {
+      const distM  = haversineM(prev.lat, prev.lon, p.lat, p.lon);
+      const dtSec  = (p.time - prev.time) / 1000;
+      totalDistanceM += distM;
+      if (dtSec > 0 && dtSec <= 30) {
+        const spdKmh = (distM / 1000) / (dtSec / 3600);
+        if (spdKmh < GPS_SPEED_CAP_KMH) gpsSpeedsKmh.push(spdKmh);
+      }
     }
 
-    // Speed
+    // Explicit speed field (m/s converted to km/h in GPX parser, or already km/h)
     const spd = (p.speed ?? p.speedSmoothed ?? 0) as number;
-    if (spd > maxSpeedKmh) maxSpeedKmh = spd;
+    if (spd > 0) { hasExplicitSpeed = true; if (spd > maxSpeedExplicit) maxSpeedExplicit = spd; }
 
-    // Elevation gain (only positive deltas)
-    if (i > 0) {
-      const dEle = p.ele - (points[i - 1] as any).ele;
+    // Elevation gain (positive deltas only)
+    if (prev) {
+      const dEle = p.ele - prev.ele;
       if (dEle > 0) elevationGainM += dEle;
     }
 
     // Heart rate
     const hr = (p.hr ?? 0) as number;
-    if (hr > 0) {
-      hrSum += hr;
-      hrCount++;
-      if (hr > hrMax) hrMax = hr;
-    }
+    if (hr > 0) { hrSum += hr; hrCount++; if (hr > hrMax) hrMax = hr; }
   }
 
   const durationSec = points.length > 1
@@ -73,11 +80,23 @@ function computePortraitData(points: EnhancedGPSPoint[]): ActivityPortraitData {
     ? (totalDistanceM / 1000) / (durationSec / 3600)
     : 0;
 
+  // Max speed: prefer explicit field; fallback to 98th-percentile of GPS-derived speeds.
+  // 98th-percentile filters isolated GPS spikes without discarding the true peak.
+  // Returns null when both sources yield 0 (insufficient data to show meaningfully).
+  let maxSpeedKmh: number | null = null;
+  if (hasExplicitSpeed && maxSpeedExplicit > 0) {
+    maxSpeedKmh = Math.round(maxSpeedExplicit * 10) / 10;
+  } else if (gpsSpeedsKmh.length > 0) {
+    gpsSpeedsKmh.sort((a, b) => a - b);
+    const p98 = gpsSpeedsKmh[Math.min(Math.floor(gpsSpeedsKmh.length * 0.98), gpsSpeedsKmh.length - 1)];
+    if (p98 > 0) maxSpeedKmh = Math.round(p98 * 10) / 10;
+  }
+
   return {
     totalDistanceM:  Math.round(totalDistanceM),
     durationSec:     Math.round(durationSec),
     avgSpeedKmh:     Math.round(avgSpeedKmh * 10) / 10,
-    maxSpeedKmh:     Math.round(maxSpeedKmh * 10) / 10,
+    maxSpeedKmh,
     elevationGainM:  Math.round(elevationGainM),
     hasHeartRate:    hrCount > 0,
     hrAvg:           hrCount > 0 ? Math.round(hrSum / hrCount) : null,

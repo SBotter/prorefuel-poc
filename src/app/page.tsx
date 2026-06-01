@@ -1469,17 +1469,17 @@ export default function ProRefuelPage() {
                       <div className="flex items-center gap-2 mb-2.5">
                         <div className={`w-5 h-5 rounded-md flex items-center justify-center font-black text-[10px] shrink-0 transition-colors ${
                           activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" :
-                          highlights.length > 0    ? "bg-green-500 text-black" :
+                          storyPlan !== null        ? "bg-green-500 text-black" :
                           "bg-amber-500 text-black"
                         }`}>
-                          {highlights.length > 0 ? "✓" : "2"}
+                          {storyPlan !== null ? "✓" : "2"}
                         </div>
                         <p className={`text-[9px] font-black uppercase tracking-[0.3em] transition-colors ${activityPoints.length === 0 ? "text-zinc-700" : "text-zinc-500"}`}>Video</p>
                       </div>
 
-                    <label className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all ${hevcConverting ? "cursor-default pointer-events-none border-amber-500 bg-amber-500/5" : uploadError ? "cursor-pointer border-red-500 bg-red-500/8" : highlights.length > 0 ? "cursor-pointer border-green-500 bg-green-500/8" : activityPoints.length === 0 ? "cursor-not-allowed border-zinc-800 bg-zinc-900/40 opacity-60" : "cursor-pointer border-amber-500 bg-amber-500/5 hover:bg-amber-500/10"}`}>
-                      <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${highlights.length > 0 ? "bg-green-500 text-black" : activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" : "bg-amber-500 text-black shadow-lg"}`}>
-                        {loading || hevcConverting ? <Loader2 className="animate-spin" size={28} /> : highlights.length > 0 ? <CheckCircle2 size={28} /> : <Upload size={28} />}
+                    <label className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all ${hevcConverting ? "cursor-default pointer-events-none border-amber-500 bg-amber-500/5" : uploadError ? "cursor-pointer border-red-500 bg-red-500/8" : storyPlan !== null ? "cursor-pointer border-green-500 bg-green-500/8" : activityPoints.length === 0 ? "cursor-not-allowed border-zinc-800 bg-zinc-900/40 opacity-60" : "cursor-pointer border-amber-500 bg-amber-500/5 hover:bg-amber-500/10"}`}>
+                      <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${storyPlan !== null ? "bg-green-500 text-black" : activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" : "bg-amber-500 text-black shadow-lg"}`}>
+                        {loading || hevcConverting ? <Loader2 className="animate-spin" size={28} /> : storyPlan !== null ? <CheckCircle2 size={28} /> : <Upload size={28} />}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>
@@ -1538,10 +1538,10 @@ export default function ProRefuelPage() {
                         });
                         setStep("EXPERIENCE");
                       }}
-                      disabled={!highlights.length}
-                      className={`w-full py-6 mt-2 rounded-2xl font-black uppercase tracking-[0.35em] text-xs transition-all flex items-center justify-center gap-3 ${highlights.length ? "bg-amber-500 text-black shadow-[0_15px_40px_rgba(245,158,11,0.35)] hover:scale-[1.02] active:scale-[0.98]" : "bg-zinc-800/80 text-zinc-600 cursor-not-allowed"}`}
+                      disabled={storyPlan === null}
+                      className={`w-full py-6 mt-2 rounded-2xl font-black uppercase tracking-[0.35em] text-xs transition-all flex items-center justify-center gap-3 ${storyPlan !== null ? "bg-amber-500 text-black shadow-[0_15px_40px_rgba(245,158,11,0.35)] hover:scale-[1.02] active:scale-[0.98]" : "bg-zinc-800/80 text-zinc-600 cursor-not-allowed"}`}
                     >
-                      <Zap size={18} fill={highlights.length ? "black" : "none"} />
+                      <Zap size={18} fill={storyPlan !== null ? "black" : "none"} />
                       Generate &amp; Download
                     </button>
 

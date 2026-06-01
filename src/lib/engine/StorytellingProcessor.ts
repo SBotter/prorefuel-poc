@@ -29,7 +29,7 @@ export interface ActivityPortraitData {
   totalDistanceM:  number;
   durationSec:     number;
   avgSpeedKmh:     number;
-  maxSpeedKmh:     number;
+  maxSpeedKmh:     number | null;  // null when GPS data is insufficient to compute reliably
   elevationGainM:  number;
   hasHeartRate:    boolean;
   hrAvg:           number | null;
