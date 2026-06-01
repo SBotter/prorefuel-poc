@@ -445,13 +445,70 @@ export default function MobilePage() {
     let processFile = file;
     let detectedCodec: "h264" | "hevc" | null = null;
     let transcodeStart: number | null = null;
+
+    // Mobile HEVC transcode size limit: beyond this, FFmpeg.wasm will OOM.
+    // Empirically safe at ~200 MB on iOS 16.4+ (2 GB virtual budget for WASM).
+    const HEVC_TRANSCODE_LIMIT_MB = 200;
+
     try {
       const isGoPro = originalCamDetection.type === "gopro";
-      const { canBrowserPlay, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
+      const { canBrowserPlay, transcodeHevcToH264, isHevcVideo } = await import("@/lib/engine/mobile/hevcTranscoder");
       const canPlay = isGoPro ? true : await canBrowserPlay(file);
-      detectedCodec = canPlay ? "h264" : "hevc";
 
-      if (!canPlay) {
+      // isHevcVideo() reads only the first 128 KB (cheap) — always run even when
+      // canBrowserPlay returns true. iOS Safari CAN play HEVC natively, so
+      // canBrowserPlay returns true — but WebCodecs VideoEncoder conflicts with the
+      // HEVC hardware decoder on iOS Video Toolbox, causing silent render failures.
+      // We must detect and handle HEVC regardless of browser playback capability.
+      const isHEVC = isGoPro ? false : (canPlay ? await isHevcVideo(file) : true);
+      detectedCodec = isHEVC ? "hevc" : "h264";
+
+      mlog("CODEC", `canPlay=${canPlay} isHEVC=${isHEVC} size=${(file.size/1024/1024).toFixed(0)}MB`);
+
+      if (isHEVC) {
+        const fileMB = file.size / 1_048_576;
+        if (fileMB > HEVC_TRANSCODE_LIMIT_MB) {
+          // Too large to transcode in the browser — reject with actionable message.
+          // (FFmpeg.wasm would OOM well before finishing for files this large.)
+          mlog("CODEC", `HEVC file too large to transcode on mobile: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB limit`);
+          void trackError("WRONG_VIDEO_FORMAT",
+            `[${file.name}] HEVC file too large for mobile transcode: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB. canPlay=${canPlay}.`,
+            "video_upload",
+            { ...errCtxCam, video_codec: "hevc" });
+          setLoading(false);
+          setUploadError(
+            `This video uses H.265 (HEVC) and is too large to convert on this device (${Math.round(fileMB)} MB).\n\n` +
+            `To fix:\n` +
+            `• iPhone: Settings → Camera → Formats → "Most Compatible" — records in H.264\n` +
+            `• Open LENS on desktop Chrome — no size limit there\n` +
+            `• Trim the clip to under ${HEVC_TRANSCODE_LIMIT_MB} MB before importing`
+          );
+          e.target.value = "";
+          return;
+        }
+
+        // Small HEVC file — transcode via FFmpeg.wasm (same path as canPlay=false)
+        mlog("CODEC", `HEVC detected (${fileMB.toFixed(0)}MB ≤ ${HEVC_TRANSCODE_LIMIT_MB}MB) — transcoding to H.264`);
+        setHevcConverting(true);
+        setHevcProgress(0);
+        setHevcStatus("Loading converter…");
+        transcodeStart = Date.now();
+        processFile = await transcodeHevcToH264(file, (pct, status) => {
+          setHevcProgress(pct);
+          setHevcStatus(status);
+        });
+        const transcodeMs = Date.now() - transcodeStart;
+        mlog("CODEC", `transcoding done in ${(transcodeMs/1000).toFixed(1)}s — ${(processFile.size/1024/1024).toFixed(1)}MB`);
+        void trackHevcTranscode(transcodeMs, {
+          ...errCtxCam,
+          file_size_bytes: file.size,
+          file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
+        });
+        setHevcConverting(false);
+        setHevcProgress(0);
+        setHevcStatus("");
+      } else if (!canPlay) {
+        // Non-HEVC file that the browser can't play (unusual codec)
         mlog("CODEC", `browser cannot decode file — transcoding to H.264`);
         setHevcConverting(true);
         setHevcProgress(0);
@@ -472,7 +529,7 @@ export default function MobilePage() {
         setHevcProgress(0);
         setHevcStatus("");
       } else {
-        mlog("CODEC", `browser can decode file natively${isGoPro ? " (GoPro H.264)" : ""} — skipping transcode`);
+        mlog("CODEC", `H.264 natively supported${isGoPro ? " (GoPro)" : ""} — skipping transcode`);
       }
     } catch (err: any) {
       setHevcConverting(false);
@@ -900,9 +957,14 @@ export default function MobilePage() {
       setUploadError(`Export failed: ${result.errorMessage}. Please try again.`);
     }
 
-    // Reset all state — clean slate for next video
+    // Reset all state — clean slate for next video.
+    // Do NOT clear uploadError here: if an error was just set (lines above), clearing
+    // it in the same synchronous pass means the user never sees it. The error is
+    // cleared naturally when the user selects a new file (handleVideoUpload → setUploadError(null)).
     setVideoFile(null);    setHighlights([]);      setStoryPlan(null);
-    setVideoLoaded(false); setUploadError(null);   setGpxError(null);
+    setVideoLoaded(false);
+    if (result.status !== "error") setUploadError(null);
+    setGpxError(null);
     setGpxLoaded(false);   setActivityPoints([]);  setActivityName("YOUR RIDE");
     setProgress(0);        setStatusMsg("");
     gpxNameRef.current             = "";
