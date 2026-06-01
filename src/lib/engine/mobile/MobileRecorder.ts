@@ -4,55 +4,71 @@
  * Replaces captureStream() + MediaRecorder + FFmpeg WASM for iOS/Android.
  * Records a canvas at 30fps → H264 MP4 without any server-side processing.
  *
+ * ── iOS / Android difference ──────────────────────────────────────────────────
+ *
+ * iOS:   Uses 'prefer-software' encoding (CPU-based, bypasses Video Toolbox).
+ *        This is REQUIRED because iOS Video Toolbox is a shared hardware pool:
+ *        the video decoder (drawImage(videoEl)) and a hardware VideoEncoder both
+ *        compete for the same VTCompressionSession resources. Calling flush()
+ *        or encode() while the decoder is active causes "Encoding task did not
+ *        complete". Software encoding runs on the CPU and has no interaction with
+ *        Video Toolbox — zero conflict. iPhone 13+ CPUs encode 720p H264 at
+ *        60+ fps in software, well above our 30fps target.
+ *
+ * Android: Uses 'no-preference'. Android's MediaCodec API separates the decoder
+ *          (codec component) and encoder (codec component) at the hardware level —
+ *          they do NOT share a pool. Hardware encoding is faster and doesn't
+ *          conflict with the video decoder. 'no-preference' lets Chrome choose the
+ *          best available encoder for the current device.
+ *
  * Usage:
- *   const rec = await MobileRecorder.create(canvas);
- *   // in requestAnimationFrame loop:
- *   rec.captureFrame();
- *   // when done:
- *   const mp4Blob = await rec.stop();
+ *   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+ *   const rec = await MobileRecorder.create(canvas, isIOS);
+ *   rec.captureFrame(videoReady, timestampUs);  // in rAF loop
+ *   const blob = await rec.stop();              // when done
  */
 
 // @ts-ignore — mp4-muxer ships its own types
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import { mlog } from '@/lib/engine/mobile/mobileDebugLogger';
 
-// 720×1280 keeps Instagram quality on phone screens while halving VideoFrame
-// memory vs 1080×1920 (3.7 MB/frame → significant OOM relief on iOS).
+// 720×1280: Instagram-quality portrait, 3.7 MB/frame uncompressed.
+// Lower than 1080×1920 to reduce GPU readback cost and RAM pressure.
 export const MOBILE_W   = 720;
 export const MOBILE_H   = 1280;
 export const MOBILE_FPS = 30;
 
-const FRAME_DUR_US  = Math.round(1_000_000 / MOBILE_FPS); // microseconds per frame
-// 2.5 Mbps balances quality vs encoder stability on iOS.
-// 4 Mbps caused "Encoding task did not complete" under memory pressure because the
-// ArrayBufferTarget accumulates all encoded data in RAM (~15 MB / 30 s clip).
-// Reducing bitrate lowers both RAM footprint and hardware encoder workload.
+const FRAME_DUR_US = Math.round(1_000_000 / MOBILE_FPS); // µs per frame
+
+// 2.5 Mbps: encoded data accumulates in ArrayBufferTarget in RAM.
+// At 4 Mbps a 30s clip = ~15 MB → OOM risk on 3 GB iOS devices.
+// At 2.5 Mbps a 30s clip = ~9 MB → safe.
 const VIDEO_BITRATE = 2_500_000;
 
-// How many frames to accumulate before the encoder signals back-pressure.
-// Lower = more aggressive throttling = less chance of the iOS VTCompressionSession
-// being overwhelmed and throwing "Encoding task did not complete" on flush().
+// Back-pressure: skip frame if encoder queue exceeds this depth.
+// Keeps the encode pipeline from accumulating a large backlog.
 const QUEUE_DEPTH_LIMIT = 4;
 
-// Flush the encoder every N frames to drain the VTCompressionSession incrementally.
-// iOS Video Toolbox is more reliable when frames are flushed periodically rather
-// than all at once at the end of a 30-second session.
-const PERIODIC_FLUSH_FRAMES = MOBILE_FPS * 5; // every 5 seconds
-
-// H264 codec strings ordered by quality preference.
-// All supported on iOS 16.4+ and Android Chrome 94+.
+// H264 codec strings — ordered highest→lowest quality.
+// Tested via isConfigSupported() before use.
 const H264_CANDIDATES = [
-  'avc1.640028', // High Profile Level 4.0 — best quality, Apple HW accelerated
+  'avc1.640028', // High Profile Level 4.0
   'avc1.4d0028', // Main Profile Level 4.0
   'avc1.42002a', // Baseline Level 4.2 — widest compatibility
 ];
 
-async function selectH264Codec(): Promise<string | null> {
+type HWAccel = 'no-preference' | 'prefer-hardware' | 'prefer-software';
+
+async function selectH264Codec(acceleration: HWAccel): Promise<string | null> {
   for (const codec of H264_CANDIDATES) {
     try {
       const result = await VideoEncoder.isConfigSupported({
-        codec, width: MOBILE_W, height: MOBILE_H,
-        bitrate: VIDEO_BITRATE, framerate: MOBILE_FPS,
+        codec,
+        width:               MOBILE_W,
+        height:              MOBILE_H,
+        bitrate:             VIDEO_BITRATE,
+        framerate:           MOBILE_FPS,
+        hardwareAcceleration: acceleration,
       });
       if (result.supported) return codec;
     } catch { /* try next */ }
@@ -77,23 +93,40 @@ export class MobileRecorder {
     this._canvas  = canvas;
   }
 
-  /** Creates and configures the encoder. Throws if H264 is not available. */
-  static async create(canvas: HTMLCanvasElement): Promise<MobileRecorder> {
-    const codec = await selectH264Codec();
+  /**
+   * Creates and configures the VideoEncoder.
+   *
+   * @param canvas      The canvas to capture frames from.
+   * @param preferSoftware  true on iOS (avoids Video Toolbox hardware conflict).
+   *                        false on Android (hardware encoding is conflict-free).
+   */
+  static async create(canvas: HTMLCanvasElement, preferSoftware = false): Promise<MobileRecorder> {
+    // On iOS: prefer-software to avoid VTCompressionSession conflict with video decoder.
+    // On Android: no-preference lets Chrome select the best MediaCodec encoder.
+    const acceleration: HWAccel = preferSoftware ? 'prefer-software' : 'no-preference';
+
+    let codec = await selectH264Codec(acceleration);
+
+    if (!codec && preferSoftware) {
+      // prefer-software not supported on this WebKit build — fall back.
+      // Log the fallback so it's visible in mlog if conflict occurs.
+      mlog('ENCODER', 'prefer-software not available — falling back to no-preference');
+      codec = await selectH264Codec('no-preference');
+    }
+
     if (!codec) throw new Error('H264 video encoding is not supported on this device.');
+
+    mlog('ENCODER', `codec=${codec} acceleration=${acceleration}`);
 
     const target = new ArrayBufferTarget();
     const muxer  = new Muxer({
       target,
       video:      { codec: 'avc', width: MOBILE_W, height: MOBILE_H },
       fastStart:  false,
-      // Wall-clock timestamps start at ~37ms (not 0) because the first rAF tick
-      // fires slightly after recStartMs. 'offset' subtracts the first timestamp
-      // from all subsequent ones so DTS always starts at 0 in the container.
+      // 'offset': subtracts the first timestamp so DTS always starts at 0.
       firstTimestampBehavior: 'offset',
     });
 
-    // Placeholder — replaced once the class instance exists
     let self: MobileRecorder;
 
     const encoder = new VideoEncoder({
@@ -102,7 +135,7 @@ export class MobileRecorder {
         if (self._error) return;
         try { muxer.addVideoChunk(chunk, meta ?? undefined); }
         catch (e) {
-          mlog('MUXER_ERR', String(e));  // distinguish from encoder error
+          mlog('MUXER_ERR', String(e));
           self._error = e as Error;
         }
       },
@@ -114,18 +147,13 @@ export class MobileRecorder {
 
     encoder.configure({
       codec,
-      width:  MOBILE_W,
-      height: MOBILE_H,
-      bitrate: VIDEO_BITRATE,
-      framerate: MOBILE_FPS,
-      // 'no-preference' lets WebKit choose hardware or software based on current
-      // resource availability. 'prefer-hardware' caused silent failures on iOS when
-      // the Video Toolbox hardware was simultaneously used by the source video decoder
-      // (drawImage(videoEl) → VideoFrame(canvas) → VideoEncoder all share the same
-      // VTCompressionSession pool on iOS).
-      hardwareAcceleration: 'no-preference',
-      // 'realtime' uses less internal buffering than 'quality' — more stable on iOS
-      // when the video element briefly drops to readyState=0 during seeks.
+      width:               MOBILE_W,
+      height:              MOBILE_H,
+      bitrate:             VIDEO_BITRATE,
+      framerate:           MOBILE_FPS,
+      hardwareAcceleration: acceleration,
+      // 'realtime': minimal internal buffering — frames are output as soon as
+      // they are encoded, reducing the chance of a large backlog at flush() time.
       latencyMode: 'realtime',
     });
 
@@ -136,25 +164,18 @@ export class MobileRecorder {
   get error(): Error | null { return this._error; }
   get encoderQueueSize(): number { return this._encoder.encodeQueueSize; }
   get framesCaptured(): number   { return this._frameCount; }
-  get periodicFlushInterval(): number { return PERIODIC_FLUSH_FRAMES; }
+
   /** Estimated encoded bytes accumulated so far (approximate). */
   get estimatedEncodedBytes(): number {
     return this._frameCount * VIDEO_BITRATE / MOBILE_FPS / 8;
   }
 
   /**
-   * Captures the current canvas state as one video frame.
-   * Call once per requestAnimationFrame tick.
+   * Captures the current canvas state as one encoded video frame.
    *
-   * Pass videoReady=false to skip the frame (e.g. during a video seek when
-   * readyState=0 — encoding blank/stale frames crashes the iOS VideoEncoder).
-   */
-  /**
-   * Capture current canvas state as one encoded frame.
-   *
-   * @param videoReady  false → skip (video element is seeking / readyState < 2)
-   * @param timestampUs explicit timestamp in µs (for RVFC-driven ACTION capture);
-   *                    omit to use frame-count-based monotonic timestamp (INTRO/BRAND)
+   * @param videoReady   false → skip this frame (video element seeking / not ready).
+   *                     Encoding blank frames during a seek causes encoder errors.
+   * @param timestampUs  Explicit µs timestamp; omits to use monotonic frame-count clock.
    */
   captureFrame(videoReady = true, timestampUs?: number): void {
     if (this._error) return;
@@ -164,9 +185,7 @@ export class MobileRecorder {
     }
     if (!videoReady) return;
 
-    // Back-pressure guard — skip frame if encoder queue is too large.
-    // Lower threshold than before (10 → QUEUE_DEPTH_LIMIT) to keep the
-    // VTCompressionSession from accumulating a backlog that causes flush() to fail.
+    // Back-pressure: drop frame if the encode queue is full.
     if (this._encoder.encodeQueueSize > QUEUE_DEPTH_LIMIT) return;
 
     const ts = timestampUs ?? (this._frameCount * FRAME_DUR_US);
@@ -175,40 +194,22 @@ export class MobileRecorder {
       duration:  FRAME_DUR_US,
     });
 
+    // Keyframe every 2 seconds: balances seek granularity vs output size.
     this._encoder.encode(frame, { keyFrame: this._frameCount % (MOBILE_FPS * 2) === 0 });
     frame.close();
     this._frameCount++;
   }
 
   /**
-   * Intermediate flush — drains the iOS VTCompressionSession periodically so frames
-   * don't accumulate into a large backlog that causes the final flush() to fail.
-   * Safe to call mid-session; the encoder stays in 'configured' state after flush().
-   * Never throws — errors are stored in this._error for the caller to check.
-   */
-  async periodicFlush(): Promise<void> {
-    if (this._error || this._encoder.state !== 'configured') return;
-    try {
-      await this._encoder.flush();
-    } catch (e: any) {
-      mlog('PERIODIC_FLUSH_ERR', `${e?.name}: ${e?.message}`);
-      this._error = e as Error;
-    }
-  }
-
-  /**
    * Flushes the encoder, finalizes the MP4 container, and returns the blob.
-   * Must be called exactly once, after the last captureFrame().
-   *
-   * If flush() throws (iOS VTCompressionSession revoked by the system — usually
-   * because the screen dimmed and the hardware encoder was preempted), we propagate
-   * the error cleanly. The Screen Wake Lock acquired in MobileCanvasRenderer prevents
-   * this from happening in the normal case.
+   * Call exactly once, after the last captureFrame().
    */
   async stop(): Promise<Blob> {
     if (this._error) throw this._error;
+
     await this._encoder.flush();
     this._encoder.close();
+
     if (this._error) throw this._error;
 
     this._muxer.finalize();

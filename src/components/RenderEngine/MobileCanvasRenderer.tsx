@@ -1203,8 +1203,16 @@ export function MobileCanvasRenderer({
       mlog("GRAY", `grayFrameReady=${grayFrameReady} readyState=${videoEl.readyState} videoWidth=${videoEl.videoWidth}`);
 
       setStatus("Initializing encoder…");
+      // iOS: force software encoding to avoid Video Toolbox hardware conflict.
+      // The hardware video decoder (drawImage(videoEl)) and a hardware VideoEncoder
+      // compete for the same VTCompressionSession pool on iOS — calling encode() or
+      // flush() while the decoder is active causes "Encoding task did not complete".
+      // Software encoding (CPU) has zero interaction with Video Toolbox.
+      // Android: hardware encoding is conflict-free (MediaCodec separates decoder/encoder).
+      const preferSoftware = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      mlog("ENCODER", `platform=${preferSoftware ? "iOS (prefer-software)" : "Android (no-preference)"}`);
       try {
-        recorder = await MobileRecorder.create(canvas as HTMLCanvasElement);
+        recorder = await MobileRecorder.create(canvas as HTMLCanvasElement, preferSoftware);
         mlog("INIT", "MobileRecorder created ok");
       } catch (err: any) {
         mlog("ERROR", `MobileRecorder.create failed: ${err.message}`);
@@ -1217,11 +1225,10 @@ export function MobileCanvasRenderer({
       recStartMs = performance.now();
       mlog("REC", "loop started");
 
-      let lastCaptureMs    = -1;
-      let lastLogSec       = -1;
-      let lastSegIdxLog    = -99;
-      let skippedFrames    = 0;
-      let lastPeriodicFlushFrame = 0;  // tracks when we last did a periodic flush
+      let lastCaptureMs  = -1;
+      let lastLogSec     = -1;
+      let lastSegIdxLog  = -99;
+      let skippedFrames  = 0;
 
       const loop = (now: number) => {
         if (isStopped) return;
@@ -1239,17 +1246,6 @@ export function MobileCanvasRenderer({
           setStatus("Encoding failed. Please try again.");
           onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: recorder.error.message ?? "Encoder died" });
           return;
-        }
-
-        // ── Periodic flush (every N frames) ──────────────────────────────────
-        // Drains the iOS VTCompressionSession incrementally so that the final
-        // flush() at stop() has fewer frames to process, reducing the chance of
-        // an "Encoding task did not complete" failure. periodicFlush() is async
-        // but non-blocking — fire and forget, errors are stored in recorder.error.
-        const capturedNow = recorder?.framesCaptured ?? 0;
-        if (recorder && capturedNow - lastPeriodicFlushFrame >= (recorder.periodicFlushInterval)) {
-          lastPeriodicFlushFrame = capturedNow;
-          recorder.periodicFlush().catch(() => {}); // errors surface via recorder.error
         }
 
         // ── Log every second ──────────────────────────────────────────────────
