@@ -647,12 +647,77 @@ export default function ProRefuelPage() {
       // Camera already detected from file content before setLoading — reuse result
       setStatusMsg("Identifying camera...");
       const cameraDetection = earlyDetection;
-      const isIPhone  = cameraDetection.type === "iphone";
-      const isAndroid = cameraDetection.type === "android";
-      const isMobile  = isIPhone || isAndroid;
-      setIsMobileVideo(isMobile);
+      const isIPhone    = cameraDetection.type === "iphone";
+      const isAndroid   = cameraDetection.type === "android";
+      const isWhatsApp  = cameraDetection.type === "whatsapp";
+      const isMobile    = isIPhone || isAndroid;
+      setIsMobileVideo(isMobile || isWhatsApp);
 
-      if (!isMobile) setVideoFile(processVideoFile);
+      if (!isMobile && !isWhatsApp) setVideoFile(processVideoFile);
+
+      // ── WhatsApp fast path — no telemetry, no sync, portrait template ────────
+      if (isWhatsApp) {
+        setStatusMsg("WhatsApp video detected — loading activity data…");
+        if (activityPoints.length === 0) {
+          void trackError(
+            "NO_GPS_VIDEO",
+            `[${file.name}] WhatsApp video uploaded without a GPX file — portrait template requires activity data.`,
+            "video_upload",
+            { ...richCtx, device_type: "whatsapp" },
+          );
+          throw new Error("Please upload your GPX activity file first, then add the WhatsApp video.");
+        }
+
+        const { WhatsAppEngineClient } = await import("@/lib/media/WhatsAppEngineClient");
+        const waResult = await WhatsAppEngineClient.extractMetadata(file);
+
+        const { ActivityPortraitPlanner } = await import("@/lib/engine/ActivityPortraitPlanner");
+        const sp = ActivityPortraitPlanner.generatePlan(
+          activityPoints as any,
+          waResult.durationMs / 1000,
+        );
+
+        setStoryPlan(sp);
+        setVideoFile(processVideoFile);
+        clearInterval(interval);
+        setProgress(100);
+
+        const bi2 = browserInfoRef.current;
+        trackProcessingSession({
+          status:               "success",
+          video_filename:       file.name,
+          video_duration_s:     waResult.durationMs / 1000,
+          camera_model:         "WhatsApp",
+          activity_name:        activityMeta.name ?? null,
+          device_type:          "whatsapp",
+          device_make:          "WhatsApp",
+          device_model:         "WhatsApp",
+          device_os:            null,
+          device_os_version:    null,
+          browser_os:           bi2?.os ?? null,
+          browser_os_version:   bi2?.os_version ?? null,
+          browser_name:         bi2?.browser ?? null,
+          browser_version:      bi2?.browser_version ?? null,
+          browser_is_mobile:    bi2?.is_mobile ?? null,
+          gpx_points_count:     activityPoints.length || null,
+          gps_device:           activityMeta.gpsDevice?.label ?? null,
+          activity_location:    activityMeta.location ?? null,
+          sync_strategy:        "none",
+          scenes_count:         1,
+          unit_system:          unit,
+          processing_time_ms:   Date.now() - processingStart,
+          error_message:        null,
+        });
+
+        setTimeout(() => {
+          setHighlights([]);
+          setStep("READY");
+          readyStepStartRef.current = Date.now();
+          setLoading(false);
+        }, 300);
+        return;
+      }
+      // ────────────────────────────────────────────────────────────────────────
 
       if (cameraDetection.type === "unknown") {
         const detected = [cameraDetection.make, cameraDetection.model].filter(Boolean).join(" ") || "unrecognised";
@@ -832,6 +897,43 @@ export default function ProRefuelPage() {
           };
           const spatialOverlap = postLock.some((vp: any) => actSample.some(ap => hav(vp, ap) < 2_000));
           if (!spatialOverlap) {
+            // Mobile video with no embedded GPS + date/position mismatch → almost certainly
+            // a received/social video (WhatsApp, AirDrop, etc.) saved to the camera roll.
+            // iOS stamps the save time as CreateDate, which never matches a past-day GPX.
+            // Route to portrait template (GPX-only) instead of blocking with an error.
+            if (isMobile && !iPhoneHasStartGPS) {
+              const { ActivityPortraitPlanner: _APl } = await import("@/lib/engine/ActivityPortraitPlanner");
+              const sp = _APl.generatePlan(activityPoints as any, iPhoneDurationMs / 1000);
+              setStoryPlan(sp);
+              setVideoFile(processVideoFile);
+              clearInterval(interval);
+              setProgress(100);
+              const _bi = browserInfoRef.current;
+              trackProcessingSession({
+                status: "success", video_filename: file.name,
+                video_duration_s: iPhoneDurationMs / 1000,
+                camera_model: "WhatsApp",
+                activity_name: activityMeta.name ?? null,
+                device_type: "whatsapp", device_make: "WhatsApp", device_model: "WhatsApp",
+                device_os: null, device_os_version: null,
+                browser_os: _bi?.os ?? null, browser_os_version: _bi?.os_version ?? null,
+                browser_name: _bi?.browser ?? null, browser_version: _bi?.browser_version ?? null,
+                browser_is_mobile: _bi?.is_mobile ?? null,
+                gpx_points_count: activityPoints.length || null,
+                gps_device: activityMeta.gpsDevice?.label ?? null,
+                activity_location: activityMeta.location ?? null,
+                sync_strategy: "none", scenes_count: 1, unit_system: unit,
+                processing_time_ms: Date.now() - processingStart, error_message: null,
+              });
+              setTimeout(() => {
+                setHighlights([]);
+                setStep("READY");
+                readyStepStartRef.current = Date.now();
+                setLoading(false);
+              }, 300);
+              return;
+            }
+
             const vidT0 = vpts.length > 0 ? new Date((vpts[0] as any).time).toISOString() : "n/a";
             const actT0 = activityPoints.length > 0 ? new Date(activityPoints[0].time).toISOString() : "n/a";
             void trackError(
@@ -1404,17 +1506,17 @@ export default function ProRefuelPage() {
                       <div className="flex items-center gap-2 mb-2.5">
                         <div className={`w-5 h-5 rounded-md flex items-center justify-center font-black text-[10px] shrink-0 transition-colors ${
                           activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" :
-                          highlights.length > 0    ? "bg-green-500 text-black" :
+                          storyPlan !== null        ? "bg-green-500 text-black" :
                           "bg-amber-500 text-black"
                         }`}>
-                          {highlights.length > 0 ? "✓" : "2"}
+                          {storyPlan !== null ? "✓" : "2"}
                         </div>
                         <p className={`text-[9px] font-black uppercase tracking-[0.3em] transition-colors ${activityPoints.length === 0 ? "text-zinc-700" : "text-zinc-500"}`}>Video</p>
                       </div>
 
-                    <label className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all ${hevcConverting ? "cursor-default pointer-events-none border-amber-500 bg-amber-500/5" : uploadError ? "cursor-pointer border-red-500 bg-red-500/8" : highlights.length > 0 ? "cursor-pointer border-green-500 bg-green-500/8" : activityPoints.length === 0 ? "cursor-not-allowed border-zinc-800 bg-zinc-900/40 opacity-60" : "cursor-pointer border-amber-500 bg-amber-500/5 hover:bg-amber-500/10"}`}>
-                      <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${highlights.length > 0 ? "bg-green-500 text-black" : activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" : "bg-amber-500 text-black shadow-lg"}`}>
-                        {loading || hevcConverting ? <Loader2 className="animate-spin" size={28} /> : highlights.length > 0 ? <CheckCircle2 size={28} /> : <Upload size={28} />}
+                    <label className={`group flex items-center gap-5 p-6 rounded-2xl border-2 transition-all ${hevcConverting ? "cursor-default pointer-events-none border-amber-500 bg-amber-500/5" : uploadError ? "cursor-pointer border-red-500 bg-red-500/8" : storyPlan !== null ? "cursor-pointer border-green-500 bg-green-500/8" : activityPoints.length === 0 ? "cursor-not-allowed border-zinc-800 bg-zinc-900/40 opacity-60" : "cursor-pointer border-amber-500 bg-amber-500/5 hover:bg-amber-500/10"}`}>
+                      <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 transition-all ${storyPlan !== null ? "bg-green-500 text-black" : activityPoints.length === 0 ? "bg-zinc-800 text-zinc-600" : "bg-amber-500 text-black shadow-lg"}`}>
+                        {loading || hevcConverting ? <Loader2 className="animate-spin" size={28} /> : storyPlan !== null ? <CheckCircle2 size={28} /> : <Upload size={28} />}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className={`text-base font-black uppercase leading-none ${activityPoints.length === 0 ? "text-zinc-600" : "text-white"}`}>
@@ -1473,10 +1575,10 @@ export default function ProRefuelPage() {
                         });
                         setStep("EXPERIENCE");
                       }}
-                      disabled={!highlights.length}
-                      className={`w-full py-6 mt-2 rounded-2xl font-black uppercase tracking-[0.35em] text-xs transition-all flex items-center justify-center gap-3 ${highlights.length ? "bg-amber-500 text-black shadow-[0_15px_40px_rgba(245,158,11,0.35)] hover:scale-[1.02] active:scale-[0.98]" : "bg-zinc-800/80 text-zinc-600 cursor-not-allowed"}`}
+                      disabled={storyPlan === null}
+                      className={`w-full py-6 mt-2 rounded-2xl font-black uppercase tracking-[0.35em] text-xs transition-all flex items-center justify-center gap-3 ${storyPlan !== null ? "bg-amber-500 text-black shadow-[0_15px_40px_rgba(245,158,11,0.35)] hover:scale-[1.02] active:scale-[0.98]" : "bg-zinc-800/80 text-zinc-600 cursor-not-allowed"}`}
                     >
-                      <Zap size={18} fill={highlights.length ? "black" : "none"} />
+                      <Zap size={18} fill={storyPlan !== null ? "black" : "none"} />
                       Generate &amp; Download
                     </button>
 

@@ -24,6 +24,18 @@ export interface StorySegment {
   value?: string;
 }
 
+// ── Activity Portrait data — GPX aggregate stats for WhatsApp template ────────
+export interface ActivityPortraitData {
+  totalDistanceM:  number;
+  durationSec:     number;
+  avgSpeedKmh:     number;
+  maxSpeedKmh:     number | null;  // null when GPS data is insufficient to compute reliably
+  elevationGainM:  number;
+  hasHeartRate:    boolean;
+  hrAvg:           number | null;
+  hrMax:           number | null;
+}
+
 export interface StoryPlan {
   totalBudgetSec: number;
   segments: StorySegment[];
@@ -32,6 +44,10 @@ export interface StoryPlan {
   intensityScores: Float32Array;
   detectedScenes: SceneCandidate[];
   v2Debug?: StorytellingV2Debug;  // populated only when STORYTELLING_VERSION === "V2"
+  /** 'activity_portrait' for WhatsApp videos — drives a different rendering path. */
+  templateId?: 'standard' | 'activity_portrait';
+  /** Populated when templateId === 'activity_portrait'. */
+  portraitData?: ActivityPortraitData;
 }
 
 // Local extension — carries normalized intensity score from detectAllPeaks to generatePlan

@@ -549,12 +549,51 @@ export default function MobilePage() {
       setStatusMsg("Identifying camera…");
       const cam = originalCamDetection;
       camResult = cam; // expose to catch block for richer error messages
-      const isIPhone  = cam.type === "iphone";
-      const isAndroid = cam.type === "android";
-      const isMobile  = isIPhone || isAndroid;
+      const isIPhone   = cam.type === "iphone";
+      const isAndroid  = cam.type === "android";
+      const isWhatsApp = cam.type === "whatsapp";
+      const isMobile   = isIPhone || isAndroid;
 
       mlog("CAM", `type=${cam.type} make=${cam.make} model=${cam.model}`);
       mlog("GPX", `activityPoints=${activityPoints.length} t0=${new Date(activityPoints[0]?.time ?? 0).toISOString()}`);
+
+      // ── WhatsApp fast path ────────────────────────────────────────────────────
+      // WhatsApp videos (beam box, or mp42+ct=0 fallback) have no telemetry and
+      // cannot be synced. Route directly to the portrait template (GPX-only).
+      if (isWhatsApp) {
+        if (activityPoints.length === 0) {
+          errorTracked = true;
+          throw new Error("Please upload your GPX activity file first, then add the WhatsApp video.");
+        }
+        const { WhatsAppEngineClient: _WAC } = await import("@/lib/media/WhatsAppEngineClient");
+        const waResult = await _WAC.extractMetadata(file);
+        const { ActivityPortraitPlanner: _APl } = await import("@/lib/engine/ActivityPortraitPlanner");
+        const sp = _APl.generatePlan(activityPoints as any, waResult.durationMs / 1000);
+        storyPlanRef.current = sp;
+        clearInterval(interval);
+        setProgress(100);
+        trackProcessingSession({
+          status: "success", video_filename: processFile.name,
+          video_duration_s: waResult.durationMs / 1000, camera_model: "WhatsApp",
+          device_type: "whatsapp", device_make: "WhatsApp", device_model: "WhatsApp",
+          device_os: null, device_os_version: null,
+          browser_os: null, browser_is_mobile: true,
+          browser_name: null, browser_os_version: null, browser_version: null,
+          activity_name: activityName || null,
+          gpx_points_count: activityPoints.length || null,
+          gps_device: gpxMetricsRef.current?.gps_device_brand ?? null,
+          activity_location: gpxMetricsRef.current?.activity_location ?? null,
+          sync_strategy: "none", scenes_count: 1, unit_system: unit,
+          processing_time_ms: Date.now() - processingStart, error_message: null,
+        });
+        setHighlights([]);
+        setStoryPlan(sp);
+        setVideoFile(processFile);
+        setVideoLoaded(true);
+        setStep("READY");
+        return;
+      }
+      // ─────────────────────────────────────────────────────────────────────────
 
       let vpts: any[]    = [];
       let gpsVideoOffsetMs = 0;
@@ -638,6 +677,39 @@ export default function MobilePage() {
           const vidDate = new Date(vidT0).toLocaleDateString();
           const actDate = new Date(actT0).toLocaleDateString();
           mlog("ERROR", `no temporal overlap: video=${vidDate} gpx=${actDate}`);
+
+          // Mobile video with no embedded GPS + date mismatch → likely a received/social
+          // video (WhatsApp .mov saved by iOS, AirDrop, etc.) whose extension or container
+          // bypassed beam-box detection. Route to portrait template instead of error.
+          if (isMobile && !iPhoneHasStartGPS) {
+            mlog("WA_FALLBACK", `no GPS + date mismatch → routing to portrait template`);
+            const { ActivityPortraitPlanner: _APl } = await import("@/lib/engine/ActivityPortraitPlanner");
+            const sp = _APl.generatePlan(activityPoints as any, iPhoneDurationMs / 1000);
+            storyPlanRef.current = sp;
+            clearInterval(interval);
+            setProgress(100);
+            trackProcessingSession({
+              status: "success", video_filename: processFile.name,
+              video_duration_s: iPhoneDurationMs / 1000, camera_model: "WhatsApp",
+              device_type: "whatsapp", device_make: "WhatsApp", device_model: "WhatsApp",
+              device_os: null, device_os_version: null,
+              browser_os: null, browser_is_mobile: true,
+              browser_name: null, browser_os_version: null, browser_version: null,
+              activity_name: activityName || null,
+              gpx_points_count: activityPoints.length || null,
+              gps_device: gpxMetricsRef.current?.gps_device_brand ?? null,
+              activity_location: gpxMetricsRef.current?.activity_location ?? null,
+              sync_strategy: "none", scenes_count: 1, unit_system: unit,
+              processing_time_ms: Date.now() - processingStart, error_message: null,
+            });
+            setHighlights([]);
+            setStoryPlan(sp);
+            setVideoFile(processFile);
+            setVideoLoaded(true);
+            setStep("READY");
+            return;
+          }
+
           void trackError(
             "VIDEO_GPX_MISMATCH",
             `[${file.name}] Date mismatch — video: ${vidDate}, GPX: ${actDate}. ` +
