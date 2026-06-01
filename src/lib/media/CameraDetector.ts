@@ -64,11 +64,13 @@ export class CameraDetector {
   static async detect(file: File): Promise<CameraDetection> {
     const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
 
-    // ── Layer 0: WhatsApp beam box scan (MP4 only, reads first 200 bytes) ────
+    // ── Layer 0: WhatsApp beam box scan (MP4 and MOV, reads first 200 bytes) ──
     // WhatsApp writes a proprietary 'beam' box between ftyp and moov.
-    // This box does not exist in any other mainstream camera app or device.
-    // Reading 200 bytes is near-zero cost and must run before EXIF to short-circuit early.
-    if (ext === 'mp4') {
+    // Critically, WhatsApp on iOS saves the EXACT same mp42 container regardless
+    // of whether the file extension is .mp4 or .mov — same bytes, different name.
+    // This check must run BEFORE the Layer 1 MOV→iPhone fast-path so that a WA
+    // video saved as .mov is correctly identified instead of misidentified as iPhone.
+    if (ext === 'mp4' || ext === 'mov') {
       const isWA = await CameraDetector._detectBeamBox(file);
       if (isWA) return { type: 'whatsapp', make: 'WhatsApp', model: 'WhatsApp' };
     }
