@@ -1153,31 +1153,25 @@ export function MobileCanvasRenderer({
         }
         mlog("PRESEEK", `done — readyState=${videoEl.readyState} currentTime=${videoEl.currentTime.toFixed(2)}s`);
 
-        // ── Pre-warm the video decoder — iOS only ──────────────────────────────
-        // On iOS, Video Toolbox shares hardware with the VideoEncoder. A cold-start
-        // play() for 200ms warms the decoder so the first ACTION clip doesn't show
-        // a frozen frame. On Android, the decoder and encoder are independent —
-        // this play/pause cycle is unnecessary and adds 600ms of dead time.
+        // ── Post-seek cool-down on iOS ────────────────────────────────────────
+        // Seeking to a keyframe in a high-resolution video (especially HEVC 4K)
+        // causes iOS Video Toolbox to allocate hardware decoder resources that
+        // persist briefly even after the seek completes and the video is paused.
+        //
+        // Creating the VideoEncoder immediately after (even in prefer-software mode)
+        // risks conflicting with these residual decoder hardware resources. A brief
+        // pause lets the VTCompressionSession infrastructure settle before encoder init.
+        //
+        // The pre-warm (play → pause) was REMOVED — it was far more aggressive than a
+        // static delay and caused consistent 1-second crashes.
         if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-          mlog("PRESEEK", "pre-warming iOS Video Toolbox decoder…");
-          videoEl.play().catch(() => {});
-          await new Promise<void>(r => setTimeout(r, 200));
-          videoEl.pause();
-          await new Promise<void>(r => setTimeout(r, 400));
-          mlog("PRESEEK", "iOS decoder warm");
+          await new Promise<void>(r => setTimeout(r, 600));
+          mlog("PRESEEK", "post-seek cool-down done — creating encoder");
         }
       } else {
-        // No pre-seek needed (videoStartTime=0)
-        // iOS only: pre-warm decoder at position 0 to avoid frozen first frame
-        if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-          mlog("PRESEEK", "no seek needed — pre-warming iOS decoder at position 0");
-          videoEl.play().catch(() => {});
-          await new Promise<void>(r => setTimeout(r, 200));
-          videoEl.pause();
-          videoEl.currentTime = 0;
-          await new Promise<void>(r => setTimeout(r, 300));
-          mlog("PRESEEK", "iOS decoder pre-warmed");
-        }
+        // No pre-seek, no pre-warm.
+        // The decoder will initialise when ACTION starts via videoEl.play() in the loop.
+        mlog("PRESEEK", "no seek needed — skipping pre-warm to avoid Video Toolbox conflict");
       }
 
       // Always mark gray frame as ready once the video element has content.
