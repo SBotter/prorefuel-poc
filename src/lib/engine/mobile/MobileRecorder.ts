@@ -23,10 +23,21 @@ export const MOBILE_H   = 1280;
 export const MOBILE_FPS = 30;
 
 const FRAME_DUR_US  = Math.round(1_000_000 / MOBILE_FPS); // microseconds per frame
-// 4 Mbps gives excellent quality at 720×1280.
-// At 8 Mbps the ArrayBufferTarget accumulated ~59 MB for a 59s clip → OOM on iOS.
-// 4 Mbps halves the in-memory encoded data (~15 MB for a 30s cap).
-const VIDEO_BITRATE = 4_000_000;
+// 2.5 Mbps balances quality vs encoder stability on iOS.
+// 4 Mbps caused "Encoding task did not complete" under memory pressure because the
+// ArrayBufferTarget accumulates all encoded data in RAM (~15 MB / 30 s clip).
+// Reducing bitrate lowers both RAM footprint and hardware encoder workload.
+const VIDEO_BITRATE = 2_500_000;
+
+// How many frames to accumulate before the encoder signals back-pressure.
+// Lower = more aggressive throttling = less chance of the iOS VTCompressionSession
+// being overwhelmed and throwing "Encoding task did not complete" on flush().
+const QUEUE_DEPTH_LIMIT = 4;
+
+// Flush the encoder every N frames to drain the VTCompressionSession incrementally.
+// iOS Video Toolbox is more reliable when frames are flushed periodically rather
+// than all at once at the end of a 30-second session.
+const PERIODIC_FLUSH_FRAMES = MOBILE_FPS * 5; // every 5 seconds
 
 // H264 codec strings ordered by quality preference.
 // All supported on iOS 16.4+ and Android Chrome 94+.
@@ -107,7 +118,12 @@ export class MobileRecorder {
       height: MOBILE_H,
       bitrate: VIDEO_BITRATE,
       framerate: MOBILE_FPS,
-      hardwareAcceleration: 'prefer-hardware',
+      // 'no-preference' lets WebKit choose hardware or software based on current
+      // resource availability. 'prefer-hardware' caused silent failures on iOS when
+      // the Video Toolbox hardware was simultaneously used by the source video decoder
+      // (drawImage(videoEl) → VideoFrame(canvas) → VideoEncoder all share the same
+      // VTCompressionSession pool on iOS).
+      hardwareAcceleration: 'no-preference',
       // 'realtime' uses less internal buffering than 'quality' — more stable on iOS
       // when the video element briefly drops to readyState=0 during seeks.
       latencyMode: 'realtime',
@@ -120,6 +136,7 @@ export class MobileRecorder {
   get error(): Error | null { return this._error; }
   get encoderQueueSize(): number { return this._encoder.encodeQueueSize; }
   get framesCaptured(): number   { return this._frameCount; }
+  get periodicFlushInterval(): number { return PERIODIC_FLUSH_FRAMES; }
   /** Estimated encoded bytes accumulated so far (approximate). */
   get estimatedEncodedBytes(): number {
     return this._frameCount * VIDEO_BITRATE / MOBILE_FPS / 8;
@@ -147,8 +164,10 @@ export class MobileRecorder {
     }
     if (!videoReady) return;
 
-    // Back-pressure guard
-    if (this._encoder.encodeQueueSize > 10) return;
+    // Back-pressure guard — skip frame if encoder queue is too large.
+    // Lower threshold than before (10 → QUEUE_DEPTH_LIMIT) to keep the
+    // VTCompressionSession from accumulating a backlog that causes flush() to fail.
+    if (this._encoder.encodeQueueSize > QUEUE_DEPTH_LIMIT) return;
 
     const ts = timestampUs ?? (this._frameCount * FRAME_DUR_US);
     const frame = new VideoFrame(this._canvas, {
@@ -162,8 +181,29 @@ export class MobileRecorder {
   }
 
   /**
+   * Intermediate flush — drains the iOS VTCompressionSession periodically so frames
+   * don't accumulate into a large backlog that causes the final flush() to fail.
+   * Safe to call mid-session; the encoder stays in 'configured' state after flush().
+   * Never throws — errors are stored in this._error for the caller to check.
+   */
+  async periodicFlush(): Promise<void> {
+    if (this._error || this._encoder.state !== 'configured') return;
+    try {
+      await this._encoder.flush();
+    } catch (e: any) {
+      mlog('PERIODIC_FLUSH_ERR', `${e?.name}: ${e?.message}`);
+      this._error = e as Error;
+    }
+  }
+
+  /**
    * Flushes the encoder, finalizes the MP4 container, and returns the blob.
    * Must be called exactly once, after the last captureFrame().
+   *
+   * If flush() throws (iOS VTCompressionSession revoked by the system — usually
+   * because the screen dimmed and the hardware encoder was preempted), we propagate
+   * the error cleanly. The Screen Wake Lock acquired in MobileCanvasRenderer prevents
+   * this from happening in the normal case.
    */
   async stop(): Promise<Blob> {
     if (this._error) throw this._error;

@@ -1105,8 +1105,32 @@ export function MobileCanvasRenderer({
     window.addEventListener("error", onWindowError);
     window.addEventListener("unhandledrejection", onUnhandled);
 
+    // ── Screen Wake Lock ──────────────────────────────────────────────────────
+    // Prevents the device screen from dimming or locking during encoding.
+    // On iOS, screen lock revokes the VTCompressionSession (hardware encoder) and
+    // causes VideoEncoder.flush() to throw "Encoding task did not complete".
+    // The Wake Lock ensures the hardware encoder session stays alive for the full
+    // duration of the render (30–36s).
+    //
+    // Available: iOS 16.4+ (Safari), Android Chrome 84+.
+    // Automatically released by the browser if the tab is hidden or backgrounded.
+    let wakeLock: { release: () => Promise<void> } | null = null;
+
     // ── Main recording loop ────────────────────────────────────────────────────
     async function startRecordingLoop() {
+      // Acquire Screen Wake Lock before encoding starts.
+      // Must be called inside an async function (browser requirement).
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLock = await (navigator as any).wakeLock.request('screen');
+          mlog("WAKELOCK", "acquired — screen will stay on during encoding");
+        } catch (e: any) {
+          mlog("WAKELOCK", `could not acquire: ${e?.message ?? e} — encoding may fail if screen dims`);
+        }
+      } else {
+        mlog("WAKELOCK", "not supported on this browser");
+      }
+
       // Do NOT mlogClear() here — upload logs (SEG_CALC, HIGHLIGHTS, etc.) are valuable
       // for diagnosing sync issues. Just append a separator.
       mlog("---", "=== RENDER START ===");
@@ -1193,10 +1217,11 @@ export function MobileCanvasRenderer({
       recStartMs = performance.now();
       mlog("REC", "loop started");
 
-      let lastCaptureMs  = -1;
-      let lastLogSec     = -1;
-      let lastSegIdxLog  = -99;
-      let skippedFrames  = 0;
+      let lastCaptureMs    = -1;
+      let lastLogSec       = -1;
+      let lastSegIdxLog    = -99;
+      let skippedFrames    = 0;
+      let lastPeriodicFlushFrame = 0;  // tracks when we last did a periodic flush
 
       const loop = (now: number) => {
         if (isStopped) return;
@@ -1208,9 +1233,23 @@ export function MobileCanvasRenderer({
         if (recorder?.error) {
           isStopped = true;
           mlog("ABORT", `t=${elapsed.toFixed(1)}s err=${recorder.error.name}: ${recorder.error.message}`);
+          // Release Wake Lock on encoder abort
+          wakeLock?.release().catch(() => {});
+          wakeLock = null;
           setStatus("Encoding failed. Please try again.");
           onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: recorder.error.message ?? "Encoder died" });
           return;
+        }
+
+        // ── Periodic flush (every N frames) ──────────────────────────────────
+        // Drains the iOS VTCompressionSession incrementally so that the final
+        // flush() at stop() has fewer frames to process, reducing the chance of
+        // an "Encoding task did not complete" failure. periodicFlush() is async
+        // but non-blocking — fire and forget, errors are stored in recorder.error.
+        const capturedNow = recorder?.framesCaptured ?? 0;
+        if (recorder && capturedNow - lastPeriodicFlushFrame >= (recorder.periodicFlushInterval)) {
+          lastPeriodicFlushFrame = capturedNow;
+          recorder.periodicFlush().catch(() => {}); // errors surface via recorder.error
         }
 
         // ── Log every second ──────────────────────────────────────────────────
@@ -1240,16 +1279,19 @@ export function MobileCanvasRenderer({
               const totalMs = Math.round(performance.now() - totalStartMs);
               renderDurationMsRef.current = totalMs;
               mlog("STOP", `done flush=${Date.now()-flushStart}ms total=${totalMs}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
+              // Release Wake Lock now that encoding is complete
+              wakeLock?.release().catch(() => {});
+              wakeLock = null;
               setProgress(100); setStatus("Video ready!");
               // Store blob — show "Video Ready!" screen. onRenderComplete is called
               // only when the user taps "Done", not here, so the screen stays visible.
               setReadyBlob({ blob, filename: `LENS_${makeTimestamp()}.mp4` });
-              // Notify parent about the completed render for tracking purposes only.
-              // Navigation (setStep → "READY") must NOT happen yet — user still needs to save.
-              // The "Done" button inside readyBlob UI calls onRenderComplete to navigate.
             })
             .catch((err: any) => {
               mlog("ERROR", `stop() failed: ${err?.message ?? err}`);
+              // Release Wake Lock on encode failure
+              wakeLock?.release().catch(() => {});
+              wakeLock = null;
               setStatus("Export failed. Please try again.");
               onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: err?.message ?? "unknown" });
             });
@@ -1315,6 +1357,9 @@ export function MobileCanvasRenderer({
       window.removeEventListener("unhandledrejection", onUnhandled);
       URL.revokeObjectURL(videoUrl);
       videoEl.src = "";
+      // Release Wake Lock on unmount (success path releases it via recorder.stop() handler)
+      wakeLock?.release().catch(() => {});
+      wakeLock = null;
     };
   }, [videoFile, activityPoints.length, storyPlan]);
 
