@@ -450,15 +450,44 @@ export function MobileCanvasRenderer({
 
     let lastSegIdx = -1;
 
+    // ── Frozen frame cache — survives iOS HEVC decoder resets ────────────────
+    // When the iOS hardware HEVC decoder gets suspended under memory pressure,
+    // videoEl.readyState drops to 0 for 1–2 seconds. Without this cache, the
+    // canvas goes black and the HUD elements (mini-map, elevation) become invisible
+    // because they are drawn semi-transparent over a black background.
+    //
+    // Fix: every time we successfully draw a video frame, copy it to frozenCanvas.
+    // During readyState < 2, we draw the frozen frame instead of nothing. The video
+    // appears "paused at the last frame" rather than blacking out.
+    // The encoder also uses the frozen frame (captureFrame runs normally), so the
+    // output video shows a brief freeze rather than a jump cut.
+    const frozenCanvas = new OffscreenCanvas(W, H);
+    const frozenCtx    = frozenCanvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
+    let   hasFrozenFrame = false;
+
     // ── Drawing: video frame ─────────────────────────────────────────────────
-    function drawVideoFrame(c: CanvasRenderingContext2D) {
-      if (videoEl.readyState < 2) return;
+    function drawVideoFrame(c: CanvasRenderingContext2D): boolean {
       const vW = videoEl.videoWidth || W, vH = videoEl.videoHeight || H;
       const ar = W / H, vAr = vW / vH;
       let sx = 0, sy = 0, sw = vW, sh = vH;
       if (vAr > ar) { sw = Math.round(vH * ar); sx = Math.round((vW - sw) / 2); }
       else          { sh = Math.round(vW / ar); sy = Math.round((vH - sh) / 2); }
-      try { c.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H); } catch { /* video not ready */ }
+
+      if (videoEl.readyState >= 2) {
+        try {
+          c.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H);
+          // Cache this frame for use during decoder resets
+          frozenCtx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H);
+          hasFrozenFrame = true;
+          return true; // live frame drawn
+        } catch { /* video temporarily not ready */ }
+      }
+
+      // Decoder suspended — use the frozen frame to keep video + HUD visible
+      if (hasFrozenFrame) {
+        try { c.drawImage(frozenCanvas, 0, 0, W, H); } catch { /* unlikely */ }
+      }
+      return hasFrozenFrame; // true = something was drawn, false = truly nothing
     }
 
     // ── Drawing: GPS mini-map — matches desktop drawBroadMap exactly ─────────
@@ -1061,7 +1090,10 @@ export function MobileCanvasRenderer({
           if (videoEl.paused) videoEl.play().catch(() => {});
         }
 
-        drawVideoFrame(ctx);
+        // drawVideoFrame returns true when something was drawn (live or frozen).
+        // During iOS HEVC decoder resets (readyState=0), hasFrozenFrame=true means
+        // we draw the last cached frame, keeping video + HUD visible.
+        const frameDrawn = drawVideoFrame(ctx);
 
         // Soft vignette
         const vig = ctx.createRadialGradient(W / 2, H / 2, H * 0.08, W / 2, H / 2, H * 0.72);
@@ -1332,7 +1364,11 @@ export function MobileCanvasRenderer({
           if ((recorder?.encoderQueueSize ?? 0) > 10) {
             skippedFrames++;
           } else {
-            const videoReady = videoEl.readyState >= 2;
+            // During iOS HEVC decoder reset: drawFrame drew the frozen frame.
+            // We can still encode it (frozen = visible frame, not blank).
+            // videoEl.readyState < 2 but hasFrozenFrame=true → capture as normal.
+            // This avoids jump cuts in the output — shows a brief freeze instead.
+            const videoReady = videoEl.readyState >= 2 || hasFrozenFrame;
             if (!videoReady) skippedFrames++;
             const tsUs = Math.round((now - recStartMs) * 1000);
             try { recorder?.captureFrame(videoReady, tsUs); } catch (err: any) { mlog("ERROR", `captureFrame: ${err?.message}`); }
