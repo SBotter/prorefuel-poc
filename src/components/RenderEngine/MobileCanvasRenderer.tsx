@@ -1337,23 +1337,34 @@ export function MobileCanvasRenderer({
             const actionDur   = 27;
             const vidDur      = videoEl.duration;
 
-            // Helper: seek, wait, play N seconds, return true if decoder is stable
-            const probe = async (posSec: number): Promise<boolean> => {
-              videoEl.currentTime = posSec;
-              await new Promise<void>(res => {
-                videoEl.addEventListener("seeked", () => res(), { once: true });
-                setTimeout(res, 8_000);
-              });
+            // ── Single probe — ONE test only, then commit to a path ─────────────
+            // IMPORTANT: Multiple probes fragment GPU memory and make subsequent
+            // renders MORE unstable. One probe, then a definitive decision.
+            //
+            // The probe plays the primary position for 8s to detect decoder resets.
+            // If it fails → IMMEDIATELY switch to Activity Portrait from position 0.
+            //
+            // Why position 0 works for the problematic video:
+            //   The crash zone is at video time ~28-31s. Starting from 0:
+            //   - INTRO: 0-6.5s  (no video playing, safe)
+            //   - ACTION: video plays 0→27s (render time 6.5→33.5s)
+            //   - The crash zone (28s) is hit at render time 6.5+28=34.5s
+            //   - Only 2s remain before render ends (36.5s)
+            //   - There is no time for a SECOND rapid reset → no abort triggers
+            //   - Render completes with a ~35-36s video ✓
+            setStatus("Testing video…");
+            let primaryOk = true;
+            {
               videoEl.play().catch(() => {});
               let prevR = videoEl.readyState;
-              return new Promise(res => {
+              primaryOk = await new Promise<boolean>(res => {
                 const t0 = performance.now();
                 const tick = () => {
                   const elapsed = (performance.now() - t0) / 1000;
                   if (elapsed >= probeDurSec) { videoEl.pause(); res(true); return; }
                   if (videoEl.readyState < 2 && prevR >= 2) {
                     videoEl.pause();
-                    mlog("PROBE", `reset at pos=${posSec.toFixed(1)}s vidTime=${videoEl.currentTime.toFixed(1)}s — UNSAFE`);
+                    mlog("PROBE", `decoder reset at vidTime=${videoEl.currentTime.toFixed(1)}s — primary UNSAFE`);
                     res(false); return;
                   }
                   prevR = videoEl.readyState;
@@ -1361,62 +1372,31 @@ export function MobileCanvasRenderer({
                 };
                 setTimeout(tick, 150);
               });
-            };
-
-            // Test primary position
-            setStatus("Testing video section…");
-            const primaryOk = await probe(target);
-            mlog("PROBE", `primary pos=${target.toFixed(1)}s → ${primaryOk ? 'SAFE' : 'UNSAFE'}`);
+            }
+            mlog("PROBE", `primary pos=${target.toFixed(1)}s → ${primaryOk ? 'SAFE' : 'UNSAFE — switching to Activity Portrait from 0'}`);
 
             if (!primaryOk) {
-              // Generate alternatives: skip 30s ahead, start of video, near end
-              const alts: number[] = [
-                Math.round(target + actionDur + 5),           // past the crash zone
-                Math.max(0, Math.round(target - actionDur - 5)), // before the crash zone
-                Math.round(vidDur - actionDur - 5),            // near end of video
-                10,                                             // near start
-              ].filter(p => p >= 0 && p + actionDur <= vidDur && Math.abs(p - target) > 10);
-
-              let chosenPos: number | null = null;
-              for (const alt of alts) {
-                setStatus(`Trying alternative section (${alt.toFixed(0)}s)…`);
-                mlog("PROBE", `testing alternative pos=${alt.toFixed(1)}s`);
-                const altOk = await probe(alt);
-                mlog("PROBE", `alternative pos=${alt.toFixed(1)}s → ${altOk ? 'SAFE ✓' : 'UNSAFE'}`);
-                if (altOk) { chosenPos = alt; break; }
+              // Probe failed. Switch immediately to Activity Portrait from position 0.
+              // NO further probes — each probe adds more GPU memory fragmentation.
+              if (storyPlan && activityPoints?.length) {
+                const pd = computePortraitData(activityPoints as any[]);
+                (storyPlan as any).templateId    = 'activity_portrait';
+                (storyPlan as any).portraitData  = pd;
+                (storyPlan as any).renderQuality = 'emergency_portrait';
               }
-
-              if (chosenPos !== null) {
-                // Seek to the chosen safe position
-                mlog("PROBE", `using alternative pos=${chosenPos.toFixed(1)}s — re-seeking`);
-                setStatus("Preparing video…");
-                videoEl.currentTime = chosenPos;
-                await new Promise<void>(res => {
-                  videoEl.addEventListener("seeked", () => res(), { once: true });
-                  setTimeout(res, 8_000);
-                });
-                // Update the segment's videoStartTime so the render loop uses the new position
-                (firstActionSeg as any).videoStartTime = chosenPos;
-              } else {
-                // Level 5 — Emergency Portrait fallback.
-                // No safe video section found. Switch to Activity Portrait (template 2):
-                // video plays as background, GPS stats overlay is shown as HUD.
-                // This ALWAYS delivers a video with HUD — never just a raw clip.
-                mlog("PROBE", "no safe alternative — switching to Activity Portrait (emergency_portrait)");
-                if (storyPlan && activityPoints?.length) {
-                  const pd = computePortraitData(activityPoints as any[]);
-                  (storyPlan as any).templateId    = 'activity_portrait';
-                  (storyPlan as any).portraitData  = pd;
-                  (storyPlan as any).renderQuality = 'emergency_portrait';
-                  // Start video from position 0 (safest — no HEVC spike at start of clip)
-                  if (firstActionSeg) (firstActionSeg as any).videoStartTime = 0;
-                }
-              }
+              // Seek to 0 — the safest start position for any HEVC video
+              if (firstActionSeg) (firstActionSeg as any).videoStartTime = 0;
+              videoEl.currentTime = 0;
+              await new Promise<void>(res => {
+                videoEl.addEventListener("seeked", () => res(), { once: true });
+                setTimeout(res, 5_000);
+              });
+              setStatus("Preparing video…");
             }
 
-            // Cool-down after all probe activity before encoder creation
+            // Single cool-down before encoder creation
             await new Promise<void>(r => setTimeout(r, 600));
-            mlog("PROBE", "cool-down after probe — creating encoder");
+            mlog("PROBE", `${primaryOk ? 'primary' : 'portrait-from-0'} — creating encoder`);
           } else {
             mlog("PRESEEK", "no probe needed (non-HEVC or short video) — creating encoder");
           }
