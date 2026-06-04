@@ -274,43 +274,17 @@ export function MobileCanvasRenderer({
     let maxSpeedSeen = 0;
 
     // ── Cache rebuild — called when iOS HEVC decoder resets ───────────────────
-    // When the iOS hardware HEVC decoder gets suspended under memory pressure,
-    // the GPU evicts the backing textures of all offscreen canvas elements.
-    // Subsequent ctx.drawImage(broadmapCache / gaugeCache / altimetryCache)
-    // renders as transparent, permanently hiding the map and elevation chart.
+    // broadmapCache, trailCache and altimetryCache are no longer used for drawing:
+    //   • drawMiniMap     → routePath2D + trailPath2D (Path2D, CPU-resident)
+    //   • drawAltimetryBase → direct draw from altProjX/altProjY (Float32Array, CPU)
+    //   • drawPortraitHUD map → routePath2D (Path2D, CPU-resident)
     //
-    // Fix: detect readyState drop (0 = decoder suspended) and re-draw all
-    // GPU-backed caches from the CPU-resident data (pts arrays, GPS bounds, etc.)
-    // before the next frame is composited. Canvas 2D path operations are CPU-side
-    // so they succeed even when GPU memory is under pressure.
+    // Only gaugeCache remains as a GPU-backed offscreen canvas (speed dial static
+    // layer drawn once, blitted each frame). Rebuild only this one on reset.
     function rebuildCaches() {
-      mlog("CACHE", "rebuilding GPU-evicted offscreen caches after decoder reset");
+      mlog("CACHE", "rebuilding gaugeCache after decoder reset");
 
-      // Re-draw broadmapCache (full GPS route)
-      const bc = broadmapCache.getContext("2d");
-      if (bc) {
-        bc.clearRect(0, 0, MM_W, MM_H);
-        bc.shadowColor = "rgba(0,0,0,0.90)"; bc.shadowBlur = 10;
-        bc.shadowOffsetX = 3; bc.shadowOffsetY = 4;
-        bc.strokeStyle = "rgba(255,255,255,0.85)"; bc.lineWidth = 2.5;
-        bc.lineJoin = "round"; bc.lineCap = "round";
-        bc.beginPath();
-        pts.forEach((p: any, i: number) =>
-          i === 0 ? bc.moveTo(toMMX(p.lon), toMMY(p.lat)) : bc.lineTo(toMMX(p.lon), toMMY(p.lat)));
-        bc.stroke();
-      }
-
-      // Re-draw trailCache (amber trail from start up to current position)
-      trailCtx.clearRect(0, 0, MM_W, MM_H);
-      if (lastTrailIdx > 0) {
-        trailCtx.beginPath();
-        trailCtx.moveTo(toMMX((pts[0] as any).lon), toMMY((pts[0] as any).lat));
-        for (let i = 1; i <= lastTrailIdx; i++)
-          trailCtx.lineTo(toMMX((pts[i] as any).lon), toMMY((pts[i] as any).lat));
-        trailCtx.stroke();
-      }
-
-      // Re-draw gaugeCache (speed dial static layer)
+      // Re-draw gaugeCache (speed dial static layer — only remaining GPU cache)
       const gc = gaugeCache.getContext("2d");
       if (gc) {
         gc.clearRect(0, 0, gaugeCacheW, gaugeCacheH);
@@ -347,38 +321,7 @@ export function MobileCanvasRenderer({
         gc.beginPath(); gc.arc(G_CX, G_CY, W * 0.022, 0, Math.PI * 2); gc.stroke();
       }
 
-      // Re-draw altimetryCache (elevation profile)
-      const ac = altimetryCache.getContext("2d");
-      if (ac) {
-        ac.clearRect(0, 0, W, ALT_H + ALT_PT);
-        const bgG = ac.createLinearGradient(0, 0, 0, ALT_H + ALT_PT);
-        bgG.addColorStop(0, "rgba(5,5,5,0)"); bgG.addColorStop(0.3, "rgba(5,5,5,0.75)"); bgG.addColorStop(1, "rgba(5,5,5,0.97)");
-        ac.fillStyle = bgG; ac.fillRect(0, 0, W, ALT_H + ALT_PT);
-        const altG = ac.createLinearGradient(0, ALT_PT, 0, ALT_PT + ALT_H);
-        altG.addColorStop(0, "rgba(245,158,11,0.45)"); altG.addColorStop(1, "rgba(245,158,11,0)");
-        ac.fillStyle = altG;
-        ac.beginPath(); ac.moveTo(ALT_PAD_X, ALT_PT + ALT_H);
-        pts.forEach((_: any, i: number) => ac.lineTo(altProjX[i], altProjY[i] - ALT_Y));
-        ac.lineTo(W - ALT_PAD_X, ALT_PT + ALT_H); ac.closePath(); ac.fill();
-        ac.strokeStyle = "#f59e0b"; ac.lineWidth = 2.5; ac.lineJoin = "round";
-        ac.shadowColor = "rgba(245,158,11,0.45)"; ac.shadowBlur = 8;
-        ac.beginPath();
-        pts.forEach((_: any, i: number) =>
-          i === 0 ? ac.moveTo(altProjX[i], altProjY[i] - ALT_Y) : ac.lineTo(altProjX[i], altProjY[i] - ALT_Y));
-        ac.stroke(); ac.shadowBlur = 0;
-        // Peak indicator (simplified — pill label omitted for speed)
-        const peakXc = altProjX[peakEleIdx];
-        const peakYc = altProjY[peakEleIdx] - ALT_Y;
-        ac.beginPath(); ac.arc(peakXc, peakYc, 5, 0, Math.PI * 2); ac.fillStyle = "#f59e0b"; ac.fill();
-        // Start / end markers
-        const drawD = (x: number, y: number, col: string) => {
-          ac.beginPath(); ac.arc(x, y, 5, 0, Math.PI * 2); ac.fillStyle = col; ac.fill();
-        };
-        drawD(altProjX[0], altProjY[0] - ALT_Y, "#22c55e");
-        drawD(altProjX[pts.length - 1], altProjY[pts.length - 1] - ALT_Y, "#ef4444");
-      }
-
-      mlog("CACHE", "rebuild complete");
+      mlog("CACHE", "gaugeCache rebuild complete");
     }
 
     // ── Altimetry — matches desktop MapEngine ─────────────────────────────────
@@ -598,24 +541,54 @@ export function MobileCanvasRenderer({
       return hasFrozenFrame; // true = something was drawn, false = truly nothing
     }
 
-    // ── Drawing: GPS mini-map — matches desktop drawBroadMap exactly ─────────
-    // No background box. Route has drop shadow. Incremental trail cache.
-    function drawMiniMap(c: CanvasRenderingContext2D, gpsIdx: number) {
-      // Layer 1: pre-cached route (no background box — shadow gives depth)
-      c.save();
-      c.drawImage(broadmapCache, MM_X, MM_Y, MM_W, MM_H);
+    // ── GPS route as Path2D — CPU-resident, never GPU-evicted ────────────────
+    // On iOS, canvas offscreen GPU textures get evicted when the HEVC hardware
+    // decoder resets under memory pressure. Path2D lives in JS heap (CPU) and is
+    // immune to GPU eviction. Drawing via ctx.stroke(path) re-rasterises from
+    // CPU data each frame — trivial cost on A15 Bionic (~2ms for 6287 points).
+    const routePath2D = (() => {
+      const p = new Path2D();
+      pts.forEach((pt: any, i: number) =>
+        i === 0 ? p.moveTo(toMMX(pt.lon), toMMY(pt.lat)) : p.lineTo(toMMX(pt.lon), toMMY(pt.lat)));
+      return p;
+    })();
 
-      // Layer 2: amber progress trail — incremental (O(delta) not O(idx))
-      if (gpsIdx > lastTrailIdx) {
-        const from = Math.max(lastTrailIdx, 0);
-        trailCtx.beginPath();
-        trailCtx.moveTo(toMMX(pts[from].lon), toMMY(pts[from].lat));
-        for (let i = from + 1; i <= gpsIdx; i++)
-          trailCtx.lineTo(toMMX((pts[i] as any).lon), toMMY((pts[i] as any).lat));
-        trailCtx.stroke();
-        lastTrailIdx = gpsIdx;
+    // Trail grows incrementally as Path2D (also CPU-resident)
+    const trailPath2D  = new Path2D();
+    let   trailPath2DIdx = -1;
+
+    // ── Drawing: GPS mini-map ─────────────────────────────────────────────────
+    // Draws directly from Path2D / data arrays — no GPU-backed canvas textures,
+    // so map stays visible even during iOS HEVC decoder resets (GPU eviction).
+    function drawMiniMap(c: CanvasRenderingContext2D, gpsIdx: number) {
+      c.save();
+
+      // Layer 1: full GPS route (Path2D, CPU-resident)
+      c.save();
+      c.translate(MM_X, MM_Y);
+      c.shadowColor = "rgba(0,0,0,0.90)"; c.shadowBlur = 10;
+      c.shadowOffsetX = 3; c.shadowOffsetY = 4;
+      c.strokeStyle = "rgba(255,255,255,0.85)"; c.lineWidth = 2.5;
+      c.lineJoin = "round"; c.lineCap = "round";
+      c.stroke(routePath2D);
+      c.restore();
+
+      // Layer 2: amber progress trail (Path2D, grows incrementally)
+      if (gpsIdx > trailPath2DIdx) {
+        if (trailPath2DIdx < 0) {
+          trailPath2D.moveTo(MM_X + toMMX((pts[0] as any).lon), MM_Y + toMMY((pts[0] as any).lat));
+        }
+        for (let i = Math.max(trailPath2DIdx + 1, 1); i <= gpsIdx; i++) {
+          trailPath2D.lineTo(MM_X + toMMX((pts[i] as any).lon), MM_Y + toMMY((pts[i] as any).lat));
+        }
+        trailPath2DIdx = gpsIdx;
       }
-      c.drawImage(trailCache, 0, 0, MM_W, MM_H, MM_X, MM_Y, MM_W, MM_H);
+      c.strokeStyle = "rgba(245,158,11,0.95)"; c.lineWidth = 3;
+      c.lineJoin = "round"; c.lineCap = "round";
+      c.shadowColor = "rgba(0,0,0,0.85)"; c.shadowBlur = 8;
+      c.shadowOffsetX = 2; c.shadowOffsetY = 3;
+      c.stroke(trailPath2D);
+      c.shadowColor = "transparent"; c.shadowBlur = 0; c.shadowOffsetX = 0; c.shadowOffsetY = 0;
 
       // Layer 3: current position dot + glow
       const cx = MM_X + toMMX((pts[gpsIdx] as any).lon);
@@ -623,9 +596,10 @@ export function MobileCanvasRenderer({
       c.shadowBlur = 18; c.shadowColor = "rgba(245,158,11,0.8)";
       c.fillStyle = "#f59e0b";
       c.beginPath(); c.arc(cx, cy, 8, 0, Math.PI * 2); c.fill();
-      c.shadowBlur = 0;
+      c.shadowBlur = 0; c.shadowColor = "transparent";
       c.fillStyle = "#fff";
       c.beginPath(); c.arc(cx, cy, 4, 0, Math.PI * 2); c.fill();
+
       c.restore();
     }
 
@@ -1060,19 +1034,45 @@ export function MobileCanvasRenderer({
       c.restore();
     }
 
-    // ── Drawing: altimetry — extracted so portrait template can call it too ────
+    // ── Drawing: altimetry — drawn directly from data arrays (no GPU cache) ───
+    // altimetryCache (canvas offscreen) gets GPU-evicted during iOS HEVC decoder
+    // resets, making the elevation chart invisible permanently. Drawing directly
+    // from altProjX/altProjY (CPU Float32Arrays) eliminates this dependency.
     function drawAltimetryBase(c: CanvasRenderingContext2D, gpsIdx: number) {
       const altCursorX = altProjX[gpsIdx];
       const altCursorY = altProjY[gpsIdx];
+
       c.save();
       c.globalAlpha = 0.45;
-      c.drawImage(altimetryCache, 0, ALT_Y);
+
+      // Background dark fade strip
+      const bgG = c.createLinearGradient(0, ALT_Y, 0, ALT_Y + ALT_PT + ALT_H);
+      bgG.addColorStop(0, "rgba(5,5,5,0)"); bgG.addColorStop(0.3, "rgba(5,5,5,0.75)"); bgG.addColorStop(1, "rgba(5,5,5,0.97)");
+      c.fillStyle = bgG; c.fillRect(0, ALT_Y, W, ALT_PT + ALT_H);
+
+      // Amber area fill
+      const altG = c.createLinearGradient(0, ALT_Y + ALT_PT, 0, ALT_Y + ALT_PT + ALT_H);
+      altG.addColorStop(0, "rgba(245,158,11,0.45)"); altG.addColorStop(1, "rgba(245,158,11,0)");
+      c.fillStyle = altG;
+      c.beginPath(); c.moveTo(ALT_PAD_X, ALT_Y + ALT_PT + ALT_H);
+      pts.forEach((_: any, i: number) => c.lineTo(altProjX[i], altProjY[i]));
+      c.lineTo(W - ALT_PAD_X, ALT_Y + ALT_PT + ALT_H); c.closePath(); c.fill();
+
+      // Elevation curve with amber glow
+      c.strokeStyle = "#f59e0b"; c.lineWidth = 2.5; c.lineJoin = "round";
+      c.shadowColor = "rgba(245,158,11,0.45)"; c.shadowBlur = 8;
+      c.beginPath();
+      pts.forEach((_: any, i: number) =>
+        i === 0 ? c.moveTo(altProjX[i], altProjY[i]) : c.lineTo(altProjX[i], altProjY[i]));
+      c.stroke(); c.shadowBlur = 0;
+
       c.restore();
+
       // Dashed cursor line
       c.strokeStyle = "rgba(255,255,255,0.4)"; c.lineWidth = 1.5; c.setLineDash([4, 4]);
       c.beginPath(); c.moveTo(altCursorX, ALT_Y); c.lineTo(altCursorX, ALT_Y + ALT_PT + ALT_H); c.stroke();
       c.setLineDash([]);
-      // Amber dot
+      // Amber cursor dot
       c.fillStyle = "#f59e0b"; c.shadowColor = "rgba(245,158,11,0.6)"; c.shadowBlur = 8;
       c.beginPath(); c.arc(altCursorX, altCursorY, 5, 0, Math.PI * 2); c.fill();
       c.shadowBlur = 0;
@@ -1088,10 +1088,16 @@ export function MobileCanvasRenderer({
       if (!pd) return;
 
       // ── Map: centered, no trail, no cursor ─────────────────────────────────
+      // Uses routePath2D (CPU Path2D) — same GPU-eviction immunity as drawMiniMap.
       const mapX = Math.round((W - MM_W) / 2);
       c.save();
       c.globalAlpha = Math.min(revealFrac / 0.08, 1) * 0.88;
-      c.drawImage(broadmapCache, mapX, MM_Y, MM_W, MM_H);
+      c.translate(mapX, MM_Y);
+      c.shadowColor = "rgba(0,0,0,0.90)"; c.shadowBlur = 10;
+      c.shadowOffsetX = 3; c.shadowOffsetY = 4;
+      c.strokeStyle = "rgba(255,255,255,0.85)"; c.lineWidth = 2.5;
+      c.lineJoin = "round"; c.lineCap = "round";
+      c.stroke(routePath2D);
       c.globalAlpha = 1;
       c.restore();
 
