@@ -474,50 +474,31 @@ export default function MobilePage() {
 
       mlog("PROBE", `canPlay=${canPlay} resolution=${probeW}x${probeH} maxDim=${maxDim}`);
 
-      // ── 4K rejection — applies to ANY codec on mobile ─────────────────────────
-      // A 4K video (any axis > 1920 px) requires ~32 MB per uncompressed frame.
-      // With decode buffer (4 frames) + WebCodecs encoder + canvas = 200+ MB just
-      // for the pipeline — plus the file blob itself. For 824MB HEVC 4K 60fps this
-      // is over 1 GB and crashes the browser tab immediately.
+      // ── HEVC detection — three redundant signals ───────────────────────────────
       //
-      // This check runs BEFORE HEVC detection because it's always safe to reject 4K
-      // on mobile regardless of codec. Users should record in 1080p for mobile LENS.
-      if (!isGoPro && maxDim > 1920) {
-        const extName  = file.name.split('.').pop()?.toUpperCase() ?? 'video';
-        const fileMB   = (file.size / 1_048_576).toFixed(0);
-        mlog("CODEC", `4K video rejected: ${probeW}x${probeH}, ${fileMB}MB`);
-        void trackError("WRONG_VIDEO_FORMAT",
-          `[${file.name}] 4K video rejected on mobile: ${probeW}×${probeH} ${fileMB}MB — too large for browser render.`,
-          "video_upload",
-          { ...errCtxCam });
-        setLoading(false);
-        setUploadError(
-          `This video is ${probeW}×${probeH} (4K) and cannot be rendered in the mobile browser.\n\n` +
-          `To fix — record in 1080p:\n` +
-          `• iPhone: Settings → Camera → Record Video → 1080p HD at 60fps\n` +
-          `• Or open LENS on desktop Chrome — handles 4K without limits`
-        );
-        e.target.value = "";
-        return;
-      }
-
-      // ── HEVC detection — triple redundant signals ──────────────────────────────
-      //
-      // Signal A: resolution-based (most reliable on iOS for large files).
-      //   iPhone records 4K exclusively in HEVC; any .mov + > 1920px = HEVC.
-      //   Already handled above via the 4K rejection block.
+      // Signal A: resolution from canBrowserPlay (most reliable on iOS).
+      //   iPhone records 4K (.mov) EXCLUSIVELY in HEVC — H.264 is capped at 1080p
+      //   in "Most Compatible" mode. So .mov + maxDim > 1920 = HEVC with near-certainty.
+      //   This signal works even when file.slice() PHAsset reads fail for large files.
+      //   NOTE: 4K H.264 on iPhone (rare, "Most Compatible" + 4K mode) would be a
+      //   false positive — but 4K H.264 at 30fps is also extremely slow to render on
+      //   mobile, so HEVC handling (reject if large, transcode if small) is still correct.
       //
       // Signal B: vmeta.codec from parseVideoMeta (Phase 1+2, reads last 3 MB).
-      //   Works for both faststart and non-faststart files.
-      //   May return 'unknown' if iOS PHAsset tail read fails.
+      //   May return 'unknown' if iOS PHAsset tail read is unreliable for large files.
       //
       // Signal C: isHevcVideo() (Phase 1+2, reads last 3 MB).
-      //   Same potential PHAsset limitation but different code path.
+      //   Same potential PHAsset limitation; different code path.
       //
-      // Any signal independently detecting HEVC triggers the rejection/transcode path.
+      // Any signal independently catching HEVC routes through the HEVC path.
+      // The HEVC path then decides: transcode (small files) or reject (large files).
+      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+      const isResolutionHevc = !isGoPro && ext === 'mov' && maxDim > 1920;
+
       const isHEVC = isGoPro ? false : (
-        vmeta.codec === 'hevc' ||                          // Signal B
-        (canPlay ? await isHevcVideo(file) : true)         // Signal C
+        isResolutionHevc ||                                // Signal A
+        vmeta.codec === 'hevc' ||                         // Signal B
+        (canPlay ? await isHevcVideo(file) : true)        // Signal C
       );
       detectedCodec = isHEVC ? "hevc" : "h264";
 
@@ -529,17 +510,25 @@ export default function MobilePage() {
           // Too large to transcode in the browser — reject with actionable message.
           // (FFmpeg.wasm would OOM well before finishing for files this large.)
           mlog("CODEC", `HEVC file too large to transcode on mobile: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB limit`);
+          const resInfo = probeW > 0 ? ` (${probeW}×${probeH})` : '';
           void trackError("WRONG_VIDEO_FORMAT",
-            `[${file.name}] HEVC file too large for mobile transcode: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB. canPlay=${canPlay}.`,
+            `[${file.name}] HEVC${resInfo} too large for mobile transcode: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB. canPlay=${canPlay} isResHevc=${isResolutionHevc}.`,
             "video_upload",
-            { ...errCtxCam, video_codec: "hevc" });
+            { ...errCtxCam, video_codec: "hevc", video_width: probeW || null, video_height: probeH || null });
           setLoading(false);
+          // For 4K HEVC: explain both the codec AND resolution issue
+          const is4K = maxDim > 1920;
           setUploadError(
-            `This video uses H.265 (HEVC) and is too large to convert on this device (${Math.round(fileMB)} MB).\n\n` +
-            `To fix:\n` +
-            `• iPhone: Settings → Camera → Formats → "Most Compatible" — records in H.264\n` +
-            `• Open LENS on desktop Chrome — no size limit there\n` +
-            `• Trim the clip to under ${HEVC_TRANSCODE_LIMIT_MB} MB before importing`
+            is4K
+              ? `This video is ${probeW}×${probeH} (4K) in H.265 (HEVC) format — mobile browsers cannot render 4K HEVC.\n\n` +
+                `To use this video:\n` +
+                `• iPhone: Settings → Camera → Record Video → 1080p HD at 60fps\n` +
+                `• Or open LENS on desktop Chrome — handles 4K and HEVC without limits`
+              : `This video uses H.265 (HEVC) and is too large to convert on this device (${Math.round(fileMB)} MB).\n\n` +
+                `To fix:\n` +
+                `• iPhone: Settings → Camera → Formats → "Most Compatible" — records in H.264\n` +
+                `• Open LENS on desktop Chrome — no size limit there\n` +
+                `• Trim the clip to under ${HEVC_TRANSCODE_LIMIT_MB} MB before importing`
           );
           e.target.value = "";
           return;
