@@ -26,6 +26,7 @@ import type { ActionSegment }  from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }     from "@/lib/utils/units";
 import type { RenderResult }   from "@/components/MapEngine";
+import { computePortraitData } from "@/lib/engine/ActivityPortraitPlanner";
 
 // rAF runs at 60fps on iPhone; we only want 30fps captures.
 const CAPTURE_INTERVAL_MS = 1000 / FPS; // ~33.33ms
@@ -1319,12 +1320,111 @@ export function MobileCanvasRenderer({
         // static delay and caused consistent 1-second crashes.
         if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
           await new Promise<void>(r => setTimeout(r, 600));
-          mlog("PRESEEK", "post-seek cool-down done — creating encoder");
+          mlog("PRESEEK", "post-seek cool-down done");
+
+          // ── Section probe + fallback (iOS HEVC only) ──────────────────────────
+          // Some 4K HEVC clips have a dense keyframe spike at a specific timestamp
+          // that overloads the iOS decoder simultaneously with the VP9 encoder,
+          // causing rapid double-resets and a browser tab crash.
+          //
+          // Strategy: play the primary section for 8s (enough to expose the spike).
+          // If the decoder resets → the section is problematic. Try alternative
+          // positions from the same video (still on the same ride) and pick the
+          // first that passes without resetting. All sections have the same GPS
+          // overlay data (HUD progression based on elapsed render time).
+          if (sourceIsHEVC && videoEl.duration > 30) {
+            const probeDurSec = 8;
+            const actionDur   = 27;
+            const vidDur      = videoEl.duration;
+
+            // Helper: seek, wait, play N seconds, return true if decoder is stable
+            const probe = async (posSec: number): Promise<boolean> => {
+              videoEl.currentTime = posSec;
+              await new Promise<void>(res => {
+                videoEl.addEventListener("seeked", () => res(), { once: true });
+                setTimeout(res, 8_000);
+              });
+              videoEl.play().catch(() => {});
+              let prevR = videoEl.readyState;
+              return new Promise(res => {
+                const t0 = performance.now();
+                const tick = () => {
+                  const elapsed = (performance.now() - t0) / 1000;
+                  if (elapsed >= probeDurSec) { videoEl.pause(); res(true); return; }
+                  if (videoEl.readyState < 2 && prevR >= 2) {
+                    videoEl.pause();
+                    mlog("PROBE", `reset at pos=${posSec.toFixed(1)}s vidTime=${videoEl.currentTime.toFixed(1)}s — UNSAFE`);
+                    res(false); return;
+                  }
+                  prevR = videoEl.readyState;
+                  setTimeout(tick, 150);
+                };
+                setTimeout(tick, 150);
+              });
+            };
+
+            // Test primary position
+            setStatus("Testing video section…");
+            const primaryOk = await probe(target);
+            mlog("PROBE", `primary pos=${target.toFixed(1)}s → ${primaryOk ? 'SAFE' : 'UNSAFE'}`);
+
+            if (!primaryOk) {
+              // Generate alternatives: skip 30s ahead, start of video, near end
+              const alts: number[] = [
+                Math.round(target + actionDur + 5),           // past the crash zone
+                Math.max(0, Math.round(target - actionDur - 5)), // before the crash zone
+                Math.round(vidDur - actionDur - 5),            // near end of video
+                10,                                             // near start
+              ].filter(p => p >= 0 && p + actionDur <= vidDur && Math.abs(p - target) > 10);
+
+              let chosenPos: number | null = null;
+              for (const alt of alts) {
+                setStatus(`Trying alternative section (${alt.toFixed(0)}s)…`);
+                mlog("PROBE", `testing alternative pos=${alt.toFixed(1)}s`);
+                const altOk = await probe(alt);
+                mlog("PROBE", `alternative pos=${alt.toFixed(1)}s → ${altOk ? 'SAFE ✓' : 'UNSAFE'}`);
+                if (altOk) { chosenPos = alt; break; }
+              }
+
+              if (chosenPos !== null) {
+                // Seek to the chosen safe position
+                mlog("PROBE", `using alternative pos=${chosenPos.toFixed(1)}s — re-seeking`);
+                setStatus("Preparing video…");
+                videoEl.currentTime = chosenPos;
+                await new Promise<void>(res => {
+                  videoEl.addEventListener("seeked", () => res(), { once: true });
+                  setTimeout(res, 8_000);
+                });
+                // Update the segment's videoStartTime so the render loop uses the new position
+                (firstActionSeg as any).videoStartTime = chosenPos;
+              } else {
+                // Level 5 — Emergency Portrait fallback.
+                // No safe video section found. Switch to Activity Portrait (template 2):
+                // video plays as background, GPS stats overlay is shown as HUD.
+                // This ALWAYS delivers a video with HUD — never just a raw clip.
+                mlog("PROBE", "no safe alternative — switching to Activity Portrait (emergency_portrait)");
+                if (storyPlan && activityPoints?.length) {
+                  const pd = computePortraitData(activityPoints as any[]);
+                  (storyPlan as any).templateId    = 'activity_portrait';
+                  (storyPlan as any).portraitData  = pd;
+                  (storyPlan as any).renderQuality = 'emergency_portrait';
+                  // Start video from position 0 (safest — no HEVC spike at start of clip)
+                  if (firstActionSeg) (firstActionSeg as any).videoStartTime = 0;
+                }
+              }
+            }
+
+            // Cool-down after all probe activity before encoder creation
+            await new Promise<void>(r => setTimeout(r, 600));
+            mlog("PROBE", "cool-down after probe — creating encoder");
+          } else {
+            mlog("PRESEEK", "no probe needed (non-HEVC or short video) — creating encoder");
+          }
         }
       } else {
-        // No pre-seek, no pre-warm.
+        // No pre-seek, no probe.
         // The decoder will initialise when ACTION starts via videoEl.play() in the loop.
-        mlog("PRESEEK", "no seek needed — skipping pre-warm to avoid Video Toolbox conflict");
+        mlog("PRESEEK", "no seek needed — skipping warm-up to avoid Video Toolbox conflict");
       }
 
       // Always mark gray frame as ready once the video element has content.
@@ -1359,7 +1459,13 @@ export function MobileCanvasRenderer({
       let lastLogSec       = -1;
       let lastSegIdxLog    = -99;
       let skippedFrames    = 0;
-      let prevVideoReady   = 4; // track readyState to detect decoder resets
+      let prevVideoReady      = 4;   // track readyState to detect decoder resets
+      let decoderResetCount   = 0;   // total reset count
+      let lastResetMs         = 0;   // wall-clock ms of the most recent reset
+      // Rapid-reset threshold: if 2 resets occur within this window,
+      // GPU memory is fragmenting fast enough to crash the browser tab.
+      // Videos with a single reset (or resets > 5s apart) are fine.
+      const RAPID_RESET_WINDOW_MS = 5_000;
 
       const loop = (now: number) => {
         if (isStopped) return;
@@ -1373,8 +1479,62 @@ export function MobileCanvasRenderer({
         // trailCache. Rebuild them immediately using CPU-resident data arrays.
         const curReady = videoEl.readyState;
         if (curReady < 2 && prevVideoReady >= 2) {
-          mlog("DECODER_RESET", `t=${elapsed.toFixed(1)}s readyState ${prevVideoReady}→${curReady} — rebuilding GPU caches`);
+          const nowMs = performance.now();
+          const msSinceLast = decoderResetCount > 0 ? nowMs - lastResetMs : Infinity;
+          decoderResetCount++;
+          lastResetMs = nowMs;
+          mlog("DECODER_RESET", `t=${elapsed.toFixed(1)}s reset #${decoderResetCount} gap=${msSinceLast < 9999 ? msSinceLast.toFixed(0)+'ms' : 'first'} readyState ${prevVideoReady}→${curReady}`);
           rebuildCaches();
+
+          // Rapid resets (2nd reset within RAPID_RESET_WINDOW_MS of the 1st) signal
+          // that the iOS GPU memory is fragmenting fast enough to crash the browser tab
+          // ("repeated errors on lens.prorefuel.app" Safari message).
+          // Single resets, or resets > 5s apart, are fine — video recovers normally.
+          // Only abort when two resets are rapidly consecutive.
+          if (decoderResetCount >= 2 && msSinceLast < RAPID_RESET_WINDOW_MS) {
+            mlog("ABORT_REASON", `rapid resets: gap=${msSinceLast.toFixed(0)}ms < ${RAPID_RESET_WINDOW_MS}ms threshold`);
+            isStopped = true;
+            mlog("EARLY_STOP", `2 decoder resets — stopping early to prevent browser OOM crash. frames=${recorder?.framesCaptured}`);
+            wakeLock?.release().catch(() => {}); wakeLock = null;
+            setStatus("Finalizing…");
+            const earlyStartMs = recStartMs;
+            recorder!.stop()
+              .then(async (vp9Blob) => {
+                const totalMs = Math.round(performance.now() - earlyStartMs);
+                renderDurationMsRef.current = totalMs;
+                mlog("EARLY_STOP", `partial blob=${( vp9Blob.size/1_048_576).toFixed(1)}MB wasVP9=${recorder?.wasVP9}`);
+                let finalBlob = vp9Blob;
+                if (recorder?.wasVP9 && vp9Blob.size > 5_000) {
+                  setStatus("Optimizing for Photos…");
+                  try {
+                    const { FFmpeg }    = await import("@ffmpeg/ffmpeg");
+                    const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
+                    const ff = new FFmpeg();
+                    const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
+                    await ff.load({
+                      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`,   "text/javascript"),
+                      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
+                    });
+                    await ff.writeFile("in.mp4", await fetchFile(vp9Blob));
+                    const exit = await ff.exec(["-i","in.mp4","-c:v","libx264","-preset","ultrafast","-crf","23","-pix_fmt","yuv420p","-movflags","+faststart","out.mp4"]);
+                    if (exit === 0) {
+                      const raw = await ff.readFile("out.mp4") as Uint8Array<ArrayBuffer>;
+                      finalBlob = new Blob([raw], { type: "video/mp4" });
+                      mlog("EARLY_STOP", `H264 output: ${(finalBlob.size/1_048_576).toFixed(1)}MB`);
+                    }
+                  } catch (te: any) { mlog("EARLY_STOP", `transcode failed: ${te?.message} — using VP9`); }
+                }
+                setProgress(100); setStatus("Video ready!");
+                setReadyBlob({ blob: finalBlob, filename: `LENS_${makeTimestamp()}.mp4` });
+              })
+              .catch((err: any) => {
+                mlog("EARLY_STOP", `stop failed: ${err?.message}`);
+                setStatus("Export failed. Please try again.");
+                onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error",
+                  errorMessage: "4K video exceeded device memory limits. Record in 1080p: Settings → Camera → Record Video → 1080p HD." });
+              });
+            return;
+          }
         }
         prevVideoReady = curReady;
 

@@ -36,6 +36,24 @@ export interface ActivityPortraitData {
   hrMax:           number | null;
 }
 
+// ── Render quality levels ─────────────────────────────────────────────────────
+// Set during story generation. Shown to the user as a friendly notification
+// in the READY screen so they understand why the output may differ from ideal.
+export type RenderQuality =
+  | 'perfect'            // Full GPS sync + scenes selected + full duration
+  | 'no_scenes'          // No highlight moments found → full video, no cuts
+  | 'alternative_segment'// HEVC probe selected a different section of the video
+  | 'portrait_fallback'  // No GPS sync → Activity Portrait (template 2)
+  | 'emergency_portrait';// All render attempts failed → Portrait as last resort
+
+export const RENDER_QUALITY_MESSAGES: Record<RenderQuality, { icon: string; text: string; detail: string }> = {
+  perfect:             { icon: '', text: '', detail: '' },
+  no_scenes:           { icon: '📍', text: 'No highlight moments detected', detail: 'We showed the full video with GPS data instead of selected clips.' },
+  alternative_segment: { icon: '⚡', text: 'Video section optimised for your device', detail: 'A different section of your video was used to ensure smooth rendering.' },
+  portrait_fallback:   { icon: 'ℹ️', text: 'Activity summary mode', detail: 'The video could not be synced to your GPS track. Showing activity overview instead.' },
+  emergency_portrait:  { icon: '⚠️', text: 'Render required an adjustment', detail: 'The selected video section exceeded device limits. Showing activity overview with your video.' },
+};
+
 export interface StoryPlan {
   totalBudgetSec: number;
   segments: StorySegment[];
@@ -43,6 +61,8 @@ export interface StoryPlan {
   narrativePlan: NarrativePlan;
   intensityScores: Float32Array;
   detectedScenes: SceneCandidate[];
+  /** Quality level set during processing — drives the user-facing notification. */
+  renderQuality?: RenderQuality;
   v2Debug?: StorytellingV2Debug;  // populated only when STORYTELLING_VERSION === "V2"
   /** 'activity_portrait' for WhatsApp videos — drives a different rendering path. */
   templateId?: 'standard' | 'activity_portrait';

@@ -32,7 +32,9 @@ function haversineM(lat1: number, lon1: number, lat2: number, lon2: number): num
 const GPS_SPEED_CAP_KMH = 150;
 
 // ── Aggregate stats from raw activity points ───────────────────────────────────
-function computePortraitData(points: EnhancedGPSPoint[]): ActivityPortraitData {
+// Exported so MobileCanvasRenderer can compute portrait data for the Level 5
+// emergency fallback (all HEVC probes failed → Activity Portrait).
+export function computePortraitData(points: EnhancedGPSPoint[]): ActivityPortraitData {
   let totalDistanceM    = 0;
   let maxSpeedExplicit  = 0;   // from p.speed / p.speedSmoothed fields
   let hasExplicitSpeed  = false;
@@ -158,6 +160,7 @@ export class ActivityPortraitPlanner {
       detectedScenes:  [],
       templateId:      'activity_portrait',
       portraitData,
+      renderQuality:   'portrait_fallback',
     };
   }
 }

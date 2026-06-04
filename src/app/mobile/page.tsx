@@ -20,6 +20,7 @@ import type { ErrorContext } from "@/lib/supabase/tracking";
 import type { VideoUploadInsert } from "@/lib/supabase/types";
 import type { ActionSegment }  from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
+import { RENDER_QUALITY_MESSAGES } from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }     from "@/lib/utils/units";
 import type { MobileCapabilities } from "@/lib/engine/mobile/mobileCapabilities";
 import type { RenderResult }   from "@/components/MapEngine";
@@ -875,6 +876,10 @@ export default function MobilePage() {
       const sp = StorytellingProcessor.generatePlan(activityPoints, vpts as any, unit, 0, gpsVideoOffsetMs, videoDurationSec);
       mlog("STORY", `segments=${sp.segments.length} totalBudget=${sp.totalBudgetSec?.toFixed(1)}s`);
 
+      // Set render quality level for the user-facing notification
+      if (!segments?.length) sp.renderQuality = 'no_scenes';
+      else sp.renderQuality = 'perfect';
+
       clearInterval(interval);
       setProgress(100);
       storyPlanRef.current = sp;
@@ -1262,6 +1267,21 @@ export default function MobilePage() {
               <div className="h-full bg-amber-500 transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
             </div>
           )}
+
+          {/* Render quality notification — shown when render is not "perfect" */}
+          {storyPlan?.renderQuality && storyPlan.renderQuality !== 'perfect' && (() => {
+            const msg = RENDER_QUALITY_MESSAGES[storyPlan.renderQuality!];
+            if (!msg?.text) return null;
+            return (
+              <div className="flex items-start gap-3 p-4 rounded-2xl bg-amber-500/8 border border-amber-500/20">
+                <span className="text-base shrink-0 mt-0.5">{msg.icon}</span>
+                <div>
+                  <p className="text-amber-400 text-[11px] font-black uppercase tracking-widest mb-1">{msg.text}</p>
+                  <p className="text-zinc-500 text-[11px] leading-relaxed">{msg.detail}</p>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Generate button */}
           <button
