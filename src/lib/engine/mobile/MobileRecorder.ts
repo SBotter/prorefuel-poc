@@ -116,6 +116,7 @@ export class MobileRecorder {
   private _canvas: HTMLCanvasElement;
   private _frameCount = 0;
   private _error: Error | null = null;
+  private _muxerCodec: 'avc' | 'vp9' = 'avc';
 
   private constructor(
     encoder: VideoEncoder,
@@ -210,10 +211,13 @@ export class MobileRecorder {
     });
 
     self = new MobileRecorder(encoder, muxer, canvas);
+    self._muxerCodec = muxerCodec;
     return self;
   }
 
   get error(): Error | null { return this._error; }
+  /** true when VP9 was used — output needs post-transcode to H264 for Photos compatibility. */
+  get wasVP9(): boolean { return this._muxerCodec === 'vp9'; }
   get encoderQueueSize(): number { return this._encoder.encodeQueueSize; }
   get framesCaptured(): number   { return this._frameCount; }
   get estimatedEncodedBytes(): number {

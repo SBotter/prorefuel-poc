@@ -1255,17 +1255,54 @@ export function MobileCanvasRenderer({
           // Total duration = recording loop + flush (recStartMs is performance.now())
           const totalStartMs = recStartMs;
           recorder!.stop()
-            .then((blob) => {
+            .then(async (vp9OrH264Blob) => {
               const totalMs = Math.round(performance.now() - totalStartMs);
               renderDurationMsRef.current = totalMs;
-              mlog("STOP", `done flush=${Date.now()-flushStart}ms total=${totalMs}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
-              // Release Wake Lock now that encoding is complete
+              mlog("STOP", `done flush=${Date.now()-flushStart}ms total=${totalMs}ms blob=${(vp9OrH264Blob.size/1_048_576).toFixed(1)}MB wasVP9=${recorder?.wasVP9}`);
+
+              // ── VP9 → H264 post-transcode (iOS Photos compatibility) ──────────
+              // VP9/libvpx encoding avoids the Video Toolbox conflict with HEVC
+              // hardware decode. But iOS Photos only accepts H264/HEVC in MP4.
+              // Re-encode the small VP9 output (~9 MB) to H264 via FFmpeg.wasm.
+              // This is fast (9 MB input, no HEVC decode, ultrafast preset) ≈ 10–15s.
+              let finalBlob = vp9OrH264Blob;
+              if (recorder?.wasVP9) {
+                setStatus("Optimizing for Photos…");
+                mlog("TRANSCODE", `VP9→H264: ${(vp9OrH264Blob.size/1_048_576).toFixed(1)}MB input`);
+                try {
+                  const { FFmpeg }    = await import("@ffmpeg/ffmpeg");
+                  const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
+                  const ff = new FFmpeg();
+                  const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
+                  await ff.load({
+                    coreURL: await toBlobURL(`${base}/ffmpeg-core.js`,   "text/javascript"),
+                    wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
+                  });
+                  await ff.writeFile("in.mp4", await fetchFile(vp9OrH264Blob));
+                  const exitCode = await ff.exec([
+                    "-i", "in.mp4",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                    "out.mp4",
+                  ]);
+                  if (exitCode === 0) {
+                    const raw = await ff.readFile("out.mp4") as Uint8Array<ArrayBuffer>;
+                    finalBlob = new Blob([raw], { type: "video/mp4" });
+                    mlog("TRANSCODE", `done: ${(finalBlob.size/1_048_576).toFixed(1)}MB H264`);
+                  } else {
+                    mlog("TRANSCODE", `FFmpeg exit=${exitCode} — using VP9 blob as fallback`);
+                  }
+                } catch (transErr: any) {
+                  mlog("TRANSCODE", `failed: ${transErr?.message} — using VP9 blob as fallback`);
+                }
+              }
+
+              // Release Wake Lock now that all encoding/transcoding is complete
               wakeLock?.release().catch(() => {});
               wakeLock = null;
               setProgress(100); setStatus("Video ready!");
-              // Store blob — show "Video Ready!" screen. onRenderComplete is called
-              // only when the user taps "Done", not here, so the screen stays visible.
-              setReadyBlob({ blob, filename: `LENS_${makeTimestamp()}.mp4` });
+              setReadyBlob({ blob: finalBlob, filename: `LENS_${makeTimestamp()}.mp4` });
             })
             .catch((err: any) => {
               mlog("ERROR", `stop() failed: ${err?.message ?? err}`);
