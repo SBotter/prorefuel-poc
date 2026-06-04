@@ -273,6 +273,114 @@ export function MobileCanvasRenderer({
     // Max speed tracker for red needle (same as desktop)
     let maxSpeedSeen = 0;
 
+    // ── Cache rebuild — called when iOS HEVC decoder resets ───────────────────
+    // When the iOS hardware HEVC decoder gets suspended under memory pressure,
+    // the GPU evicts the backing textures of all offscreen canvas elements.
+    // Subsequent ctx.drawImage(broadmapCache / gaugeCache / altimetryCache)
+    // renders as transparent, permanently hiding the map and elevation chart.
+    //
+    // Fix: detect readyState drop (0 = decoder suspended) and re-draw all
+    // GPU-backed caches from the CPU-resident data (pts arrays, GPS bounds, etc.)
+    // before the next frame is composited. Canvas 2D path operations are CPU-side
+    // so they succeed even when GPU memory is under pressure.
+    function rebuildCaches() {
+      mlog("CACHE", "rebuilding GPU-evicted offscreen caches after decoder reset");
+
+      // Re-draw broadmapCache (full GPS route)
+      const bc = broadmapCache.getContext("2d");
+      if (bc) {
+        bc.clearRect(0, 0, MM_W, MM_H);
+        bc.shadowColor = "rgba(0,0,0,0.90)"; bc.shadowBlur = 10;
+        bc.shadowOffsetX = 3; bc.shadowOffsetY = 4;
+        bc.strokeStyle = "rgba(255,255,255,0.85)"; bc.lineWidth = 2.5;
+        bc.lineJoin = "round"; bc.lineCap = "round";
+        bc.beginPath();
+        pts.forEach((p: any, i: number) =>
+          i === 0 ? bc.moveTo(toMMX(p.lon), toMMY(p.lat)) : bc.lineTo(toMMX(p.lon), toMMY(p.lat)));
+        bc.stroke();
+      }
+
+      // Re-draw trailCache (amber trail from start up to current position)
+      trailCtx.clearRect(0, 0, MM_W, MM_H);
+      if (lastTrailIdx > 0) {
+        trailCtx.beginPath();
+        trailCtx.moveTo(toMMX((pts[0] as any).lon), toMMY((pts[0] as any).lat));
+        for (let i = 1; i <= lastTrailIdx; i++)
+          trailCtx.lineTo(toMMX((pts[i] as any).lon), toMMY((pts[i] as any).lat));
+        trailCtx.stroke();
+      }
+
+      // Re-draw gaugeCache (speed dial static layer)
+      const gc = gaugeCache.getContext("2d");
+      if (gc) {
+        gc.clearRect(0, 0, gaugeCacheW, gaugeCacheH);
+        const vg = gc.createRadialGradient(G_CX, G_CY, 0, G_CX, G_CY, W * 0.42);
+        vg.addColorStop(0, "rgba(0,0,0,0.28)"); vg.addColorStop(1, "rgba(0,0,0,0)");
+        gc.fillStyle = vg; gc.fillRect(0, 0, gaugeCacheW, gaugeCacheH);
+        gc.lineWidth = G_LW; gc.lineCap = "round";
+        gc.strokeStyle = "rgba(255,255,255,0.12)";
+        gc.beginPath(); gc.arc(G_CX, G_CY, G_R, G_START, G_END); gc.stroke();
+        gc.lineCap = "butt";
+        for (let spd = 0; spd <= maxGauge; spd += 10) {
+          const a = speedToAngle(spd), cosA = Math.cos(a), sinA = Math.sin(a);
+          const isMajor = spd % 20 === 0;
+          const outer = G_R - Math.round(W * 0.024);
+          const inner = outer - (isMajor ? G_R * 0.12 : G_R * 0.07);
+          gc.strokeStyle = isMajor ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.15)";
+          gc.lineWidth = isMajor ? 2.5 : 1.5;
+          gc.beginPath();
+          gc.moveTo(G_CX + cosA * outer, G_CY + sinA * outer);
+          gc.lineTo(G_CX + cosA * inner, G_CY + sinA * inner);
+          gc.stroke();
+          if (isMajor && spd > 0) {
+            const lr = inner - G_R * 0.12;
+            gc.shadowColor = "rgba(0,0,0,1)"; gc.shadowBlur = 10;
+            gc.font = `700 ${Math.round(W * 0.024)}px sans-serif`;
+            gc.fillStyle = "rgba(255,255,255,0.6)"; gc.textAlign = "center";
+            gc.fillText(String(spd), G_CX + cosA * lr, G_CY + sinA * lr + 5);
+            gc.shadowBlur = 0;
+          }
+        }
+        gc.fillStyle = "#1a1a1a";
+        gc.beginPath(); gc.arc(G_CX, G_CY, W * 0.022, 0, Math.PI * 2); gc.fill();
+        gc.strokeStyle = "rgba(255,255,255,0.15)"; gc.lineWidth = 1.5;
+        gc.beginPath(); gc.arc(G_CX, G_CY, W * 0.022, 0, Math.PI * 2); gc.stroke();
+      }
+
+      // Re-draw altimetryCache (elevation profile)
+      const ac = altimetryCache.getContext("2d");
+      if (ac) {
+        ac.clearRect(0, 0, W, ALT_H + ALT_PT);
+        const bgG = ac.createLinearGradient(0, 0, 0, ALT_H + ALT_PT);
+        bgG.addColorStop(0, "rgba(5,5,5,0)"); bgG.addColorStop(0.3, "rgba(5,5,5,0.75)"); bgG.addColorStop(1, "rgba(5,5,5,0.97)");
+        ac.fillStyle = bgG; ac.fillRect(0, 0, W, ALT_H + ALT_PT);
+        const altG = ac.createLinearGradient(0, ALT_PT, 0, ALT_PT + ALT_H);
+        altG.addColorStop(0, "rgba(245,158,11,0.45)"); altG.addColorStop(1, "rgba(245,158,11,0)");
+        ac.fillStyle = altG;
+        ac.beginPath(); ac.moveTo(ALT_PAD_X, ALT_PT + ALT_H);
+        pts.forEach((_: any, i: number) => ac.lineTo(altProjX[i], altProjY[i] - ALT_Y));
+        ac.lineTo(W - ALT_PAD_X, ALT_PT + ALT_H); ac.closePath(); ac.fill();
+        ac.strokeStyle = "#f59e0b"; ac.lineWidth = 2.5; ac.lineJoin = "round";
+        ac.shadowColor = "rgba(245,158,11,0.45)"; ac.shadowBlur = 8;
+        ac.beginPath();
+        pts.forEach((_: any, i: number) =>
+          i === 0 ? ac.moveTo(altProjX[i], altProjY[i] - ALT_Y) : ac.lineTo(altProjX[i], altProjY[i] - ALT_Y));
+        ac.stroke(); ac.shadowBlur = 0;
+        // Peak indicator (simplified — pill label omitted for speed)
+        const peakXc = altProjX[peakEleIdx];
+        const peakYc = altProjY[peakEleIdx] - ALT_Y;
+        ac.beginPath(); ac.arc(peakXc, peakYc, 5, 0, Math.PI * 2); ac.fillStyle = "#f59e0b"; ac.fill();
+        // Start / end markers
+        const drawD = (x: number, y: number, col: string) => {
+          ac.beginPath(); ac.arc(x, y, 5, 0, Math.PI * 2); ac.fillStyle = col; ac.fill();
+        };
+        drawD(altProjX[0], altProjY[0] - ALT_Y, "#22c55e");
+        drawD(altProjX[pts.length - 1], altProjY[pts.length - 1] - ALT_Y, "#ef4444");
+      }
+
+      mlog("CACHE", "rebuild complete");
+    }
+
     // ── Altimetry — matches desktop MapEngine ─────────────────────────────────
     // Desktop: ALT_H=H*0.12, ALT_PAD_TOP=28, ALT_Y=H-ALT_H-28, full width
     const ALT_H     = Math.round(H * 0.12);
@@ -1241,16 +1349,28 @@ export function MobileCanvasRenderer({
       recStartMs = performance.now();
       mlog("REC", "loop started");
 
-      let lastCaptureMs  = -1;
-      let lastLogSec     = -1;
-      let lastSegIdxLog  = -99;
-      let skippedFrames  = 0;
+      let lastCaptureMs    = -1;
+      let lastLogSec       = -1;
+      let lastSegIdxLog    = -99;
+      let skippedFrames    = 0;
+      let prevVideoReady   = 4; // track readyState to detect decoder resets
 
       const loop = (now: number) => {
         if (isStopped) return;
 
         const elapsed = (now - recStartMs) / 1000;
         setProgress(Math.round(c01(elapsed / totalDurSec) * 90));
+
+        // ── iOS HEVC decoder reset detection & cache rebuild ─────────────────
+        // When readyState drops from ≥2 to <2, the iOS GPU has evicted the
+        // backing textures of broadmapCache, gaugeCache, altimetryCache and
+        // trailCache. Rebuild them immediately using CPU-resident data arrays.
+        const curReady = videoEl.readyState;
+        if (curReady < 2 && prevVideoReady >= 2) {
+          mlog("DECODER_RESET", `t=${elapsed.toFixed(1)}s readyState ${prevVideoReady}→${curReady} — rebuilding GPU caches`);
+          rebuildCaches();
+        }
+        prevVideoReady = curReady;
 
         // ── Encoder / muxer death check ───────────────────────────────────────
         if (recorder?.error) {
