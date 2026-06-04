@@ -464,24 +464,60 @@ export default function MobilePage() {
     try {
       const isGoPro = originalCamDetection.type === "gopro";
       const { canBrowserPlay, transcodeHevcToH264, isHevcVideo } = await import("@/lib/engine/mobile/hevcTranscoder");
-      const canPlay = isGoPro ? true : await canBrowserPlay(file);
+      const probe = isGoPro
+        ? { canPlay: true, videoWidth: 0, videoHeight: 0 }
+        : await canBrowserPlay(file);
+      const canPlay    = probe.canPlay;
+      const probeW     = probe.videoWidth;
+      const probeH     = probe.videoHeight;
+      const maxDim     = Math.max(probeW, probeH);
 
-      // Dual HEVC detection — redundant signals for robustness.
+      mlog("PROBE", `canPlay=${canPlay} resolution=${probeW}x${probeH} maxDim=${maxDim}`);
+
+      // ── 4K rejection — applies to ANY codec on mobile ─────────────────────────
+      // A 4K video (any axis > 1920 px) requires ~32 MB per uncompressed frame.
+      // With decode buffer (4 frames) + WebCodecs encoder + canvas = 200+ MB just
+      // for the pipeline — plus the file blob itself. For 824MB HEVC 4K 60fps this
+      // is over 1 GB and crashes the browser tab immediately.
       //
-      // Signal A: vmeta.codec (from parseVideoMeta Phase 1+2).
-      //   Reads first 2 MB + last 1.5 MB. Works for both faststart and non-faststart.
-      //   May fail on iOS for PHAsset-backed large files (returns 'unknown').
+      // This check runs BEFORE HEVC detection because it's always safe to reject 4K
+      // on mobile regardless of codec. Users should record in 1080p for mobile LENS.
+      if (!isGoPro && maxDim > 1920) {
+        const extName  = file.name.split('.').pop()?.toUpperCase() ?? 'video';
+        const fileMB   = (file.size / 1_048_576).toFixed(0);
+        mlog("CODEC", `4K video rejected: ${probeW}x${probeH}, ${fileMB}MB`);
+        void trackError("WRONG_VIDEO_FORMAT",
+          `[${file.name}] 4K video rejected on mobile: ${probeW}×${probeH} ${fileMB}MB — too large for browser render.`,
+          "video_upload",
+          { ...errCtxCam });
+        setLoading(false);
+        setUploadError(
+          `This video is ${probeW}×${probeH} (4K) and cannot be rendered in the mobile browser.\n\n` +
+          `To fix — record in 1080p:\n` +
+          `• iPhone: Settings → Camera → Record Video → 1080p HD at 60fps\n` +
+          `• Or open LENS on desktop Chrome — handles 4K without limits`
+        );
+        e.target.value = "";
+        return;
+      }
+
+      // ── HEVC detection — triple redundant signals ──────────────────────────────
       //
-      // Signal B: isHevcVideo() (from hevcTranscoder Phase 1+2).
-      //   Reads first 128 KB + last 1.2 MB. Designed specifically for codec detection.
-      //   May also fail on some iOS PHAsset reads — returns false on error.
+      // Signal A: resolution-based (most reliable on iOS for large files).
+      //   iPhone records 4K exclusively in HEVC; any .mov + > 1920px = HEVC.
+      //   Already handled above via the 4K rejection block.
       //
-      // Either signal independently catching HEVC is sufficient to trigger the
-      // rejection/transcode path. Both failing simultaneously is extremely unlikely
-      // since they read different regions and use different parsing logic.
+      // Signal B: vmeta.codec from parseVideoMeta (Phase 1+2, reads last 3 MB).
+      //   Works for both faststart and non-faststart files.
+      //   May return 'unknown' if iOS PHAsset tail read fails.
+      //
+      // Signal C: isHevcVideo() (Phase 1+2, reads last 3 MB).
+      //   Same potential PHAsset limitation but different code path.
+      //
+      // Any signal independently detecting HEVC triggers the rejection/transcode path.
       const isHEVC = isGoPro ? false : (
-        vmeta.codec === 'hevc' ||                             // Signal A
-        (canPlay ? await isHevcVideo(file) : true)            // Signal B
+        vmeta.codec === 'hevc' ||                          // Signal B
+        (canPlay ? await isHevcVideo(file) : true)         // Signal C
       );
       detectedCodec = isHEVC ? "hevc" : "h264";
 

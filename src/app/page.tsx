@@ -556,7 +556,7 @@ export default function ProRefuelPage() {
     // other codec the browser claims to support but cannot hardware-decode.
     if (isMP4 || isMOV) {
       const { canBrowserPlay, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
-      const canPlay = await canBrowserPlay(file);
+      const { canPlay } = await canBrowserPlay(file);  // destructure — desktop ignores videoWidth/videoHeight
       if (!canPlay) {
         if (earlyDetection.type === "gopro") {
           // GoPro files are often 400MB-2GB — WASM transcoding would OOM.

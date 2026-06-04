@@ -106,7 +106,9 @@ export async function parseVideoMeta(file: File): Promise<VideoMeta> {
       // Why NOT scanning ftyp for codec: ftyp only contains brand/compatibility
       // strings ('qt  ', 'mp42', 'isom') — never codec identifiers like 'hvc1'
       // or 'avc1'. Those only appear inside moov/trak/mdia/minf/stbl/stsd.
-      const TAIL_SIZE = Math.min(1_500_000, file.size);
+      // 3 MB tail — same reasoning as isHevcVideo: iOS PHAsset reads can be
+      // partial for large files; the larger buffer gives safe margin for moov.
+      const TAIL_SIZE = Math.min(3_000_000, file.size);
       try {
         const tail = new Uint8Array(await file.slice(file.size - TAIL_SIZE).arrayBuffer());
 
