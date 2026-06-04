@@ -68,6 +68,12 @@ export interface MobileCanvasRendererProps {
   onRenderComplete: (result: RenderResult) => void;
   /** Activity title shown in the INTRO screen. Defaults to "YOUR RIDE". */
   activityName?: string;
+  /**
+   * true when the source video uses HEVC (H.265).
+   * Forces VP9 output on iOS to avoid Video Toolbox hardware conflict between
+   * the HEVC hardware decoder and the H264 VTCompressionSession encoder.
+   */
+  sourceIsHEVC?: boolean;
 }
 
 // ─── Shadow helpers ───────────────────────────────────────────────────────────
@@ -101,6 +107,7 @@ async function shareOrDownload(blob: Blob, filename: string) {
 export function MobileCanvasRenderer({
   activityPoints, highlights, storyPlan, videoFile, unit, onRenderComplete,
   activityName = "YOUR RIDE",
+  sourceIsHEVC = false,
 }: MobileCanvasRendererProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status,   setStatus]   = useState("Preparing…");
@@ -1182,16 +1189,14 @@ export function MobileCanvasRenderer({
       mlog("GRAY", `grayFrameReady=${grayFrameReady} readyState=${videoEl.readyState} videoWidth=${videoEl.videoWidth}`);
 
       setStatus("Initializing encoder…");
-      // iOS: force software encoding to avoid Video Toolbox hardware conflict.
-      // The hardware video decoder (drawImage(videoEl)) and a hardware VideoEncoder
-      // compete for the same VTCompressionSession pool on iOS — calling encode() or
-      // flush() while the decoder is active causes "Encoding task did not complete".
-      // Software encoding (CPU) has zero interaction with Video Toolbox.
-      // Android: hardware encoding is conflict-free (MediaCodec separates decoder/encoder).
-      const preferSoftware = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-      mlog("ENCODER", `platform=${preferSoftware ? "iOS (prefer-software)" : "Android (no-preference)"}`);
+      // Codec selection — see MobileRecorder.ts for full rationale:
+      //   iOS + HEVC source → VP9/libvpx (zero Video Toolbox → no conflict with HEVC decoder)
+      //   iOS + H264 source → H264 prefer-software (VT software path, lighter hardware use)
+      //   Android           → H264 no-preference   (MediaCodec: decoder/encoder are separate)
+      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      mlog("ENCODER", `isIOS=${isIOS} sourceIsHEVC=${sourceIsHEVC}`);
       try {
-        recorder = await MobileRecorder.create(canvas as HTMLCanvasElement, preferSoftware);
+        recorder = await MobileRecorder.create(canvas as HTMLCanvasElement, { isIOS, sourceIsHEVC });
         mlog("INIT", "MobileRecorder created ok");
       } catch (err: any) {
         mlog("ERROR", `MobileRecorder.create failed: ${err.message}`);

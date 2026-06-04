@@ -236,6 +236,9 @@ export default function MobilePage() {
   const storyPlanRef           = useRef<StoryPlan | null>(null);
   const gpxMetricsRef          = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
   const videoMetricsRef        = useRef<Omit<VideoUploadInsert, "app_version" | "processing_session_id"> | null>(null);
+  // true when the video that reached the render pipeline is HEVC (H.265).
+  // Used by MobileCanvasRenderer to select VP9 encoding (no Video Toolbox conflict).
+  const sourceIsHevcRef        = useRef(false);
 
   // H.265 pre-transcoding state — only active when an HEVC video is detected
   const [hevcConverting, setHevcConverting] = useState(false);
@@ -501,6 +504,8 @@ export default function MobilePage() {
         (canPlay ? await isHevcVideo(file) : true)        // Signal C
       );
       detectedCodec = isHEVC ? "hevc" : "h264";
+      // Track for MobileCanvasRenderer — HEVC source → VP9 encoder on iOS
+      sourceIsHevcRef.current = isHEVC;
 
       mlog("CODEC", `canPlay=${canPlay} isHEVC=${isHEVC} size=${(file.size/1024/1024).toFixed(0)}MB`);
 
@@ -1024,6 +1029,7 @@ export default function MobilePage() {
     storyPlanRef.current           = null;
     gpxMetricsRef.current          = null;
     videoMetricsRef.current        = null;
+    sourceIsHevcRef.current        = false;
     setStep("UPLOAD");
   };
 
@@ -1056,6 +1062,7 @@ export default function MobilePage() {
         unit={unit}
         onRenderComplete={handleRenderComplete}
         activityName={activityName}
+        sourceIsHEVC={sourceIsHevcRef.current}
       />
     );
   }

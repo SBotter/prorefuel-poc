@@ -1,29 +1,33 @@
 /**
  * MobileRecorder — WebCodecs VideoEncoder + mp4-muxer pipeline.
  *
- * Replaces captureStream() + MediaRecorder + FFmpeg WASM for iOS/Android.
- * Records a canvas at 30fps → H264 MP4 without any server-side processing.
+ * Records a canvas at 30fps → MP4 without any server-side processing.
  *
- * ── iOS / Android difference ──────────────────────────────────────────────────
+ * ── Codec strategy per platform ───────────────────────────────────────────────
  *
- * iOS:   Uses 'prefer-software' encoding (CPU-based, bypasses Video Toolbox).
- *        This is REQUIRED because iOS Video Toolbox is a shared hardware pool:
- *        the video decoder (drawImage(videoEl)) and a hardware VideoEncoder both
- *        compete for the same VTCompressionSession resources. Calling flush()
- *        or encode() while the decoder is active causes "Encoding task did not
- *        complete". Software encoding runs on the CPU and has no interaction with
- *        Video Toolbox — zero conflict. iPhone 13+ CPUs encode 720p H264 at
- *        60+ fps in software, well above our 30fps target.
+ * iOS + HEVC source video → VP9 (libvpx, pure software, CPU-only)
+ *   iOS Video Toolbox is a shared hardware pool. Any H264 VideoEncoder —
+ *   even with 'prefer-software' — uses VTCompressionSession internally.
+ *   When a HEVC video is decoded simultaneously (hardware decoder), both
+ *   compete for the same VT resources → "Encoding task did not complete"
+ *   after ~3 seconds of ACTION.
  *
- * Android: Uses 'no-preference'. Android's MediaCodec API separates the decoder
- *          (codec component) and encoder (codec component) at the hardware level —
- *          they do NOT share a pool. Hardware encoding is faster and doesn't
- *          conflict with the video decoder. 'no-preference' lets Chrome choose the
- *          best available encoder for the current device.
+ *   VP9 on iOS WebKit uses libvpx (open-source software codec), which has
+ *   ZERO interaction with Video Toolbox. The HEVC decoder and VP9 encoder
+ *   run on completely independent hardware/software paths → no conflict.
+ *
+ * iOS + H264 source video → H264 prefer-software (VT software path)
+ *   H264 decode uses a lighter hardware path than HEVC. prefer-software
+ *   encoding is sufficient. No VP9 needed.
+ *
+ * Android → H264 no-preference
+ *   Android MediaCodec separates decoder and encoder at the hardware level.
+ *   No pool conflict. Hardware H264 encoding is faster and stable.
  *
  * Usage:
- *   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
- *   const rec = await MobileRecorder.create(canvas, isIOS);
+ *   const isIOS       = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+ *   const sourceIsHEVC = /* detected from video probe * /;
+ *   const rec = await MobileRecorder.create(canvas, { isIOS, sourceIsHEVC });
  *   rec.captureFrame(videoReady, timestampUs);  // in rAF loop
  *   const blob = await rec.stop();              // when done
  */
@@ -32,49 +36,79 @@
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import { mlog } from '@/lib/engine/mobile/mobileDebugLogger';
 
-// 720×1280: Instagram-quality portrait, 3.7 MB/frame uncompressed.
-// Lower than 1080×1920 to reduce GPU readback cost and RAM pressure.
 export const MOBILE_W   = 720;
 export const MOBILE_H   = 1280;
 export const MOBILE_FPS = 30;
 
-const FRAME_DUR_US = Math.round(1_000_000 / MOBILE_FPS); // µs per frame
+const FRAME_DUR_US = Math.round(1_000_000 / MOBILE_FPS);
 
-// 2.5 Mbps: encoded data accumulates in ArrayBufferTarget in RAM.
-// At 4 Mbps a 30s clip = ~15 MB → OOM risk on 3 GB iOS devices.
-// At 2.5 Mbps a 30s clip = ~9 MB → safe.
+// 2.5 Mbps: ~9 MB for a 30s clip — safe for ArrayBufferTarget on mobile.
 const VIDEO_BITRATE = 2_500_000;
 
-// Back-pressure: skip frame if encoder queue exceeds this depth.
-// Keeps the encode pipeline from accumulating a large backlog.
+// Back-pressure guard: skip frame when encoder queue is too deep.
 const QUEUE_DEPTH_LIMIT = 4;
 
-// H264 codec strings — ordered highest→lowest quality.
-// Tested via isConfigSupported() before use.
+type HWAccel = 'no-preference' | 'prefer-hardware' | 'prefer-software';
+
+// ── H264 codec selection ───────────────────────────────────────────────────────
+
 const H264_CANDIDATES = [
   'avc1.640028', // High Profile Level 4.0
   'avc1.4d0028', // Main Profile Level 4.0
-  'avc1.42002a', // Baseline Level 4.2 — widest compatibility
+  'avc1.42002a', // Baseline Level 4.2
 ];
-
-type HWAccel = 'no-preference' | 'prefer-hardware' | 'prefer-software';
 
 async function selectH264Codec(acceleration: HWAccel): Promise<string | null> {
   for (const codec of H264_CANDIDATES) {
     try {
-      const result = await VideoEncoder.isConfigSupported({
-        codec,
-        width:               MOBILE_W,
-        height:              MOBILE_H,
-        bitrate:             VIDEO_BITRATE,
-        framerate:           MOBILE_FPS,
+      const r = await VideoEncoder.isConfigSupported({
+        codec, width: MOBILE_W, height: MOBILE_H,
+        bitrate: VIDEO_BITRATE, framerate: MOBILE_FPS,
         hardwareAcceleration: acceleration,
       });
-      if (result.supported) return codec;
+      if (r.supported) return codec;
     } catch { /* try next */ }
   }
   return null;
 }
+
+// ── VP9 codec selection ────────────────────────────────────────────────────────
+// VP9 Profile 0 = 8-bit 4:2:0. Supported in iOS 16.4+ (libvpx, software only).
+// Profile 10 = 10-bit but we don't need HDR output — Profile 0 is correct.
+const VP9_CANDIDATES = [
+  'vp09.00.31.08', // VP9 Profile 0, Level 3.1 (720×1280 @ 30fps)
+  'vp09.00.30.08', // VP9 Profile 0, Level 3.0
+  'vp09.00.20.08', // VP9 Profile 0, Level 2.0
+];
+
+async function selectVP9Codec(): Promise<string | null> {
+  for (const codec of VP9_CANDIDATES) {
+    try {
+      const r = await VideoEncoder.isConfigSupported({
+        codec, width: MOBILE_W, height: MOBILE_H,
+        bitrate: VIDEO_BITRATE, framerate: MOBILE_FPS,
+        hardwareAcceleration: 'prefer-software', // libvpx = always software
+      });
+      if (r.supported) return codec;
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
+// ── Options ───────────────────────────────────────────────────────────────────
+
+export interface MobileRecorderOptions {
+  /** true on iOS — affects codec and hardware acceleration strategy. */
+  isIOS: boolean;
+  /**
+   * true when the source video uses HEVC (H.265).
+   * Forces VP9 output on iOS to avoid Video Toolbox hardware conflict.
+   * On Android, HEVC sources can use H264 hardware encoding safely.
+   */
+  sourceIsHEVC: boolean;
+}
+
+// ── Main class ────────────────────────────────────────────────────────────────
 
 export class MobileRecorder {
   private _encoder: VideoEncoder;
@@ -96,34 +130,57 @@ export class MobileRecorder {
   /**
    * Creates and configures the VideoEncoder.
    *
-   * @param canvas      The canvas to capture frames from.
-   * @param preferSoftware  true on iOS (avoids Video Toolbox hardware conflict).
-   *                        false on Android (hardware encoding is conflict-free).
+   * Codec selection:
+   *   iOS + HEVC source → VP9 (libvpx, no Video Toolbox → no conflict)
+   *   iOS + H264 source → H264 prefer-software (VT software path)
+   *   Android           → H264 no-preference   (MediaCodec, conflict-free)
    */
-  static async create(canvas: HTMLCanvasElement, preferSoftware = false): Promise<MobileRecorder> {
-    // On iOS: prefer-software to avoid VTCompressionSession conflict with video decoder.
-    // On Android: no-preference lets Chrome select the best MediaCodec encoder.
-    const acceleration: HWAccel = preferSoftware ? 'prefer-software' : 'no-preference';
+  static async create(
+    canvas: HTMLCanvasElement,
+    opts: MobileRecorderOptions | boolean = false,
+  ): Promise<MobileRecorder> {
+    // Accept legacy boolean (preferSoftware) for backward compat
+    const isIOS        = typeof opts === 'boolean' ? opts       : opts.isIOS;
+    const sourceIsHEVC = typeof opts === 'boolean' ? false      : opts.sourceIsHEVC;
 
-    let codec = await selectH264Codec(acceleration);
+    // Decide codec + acceleration
+    let codec:        string | null = null;
+    let muxerCodec:   'avc' | 'vp9' = 'avc';
+    let acceleration: HWAccel = 'no-preference';
+    let codecLabel    = '';
 
-    if (!codec && preferSoftware) {
-      // prefer-software not supported on this WebKit build — fall back.
-      // Log the fallback so it's visible in mlog if conflict occurs.
-      mlog('ENCODER', 'prefer-software not available — falling back to no-preference');
-      codec = await selectH264Codec('no-preference');
+    if (isIOS && sourceIsHEVC) {
+      // iOS + HEVC source → VP9 (libvpx, zero Video Toolbox interaction)
+      codec       = await selectVP9Codec();
+      muxerCodec  = 'vp9';
+      acceleration = 'prefer-software';
+      codecLabel  = `VP9 (libvpx, iOS HEVC source — no VT conflict)`;
     }
 
-    if (!codec) throw new Error('H264 video encoding is not supported on this device.');
+    if (!codec) {
+      // iOS + H264 source, OR VP9 not supported, OR Android
+      const acc  = isIOS ? 'prefer-software' : 'no-preference';
+      codec      = await selectH264Codec(acc);
+      muxerCodec = 'avc';
+      acceleration = acc;
+      codecLabel = `H264 ${acc} (${isIOS ? 'iOS' : 'Android'})`;
+      if (!codec && isIOS) {
+        // prefer-software not available — last resort: no-preference
+        codec      = await selectH264Codec('no-preference');
+        acceleration = 'no-preference';
+        codecLabel = 'H264 no-preference (iOS fallback)';
+      }
+    }
 
-    mlog('ENCODER', `codec=${codec} acceleration=${acceleration}`);
+    if (!codec) throw new Error('Video encoding is not supported on this device.');
+
+    mlog('ENCODER', `codec=${codec} accel=${acceleration} label=${codecLabel}`);
 
     const target = new ArrayBufferTarget();
     const muxer  = new Muxer({
       target,
-      video:      { codec: 'avc', width: MOBILE_W, height: MOBILE_H },
-      fastStart:  false,
-      // 'offset': subtracts the first timestamp so DTS always starts at 0.
+      video: { codec: muxerCodec, width: MOBILE_W, height: MOBILE_H },
+      fastStart: false,
       firstTimestampBehavior: 'offset',
     });
 
@@ -134,10 +191,7 @@ export class MobileRecorder {
       output: (chunk: EncodedVideoChunk, meta: any) => {
         if (self._error) return;
         try { muxer.addVideoChunk(chunk, meta ?? undefined); }
-        catch (e) {
-          mlog('MUXER_ERR', String(e));
-          self._error = e as Error;
-        }
+        catch (e) { mlog('MUXER_ERR', String(e)); self._error = e as Error; }
       },
       error: (e: DOMException) => {
         mlog('ENCODER_ERR', `${e.name}: ${e.message}`);
@@ -152,9 +206,7 @@ export class MobileRecorder {
       bitrate:             VIDEO_BITRATE,
       framerate:           MOBILE_FPS,
       hardwareAcceleration: acceleration,
-      // 'realtime': minimal internal buffering — frames are output as soon as
-      // they are encoded, reducing the chance of a large backlog at flush() time.
-      latencyMode: 'realtime',
+      latencyMode:         'realtime',
     });
 
     self = new MobileRecorder(encoder, muxer, canvas);
@@ -164,19 +216,10 @@ export class MobileRecorder {
   get error(): Error | null { return this._error; }
   get encoderQueueSize(): number { return this._encoder.encodeQueueSize; }
   get framesCaptured(): number   { return this._frameCount; }
-
-  /** Estimated encoded bytes accumulated so far (approximate). */
   get estimatedEncodedBytes(): number {
     return this._frameCount * VIDEO_BITRATE / MOBILE_FPS / 8;
   }
 
-  /**
-   * Captures the current canvas state as one encoded video frame.
-   *
-   * @param videoReady   false → skip this frame (video element seeking / not ready).
-   *                     Encoding blank frames during a seek causes encoder errors.
-   * @param timestampUs  Explicit µs timestamp; omits to use monotonic frame-count clock.
-   */
   captureFrame(videoReady = true, timestampUs?: number): void {
     if (this._error) return;
     if (this._encoder.state !== 'configured') {
@@ -184,36 +227,21 @@ export class MobileRecorder {
       return;
     }
     if (!videoReady) return;
-
-    // Back-pressure: drop frame if the encode queue is full.
     if (this._encoder.encodeQueueSize > QUEUE_DEPTH_LIMIT) return;
 
-    const ts = timestampUs ?? (this._frameCount * FRAME_DUR_US);
-    const frame = new VideoFrame(this._canvas, {
-      timestamp: ts,
-      duration:  FRAME_DUR_US,
-    });
-
-    // Keyframe every 2 seconds: balances seek granularity vs output size.
+    const ts    = timestampUs ?? (this._frameCount * FRAME_DUR_US);
+    const frame = new VideoFrame(this._canvas, { timestamp: ts, duration: FRAME_DUR_US });
     this._encoder.encode(frame, { keyFrame: this._frameCount % (MOBILE_FPS * 2) === 0 });
     frame.close();
     this._frameCount++;
   }
 
-  /**
-   * Flushes the encoder, finalizes the MP4 container, and returns the blob.
-   * Call exactly once, after the last captureFrame().
-   */
   async stop(): Promise<Blob> {
     if (this._error) throw this._error;
-
     await this._encoder.flush();
     this._encoder.close();
-
     if (this._error) throw this._error;
-
     this._muxer.finalize();
-
     const buffer: ArrayBuffer = (this._muxer.target as InstanceType<typeof ArrayBufferTarget>).buffer;
     return new Blob([buffer], { type: 'video/mp4' });
   }
