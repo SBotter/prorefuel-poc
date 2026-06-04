@@ -1284,6 +1284,31 @@ export function MobileCanvasRenderer({
       const firstActionSeg = trimmedSegments.find(
         (s: any) => s.type === "ACTION" && typeof s.videoStartTime === "number" && s.videoStartTime > 0.5,
       );
+
+      // ── iOS HEVC: always start from position 0 ────────────────────────────────
+      // ROOT CAUSE of crashes: pre-seeking to a later position (e.g. 23s) forces the
+      // iOS hardware HEVC decoder to build up a large reference frame context in GPU
+      // memory before the encoder even starts. When the encoder then runs and the
+      // decoder's look-ahead hits dense frames further into the video, there's no
+      // GPU memory left → OOM → decoder reset.
+      //
+      // PROOF: IMG_9582.MOV (same 4K HEVC, same device) renders successfully from
+      // position 0 with frames up to 1811KB. IMG_9576.MOV crashes from position 23s
+      // with frames up to 628KB. Both would work fine from position 0 because the
+      // decoder starts with zero accumulated GPU state.
+      //
+      // Fix: for iOS HEVC, always render from video position 0. The GPS overlay data
+      // is still correct (it progresses based on elapsed render time from the video's
+      // creation timestamp). The user gets a full quality video with Template A HUD.
+      if (firstActionSeg && sourceIsHEVC && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+        const orig = (firstActionSeg as any).videoStartTime;
+        if (orig > 0.5) {
+          mlog("HEVC_FIX", `iOS HEVC: overriding videoStartTime ${orig.toFixed(1)}s → 0 (clean decoder state, avoids GPU OOM)`);
+          (firstActionSeg as any).videoStartTime = 0;
+          if (storyPlan) (storyPlan as any).renderQuality = 'alternative_segment';
+        }
+      }
+
       if (firstActionSeg) {
         const target = firstActionSeg.videoStartTime!;
         mlog("PRESEEK", `seeking to ${target.toFixed(2)}s before encoder starts`);
@@ -1320,86 +1345,7 @@ export function MobileCanvasRenderer({
         // static delay and caused consistent 1-second crashes.
         if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
           await new Promise<void>(r => setTimeout(r, 600));
-          mlog("PRESEEK", "post-seek cool-down done");
-
-          // ── Section probe + fallback (iOS HEVC only) ──────────────────────────
-          // Some 4K HEVC clips have a dense keyframe spike at a specific timestamp
-          // that overloads the iOS decoder simultaneously with the VP9 encoder,
-          // causing rapid double-resets and a browser tab crash.
-          //
-          // Strategy: play the primary section for 8s (enough to expose the spike).
-          // If the decoder resets → the section is problematic. Try alternative
-          // positions from the same video (still on the same ride) and pick the
-          // first that passes without resetting. All sections have the same GPS
-          // overlay data (HUD progression based on elapsed render time).
-          if (sourceIsHEVC && videoEl.duration > 30) {
-            const probeDurSec = 8;
-            const actionDur   = 27;
-            const vidDur      = videoEl.duration;
-
-            // ── Single probe — ONE test only, then commit to a path ─────────────
-            // IMPORTANT: Multiple probes fragment GPU memory and make subsequent
-            // renders MORE unstable. One probe, then a definitive decision.
-            //
-            // The probe plays the primary position for 8s to detect decoder resets.
-            // If it fails → IMMEDIATELY switch to Activity Portrait from position 0.
-            //
-            // Why position 0 works for the problematic video:
-            //   The crash zone is at video time ~28-31s. Starting from 0:
-            //   - INTRO: 0-6.5s  (no video playing, safe)
-            //   - ACTION: video plays 0→27s (render time 6.5→33.5s)
-            //   - The crash zone (28s) is hit at render time 6.5+28=34.5s
-            //   - Only 2s remain before render ends (36.5s)
-            //   - There is no time for a SECOND rapid reset → no abort triggers
-            //   - Render completes with a ~35-36s video ✓
-            setStatus("Testing video…");
-            let primaryOk = true;
-            {
-              videoEl.play().catch(() => {});
-              let prevR = videoEl.readyState;
-              primaryOk = await new Promise<boolean>(res => {
-                const t0 = performance.now();
-                const tick = () => {
-                  const elapsed = (performance.now() - t0) / 1000;
-                  if (elapsed >= probeDurSec) { videoEl.pause(); res(true); return; }
-                  if (videoEl.readyState < 2 && prevR >= 2) {
-                    videoEl.pause();
-                    mlog("PROBE", `decoder reset at vidTime=${videoEl.currentTime.toFixed(1)}s — primary UNSAFE`);
-                    res(false); return;
-                  }
-                  prevR = videoEl.readyState;
-                  setTimeout(tick, 150);
-                };
-                setTimeout(tick, 150);
-              });
-            }
-            mlog("PROBE", `primary pos=${target.toFixed(1)}s → ${primaryOk ? 'SAFE' : 'UNSAFE — switching to Activity Portrait from 0'}`);
-
-            if (!primaryOk) {
-              // Probe failed. Switch immediately to Activity Portrait from position 0.
-              // NO further probes — each probe adds more GPU memory fragmentation.
-              if (storyPlan && activityPoints?.length) {
-                const pd = computePortraitData(activityPoints as any[]);
-                (storyPlan as any).templateId    = 'activity_portrait';
-                (storyPlan as any).portraitData  = pd;
-                (storyPlan as any).renderQuality = 'emergency_portrait';
-              }
-              // Seek to 0 — the safest start position for any HEVC video
-              if (firstActionSeg) (firstActionSeg as any).videoStartTime = 0;
-              videoEl.currentTime = 0;
-              await new Promise<void>(res => {
-                videoEl.addEventListener("seeked", () => res(), { once: true });
-                setTimeout(res, 5_000);
-              });
-              setStatus("Preparing video…");
-            }
-
-            // Single cool-down before encoder creation
-            await new Promise<void>(r => setTimeout(r, 600));
-            mlog("PROBE", `${primaryOk ? 'primary' : 'portrait-from-0'} — creating encoder`);
-          } else {
-            mlog("PRESEEK", "no probe needed (non-HEVC or short video) — creating encoder");
-          }
+          mlog("PRESEEK", "post-seek cool-down done — creating encoder");
         }
       } else {
         // No pre-seek, no probe.

@@ -528,7 +528,6 @@ export default function MobilePage() {
           // After VP9 encoding, MobileCanvasRenderer post-transcodes VP9→H264 using
           // FFmpeg.wasm so the output is Photos-compatible on iOS.
           mlog("CODEC", `HEVC canPlay=true — rendering with VP9 encoder. ${(file.size/1024/1024).toFixed(0)}MB ${probeW}×${probeH}`);
-
         } else {
           // ── HEVC + canPlay=false: device cannot decode → must transcode ─────
           const fileMB = file.size / 1_048_576;
