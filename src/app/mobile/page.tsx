@@ -505,55 +505,68 @@ export default function MobilePage() {
       mlog("CODEC", `canPlay=${canPlay} isHEVC=${isHEVC} size=${(file.size/1024/1024).toFixed(0)}MB`);
 
       if (isHEVC) {
-        const fileMB = file.size / 1_048_576;
-        if (fileMB > HEVC_TRANSCODE_LIMIT_MB) {
-          // Too large to transcode in the browser — reject with actionable message.
-          // (FFmpeg.wasm would OOM well before finishing for files this large.)
-          mlog("CODEC", `HEVC file too large to transcode on mobile: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB limit`);
-          const resInfo = probeW > 0 ? ` (${probeW}×${probeH})` : '';
-          void trackError("WRONG_VIDEO_FORMAT",
-            `[${file.name}] HEVC${resInfo} too large for mobile transcode: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB. canPlay=${canPlay} isResHevc=${isResolutionHevc}.`,
-            "video_upload",
-            { ...errCtxCam, video_codec: "hevc", video_width: probeW || null, video_height: probeH || null });
-          setLoading(false);
-          // For 4K HEVC: explain both the codec AND resolution issue
-          const is4K = maxDim > 1920;
-          setUploadError(
-            is4K
-              ? `This video is ${probeW}×${probeH} (4K) in H.265 (HEVC) format — mobile browsers cannot render 4K HEVC.\n\n` +
-                `To use this video:\n` +
-                `• iPhone: Settings → Camera → Record Video → 1080p HD at 60fps\n` +
-                `• Or open LENS on desktop Chrome — handles 4K and HEVC without limits`
-              : `This video uses H.265 (HEVC) and is too large to convert on this device (${Math.round(fileMB)} MB).\n\n` +
-                `To fix:\n` +
-                `• iPhone: Settings → Camera → Formats → "Most Compatible" — records in H.264\n` +
-                `• Open LENS on desktop Chrome — no size limit there\n` +
-                `• Trim the clip to under ${HEVC_TRANSCODE_LIMIT_MB} MB before importing`
-          );
-          e.target.value = "";
-          return;
-        }
+        if (canPlay) {
+          // ── HEVC + canPlay=true: render directly ────────────────────────────
+          // The device can decode HEVC natively (iOS hardware Video Toolbox decoder).
+          // We do NOT need to transcode — the rendering pipeline already handles this:
+          //   1. videoEl (HEVC hardware decode) → drawImage → 720×1280 canvas
+          //   2. VideoFrame(canvas) → software H264 encoder → output MP4
+          //
+          // The canvas only ever holds 720×1280 frames (not 4K), so memory pressure
+          // is trivial (~12 MB). The Video Toolbox conflict is resolved by:
+          //   - No pre-warm (decoder not active before encoder init)
+          //   - 600ms cool-down after seek
+          //   - prefer-software encoding (CPU H264, no hardware encoder contention)
+          //   - INTRO phase uses dark background only (decoder idle for 6.5s)
+          //
+          // If rendering fails despite these mitigations, the user sees a specific
+          // error and the handleRenderComplete fallback handles it gracefully.
+          mlog("CODEC", `HEVC canPlay=true — rendering directly, no transcode needed. ${(file.size/1024/1024).toFixed(0)}MB ${probeW}×${probeH}`);
+          // processFile stays = file (no change)
 
-        // Small HEVC file — transcode via FFmpeg.wasm (same path as canPlay=false)
-        mlog("CODEC", `HEVC detected (${fileMB.toFixed(0)}MB ≤ ${HEVC_TRANSCODE_LIMIT_MB}MB) — transcoding to H.264`);
-        setHevcConverting(true);
-        setHevcProgress(0);
-        setHevcStatus("Loading converter…");
-        transcodeStart = Date.now();
-        processFile = await transcodeHevcToH264(file, (pct, status) => {
-          setHevcProgress(pct);
-          setHevcStatus(status);
-        });
-        const transcodeMs = Date.now() - transcodeStart;
-        mlog("CODEC", `transcoding done in ${(transcodeMs/1000).toFixed(1)}s — ${(processFile.size/1024/1024).toFixed(1)}MB`);
-        void trackHevcTranscode(transcodeMs, {
-          ...errCtxCam,
-          file_size_bytes: file.size,
-          file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
-        });
-        setHevcConverting(false);
-        setHevcProgress(0);
-        setHevcStatus("");
+        } else {
+          // ── HEVC + canPlay=false: device cannot decode → must transcode ─────
+          const fileMB = file.size / 1_048_576;
+          if (fileMB > HEVC_TRANSCODE_LIMIT_MB) {
+            // Too large for FFmpeg.wasm (would OOM)
+            mlog("CODEC", `HEVC canPlay=false, too large to transcode: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB`);
+            const resInfo = probeW > 0 ? ` (${probeW}×${probeH})` : '';
+            void trackError("WRONG_VIDEO_FORMAT",
+              `[${file.name}] HEVC${resInfo} canPlay=false, too large for mobile transcode: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB.`,
+              "video_upload",
+              { ...errCtxCam, video_codec: "hevc", video_width: probeW || null, video_height: probeH || null });
+            setLoading(false);
+            setUploadError(
+              `This video uses H.265 (HEVC) and cannot be played or converted on this device.\n\n` +
+              `To fix:\n` +
+              `• iPhone: Settings → Camera → Formats → "Most Compatible" — records in H.264\n` +
+              `• Open LENS on desktop Chrome — no size limit there`
+            );
+            e.target.value = "";
+            return;
+          }
+
+          // Small HEVC that the browser can't decode — transcode via FFmpeg.wasm
+          mlog("CODEC", `HEVC canPlay=false (${fileMB.toFixed(0)}MB ≤ ${HEVC_TRANSCODE_LIMIT_MB}MB) — transcoding to H.264`);
+          setHevcConverting(true);
+          setHevcProgress(0);
+          setHevcStatus("Loading converter…");
+          transcodeStart = Date.now();
+          processFile = await transcodeHevcToH264(file, (pct, status) => {
+            setHevcProgress(pct);
+            setHevcStatus(status);
+          });
+          const transcodeMs = Date.now() - transcodeStart;
+          mlog("CODEC", `transcoding done in ${(transcodeMs/1000).toFixed(1)}s — ${(processFile.size/1024/1024).toFixed(1)}MB`);
+          void trackHevcTranscode(transcodeMs, {
+            ...errCtxCam,
+            file_size_bytes: file.size,
+            file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
+          });
+          setHevcConverting(false);
+          setHevcProgress(0);
+          setHevcStatus("");
+        }
       } else if (!canPlay) {
         // Non-HEVC file that the browser can't play (unusual codec)
         mlog("CODEC", `browser cannot decode file — transcoding to H.264`);
