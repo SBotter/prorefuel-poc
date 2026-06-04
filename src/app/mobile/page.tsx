@@ -511,23 +511,37 @@ export default function MobilePage() {
 
       if (isHEVC) {
         if (canPlay) {
-          // ── HEVC + canPlay=true: render directly ────────────────────────────
-          // The device can decode HEVC natively (iOS hardware Video Toolbox decoder).
-          // We do NOT need to transcode — the rendering pipeline already handles this:
-          //   1. videoEl (HEVC hardware decode) → drawImage → 720×1280 canvas
-          //   2. VideoFrame(canvas) → software H264 encoder → output MP4
+          // ── HEVC + canPlay=true (iOS) ────────────────────────────────────────
           //
-          // The canvas only ever holds 720×1280 frames (not 4K), so memory pressure
-          // is trivial (~12 MB). The Video Toolbox conflict is resolved by:
-          //   - No pre-warm (decoder not active before encoder init)
-          //   - 600ms cool-down after seek
-          //   - prefer-software encoding (CPU H264, no hardware encoder contention)
-          //   - INTRO phase uses dark background only (decoder idle for 6.5s)
+          // 4K HEVC (maxDim > 1920): REJECT — hardware decoder gets suspended by
+          // iOS under memory pressure (~5–6s into ACTION), causing frame drops and
+          // browser tab crashes. Even with VP9 encoding (no Video Toolbox conflict),
+          // the hardware HEVC decoder itself is too resource-intensive at 4K on mobile.
+          // Debug log at t=13s: vid=0/playing@0.00s → decoder reset confirmed.
           //
-          // If rendering fails despite these mitigations, the user sees a specific
-          // error and the handleRenderComplete fallback handles it gracefully.
-          mlog("CODEC", `HEVC canPlay=true — rendering directly, no transcode needed. ${(file.size/1024/1024).toFixed(0)}MB ${probeW}×${probeH}`);
-          // processFile stays = file (no change)
+          // 1080p HEVC (maxDim ≤ 1920): ALLOW — decoder is stable, less memory.
+          // VP9 (libvpx) encoder avoids all Video Toolbox conflicts.
+          const is4K = maxDim > 1920;
+          if (is4K) {
+            mlog("CODEC", `4K HEVC rejected — decoder unstable on iOS (${probeW}×${probeH}, ${(file.size/1024/1024).toFixed(0)}MB)`);
+            void trackError("WRONG_VIDEO_FORMAT",
+              `[${file.name}] 4K HEVC rejected on iOS — decoder suspended under memory pressure: ${probeW}×${probeH} ${(file.size/1024/1024).toFixed(0)}MB.`,
+              "video_upload",
+              { ...errCtxCam, video_codec: "hevc", video_width: probeW || null, video_height: probeH || null });
+            setLoading(false);
+            setUploadError(
+              `This video is ${probeW}×${probeH} (4K H.265) — iPhone's highest quality mode but it exceeds what the mobile browser can handle.\n\n` +
+              `Easy fix — record future videos in 1080p:\n` +
+              `• Settings → Camera → Record Video → 1080p HD at 60fps\n\n` +
+              `For videos already recorded in 4K:\n` +
+              `• Open LENS on desktop Chrome — no resolution limits`
+            );
+            e.target.value = "";
+            return;
+          }
+
+          // 1080p HEVC → render directly (VP9 encoder handles the VT conflict)
+          mlog("CODEC", `HEVC 1080p canPlay=true — rendering with VP9 encoder. ${(file.size/1024/1024).toFixed(0)}MB ${probeW}×${probeH}`);
 
         } else {
           // ── HEVC + canPlay=false: device cannot decode → must transcode ─────
