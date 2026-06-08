@@ -453,6 +453,21 @@ export default function MobilePage() {
     // 4K/Ultra-HD videos exceed the browser's decoding/encoding memory limits
     // on mobile, causing tab crashes. We block them early to protect the tab.
     if (vmeta.width && vmeta.height && (vmeta.width > 1920 || vmeta.height > 1920)) {
+      const ctx: ErrorContext = {
+        ...errCtxCam,
+        video_codec:       vmeta.codec !== "unknown" ? vmeta.codec : null,
+        video_width:       vmeta.width,
+        video_height:      vmeta.height,
+        video_fps:         vmeta.fps,
+        video_has_gps:     vmeta.hasEmbeddedGPS || null,
+        video_recorded_at: vmeta.recordedAt ? new Date(vmeta.recordedAt).toISOString() : null,
+      };
+      void trackError(
+        "WRONG_VIDEO_FORMAT",
+        `[${file.name}] Video resolution is unsupported on mobile: ${vmeta.width}x${vmeta.height} (max 1080p).`,
+        "video_upload",
+        ctx
+      );
       setLoading(false);
       setUploadError(
         "4K/Ultra-HD videos are not supported on mobile due to memory limits.\n\n" +
@@ -469,6 +484,21 @@ export default function MobilePage() {
     // GoPro HEVC files cannot be transcoded on mobile (FFmpeg WASM would OOM on large files)
     // and playing them natively in 4K/HEVC causes memory crashes.
     if (isGoPro && vmeta.codec === "hevc") {
+      const ctx: ErrorContext = {
+        ...errCtxCam,
+        video_codec:       vmeta.codec,
+        video_width:       vmeta.width,
+        video_height:      vmeta.height,
+        video_fps:         vmeta.fps,
+        video_has_gps:     vmeta.hasEmbeddedGPS || null,
+        video_recorded_at: vmeta.recordedAt ? new Date(vmeta.recordedAt).toISOString() : null,
+      };
+      void trackError(
+        "UNSUPPORTED_CAMERA",
+        `[${file.name}] GoPro HEVC (H.265) videos are not supported on mobile. Size: ${(file.size/1024/1024).toFixed(1)}MB.`,
+        "video_upload",
+        ctx
+      );
       setLoading(false);
       setUploadError(
         "GoPro HEVC (H.265) videos are not supported on mobile.\n\n" +
