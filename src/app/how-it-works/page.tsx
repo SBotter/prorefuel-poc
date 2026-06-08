@@ -95,8 +95,8 @@ export default function HowItWorksPage() {
               </div>
             </div>
             <ul className="space-y-2">
-              <FeatureRow icon="✅" label="iPhone + Android videos" />
-              <FeatureRow icon="✅" label="GoPro videos" />
+              <FeatureRow icon="✅" label="iPhone + Android (1080p limit)" />
+              <FeatureRow icon="✅" label="GoPro videos (1080p H.264 / LRV)" />
               <FeatureRow icon="⏳" label="Audio: coming soon (currently silent)" muted />
               <FeatureRow icon="✅" label="Up to 30s highlight reel" />
               <FeatureRow icon="✅" label="Saves to Photos / Gallery" />
@@ -148,8 +148,16 @@ export default function HowItWorksPage() {
             </p>
           </div>
           <div className="mt-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
-            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1.5">Max video file size</p>
-            <div className="space-y-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1.5">Max video format &amp; file size on mobile</p>
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-[11px]">
+                <span className="text-zinc-400">Max Resolution (All mobile devices)</span>
+                <span className="text-green-400 font-black">Up to 4K (optimized 30fps rendering)</span>
+              </div>
+              <div className="flex justify-between items-center text-[11px]">
+                <span className="text-zinc-400">GoPro Video Codec</span>
+                <span className="text-amber-400 font-black">H.264 / LRV only · HEVC blocked</span>
+              </div>
               <div className="flex justify-between items-center text-[11px]">
                 <span className="text-zinc-400">iOS 17+ / iPhone 11+ (premium)</span>
                 <span className="text-green-400 font-black">2 GB</span>
@@ -204,8 +212,16 @@ export default function HowItWorksPage() {
             </p>
           </div>
           <div className="mt-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
-            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1.5">Max video file size</p>
-            <div className="space-y-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1.5">Max video format &amp; file size on mobile</p>
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-[11px]">
+                <span className="text-zinc-400">Max Resolution (All mobile devices)</span>
+                <span className="text-green-400 font-black">Up to 4K (optimized 30fps rendering)</span>
+              </div>
+              <div className="flex justify-between items-center text-[11px]">
+                <span className="text-zinc-400">GoPro Video Codec</span>
+                <span className="text-amber-400 font-black">H.264 / LRV only · HEVC blocked</span>
+              </div>
               <div className="flex justify-between items-center text-[11px]">
                 <span className="text-zinc-400">Android 11+ / 4 GB RAM (premium)</span>
                 <span className="text-green-400 font-black">1.5 GB</span>
@@ -239,48 +255,54 @@ export default function HowItWorksPage() {
               <tr className="bg-zinc-900/80 border-b border-zinc-800">
                 <th className="text-left px-4 py-3 text-zinc-500 font-black uppercase tracking-widest text-[10px]">Platform</th>
                 <th className="text-right px-4 py-3 text-zinc-500 font-black uppercase tracking-widest text-[10px]">Max size</th>
+                <th className="text-right px-4 py-3 text-zinc-500 font-black uppercase tracking-widest text-[10px]">Max resolution</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/60">
               <tr className="bg-zinc-900/40">
                 <td className="px-4 py-3 text-zinc-300">🖥️ Desktop (Chrome / Edge / Firefox)</td>
                 <td className="px-4 py-3 text-right font-black text-green-400">No limit</td>
+                <td className="px-4 py-3 text-right font-black text-green-400">No limit (up to 4K)</td>
               </tr>
               <tr className="bg-zinc-900/40">
                 <td className="px-4 py-3 text-zinc-300">📱 iOS 17+ / iPhone 11+</td>
                 <td className="px-4 py-3 text-right font-black text-green-400">2 GB</td>
+                <td className="px-4 py-3 text-right font-black text-green-400">Up to 4K (30fps render)</td>
               </tr>
               <tr className="bg-zinc-900/40">
                 <td className="px-4 py-3 text-zinc-300">📱 Android 11+ / 4 GB RAM</td>
                 <td className="px-4 py-3 text-right font-black text-green-400">1.5 GB</td>
+                <td className="px-4 py-3 text-right font-black text-green-400">Up to 4K (30fps render)</td>
               </tr>
               <tr className="bg-zinc-900/40">
                 <td className="px-4 py-3 text-zinc-500">📱 iOS 16.4–16.x / iPhone XR/XS</td>
                 <td className="px-4 py-3 text-right font-black text-amber-400">500 MB</td>
+                <td className="px-4 py-3 text-right font-black text-amber-400">1080p recommended</td>
               </tr>
               <tr className="bg-zinc-900/40">
                 <td className="px-4 py-3 text-zinc-500">📱 Android 10 / 3 GB RAM</td>
                 <td className="px-4 py-3 text-right font-black text-amber-400">1 GB</td>
+                <td className="px-4 py-3 text-right font-black text-amber-400">1080p recommended</td>
               </tr>
             </tbody>
           </table>
         </div>
         <div className="mb-4 p-4 rounded-2xl bg-zinc-900/40 border border-zinc-800">
-          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Typical file sizes</p>
+          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Typical file sizes &amp; mobile compatibility</p>
           <div className="grid grid-cols-2 gap-2 text-[11px]">
             {[
-              { cam: "iPhone 13 · 1080p60", size: "~120 MB/min", limit: "~16 min" },
-              { cam: "iPhone 15 · 4K30 HEVC", size: "~600 MB/min", limit: "~3 min 20s" },
-              { cam: "GoPro Hero 12 · 4K30", size: "~400 MB/min", limit: "~5 min" },
-              { cam: "Samsung S24 · 4K30", size: "~300 MB/min", limit: "~6 min 40s" },
+              { cam: "iPhone 13 · 1080p60", size: "~120 MB/min", limit: "Natively supported (~16 min max)" },
+              { cam: "iPhone 15 · 4K30 HEVC", size: "~600 MB/min", limit: "Natively supported (optimized 30fps canvas rendering)" },
+              { cam: "GoPro Hero 12 · 4K30", size: "~400 MB/min", limit: "Supports H.264 4K or lightweight .lrv files" },
+              { cam: "Samsung S24 · 4K30", size: "~300 MB/min", limit: "Natively supported (H.264 or local HEVC transcoder)" },
             ].map(r => (
               <div key={r.cam} className="p-2 rounded-xl bg-zinc-800/50 border border-zinc-700/50">
                 <p className="text-zinc-300 font-bold leading-snug mb-0.5">{r.cam}</p>
-                <p className="text-zinc-500">{r.size} · 2 GB limit = {r.limit}</p>
+                <p className="text-zinc-500">{r.size} · {r.limit}</p>
               </div>
             ))}
           </div>
-          <p className="text-zinc-600 text-[10px] mt-3">For clips larger than the limit, trim your video in your camera app before importing.</p>
+          <p className="text-zinc-600 text-[10px] mt-3">Mobile browsers have tight RAM constraints. LENS optimizes memory usage by driving drawing loops at exactly 30fps and freeing GPU buffers immediately.</p>
         </div>
         <div className="mb-14 p-4 rounded-2xl bg-zinc-900/40 border border-zinc-800">
           <p className="text-zinc-400 text-[11px] leading-relaxed">
@@ -344,8 +366,8 @@ export default function HowItWorksPage() {
         </p>
 
         <DeviceCard logo="/devices/logos/gopro_logo.svg" lw={64} name="GoPro" badge="Maximum Data · 18 Hz GPS" badgeColor="amber">
-          <Row label="Formats" value=".mp4" />
-          <Row label="Required codec" value="H.264 — H.265/HEVC not supported on Chrome Windows" neutral />
+          <Row label="Formats" value=".mp4, .lrv" />
+          <Row label="Required codec" value="H.264 — HEVC/H.265 not supported on Windows Chrome or mobile" neutral />
           <Row label="GPS track" value="18 Hz embedded in video" good />
           <Row label="Accelerometer" value="200 Hz" good />
           <Row label="Gyroscope" value="Yes" good />
@@ -361,12 +383,13 @@ export default function HowItWorksPage() {
           </p>
           <div className="mt-3 p-3 rounded-xl bg-amber-500/8 border border-amber-500/20">
             <p className="text-amber-400 text-[11px] font-bold leading-relaxed">
-              <span className="font-black">⚠ H.265 (HEVC) recording on GoPro:</span> Some firmware versions allow enabling HEVC via <strong className="text-white">Preferences → Video → Codec → H.265</strong>. Chrome on Windows/Linux cannot play H.265 files.
+              <span className="font-black">⚠ GoPro H.265 (HEVC) &amp; 4K limits:</span> Chrome on Windows/Linux cannot play H.265, and GoPro HEVC files are blocked on mobile devices to prevent browser memory crashes (OOM).
             </p>
             <ol className="mt-2 space-y-1 text-zinc-400 text-[11px]">
-              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> On the camera: <strong className="text-white">Preferences → Video → Codec → H.264</strong></li>
-              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> Record a new clip — H.264 is then used by default</li>
-              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> Alternatively, open LENS on Safari / Chrome on Mac (HEVC plays natively)</li>
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> On the camera: <strong className="text-white">Preferences → Video → Codec → H.264</strong> and record in 1080p.</li>
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> GoPro Quik App: Export or share your video as <strong className="text-white">1080p</strong> (this automatically encodes to H.264).</li>
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> Use GoPro <strong className="text-white">.lrv</strong> (Low Resolution Video) files directly from the SD card.</li>
+              <li className="flex gap-2"><span className="text-amber-500 shrink-0">→</span> Open LENS on desktop Safari / Chrome on macOS to play original HEVC natively.</li>
             </ol>
           </div>
           <div className="mt-3 p-3 rounded-xl bg-red-500/8 border border-red-500/20">
@@ -384,6 +407,7 @@ export default function HowItWorksPage() {
           <Row label="Formats" value=".mov" />
           <Row label="GPS track in video" value="Not embedded" neutral />
           <Row label="Sync method" value="CreateDate timestamp matched to GPX" neutral />
+          <Row label="Max resolution (mobile)" value="1080p (4K must be downscaled)" neutral />
           <Row label="Minimum device" value="iPhone 11+ (recommended) · iPhone XR/XS (minimum)" neutral />
           <Row label="Minimum iOS" value="iOS 17.0+ (recommended) · iOS 16.4 (minimum)" neutral />
           <Row label="Audio in output (desktop)" value="Original video audio + cinematic music" good />
@@ -394,12 +418,18 @@ export default function HowItWorksPage() {
           <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
             <strong className="text-zinc-300">Important:</strong> Start your GPS tracker (Garmin, Strava, etc.) <strong className="text-white">before</strong> pressing record on your iPhone. The activity GPX must cover the time window of the video.
           </p>
+          <div className="mt-3 p-3 rounded-xl bg-amber-500/8 border border-amber-500/20">
+            <p className="text-amber-400 text-[11px] font-bold leading-relaxed">
+              <span className="font-black">💡 Tip for 4K iPhone Videos:</span> To prevent memory crashes, tap <strong className="text-white">Options</strong> at the bottom of the iOS photos picker and choose <strong className="text-white">Most Compatible</strong> when selecting your video. iOS will automatically transcode and downscale the file to 1080p H.264.
+            </p>
+          </div>
         </DeviceCard>
 
         <DeviceCard logo="/devices/logos/android_logo.svg" lw={80} name="Android" badge="Timestamp sync" badgeColor="green">
           <Row label="Formats" value=".mp4" />
           <Row label="GPS track in video" value="Not embedded" neutral />
           <Row label="Sync method" value="Recording timestamp from video metadata" neutral />
+          <Row label="Max resolution (mobile)" value="1080p (4K must be recorded/exported in 1080p)" neutral />
           <Row label="Minimum Android" value="Android 11+ (recommended) · Android 10 (minimum)" neutral />
           <Row label="Minimum RAM" value="4 GB+ (recommended) · 3 GB (minimum)" neutral />
           <Row label="Browser" value="Chrome 94+ required (Chromium-based: Edge, Brave also work)" neutral />
@@ -579,9 +609,12 @@ export default function HowItWorksPage() {
             You uploaded the <code className="text-amber-400">*-route.gpx</code> — no timestamps. Upload the <code className="text-amber-400">*-track.gpx</code> file instead.
           </ProblemCard>
           <ProblemCard problem="This GoPro video cannot be played in this browser">
-            The video was recorded in H.265 (HEVC). Chrome on Windows/Linux cannot play H.265 files and the file is too large to convert in the browser.
-            Fix: on the camera go to <strong className="text-white">Preferences → Video → Codec → H.264</strong> and re-record.
+            The video was recorded in H.265 (HEVC). Chrome on Windows/Linux cannot play H.265 files, and GoPro HEVC files are blocked on mobile due to memory constraints.
+            Fix: On the camera, set Preferences → Video → Codec → H.264, export in 1080p from the GoPro Quik app, or use GoPro .lrv files.
             Alternatively, open LENS on Safari or Chrome on Mac — HEVC plays natively there.
+          </ProblemCard>
+          <ProblemCard problem="Out of memory / Render crash on mobile">
+            4K video encoding and decoding are supported on modern high-end devices. However, if your browser crashes during rendering, your device might be running out of memory. If this happens, select a 1080p video, export in 1080p, or on iOS, choose "Most Compatible" in the media picker options to auto-downscale the file.
           </ProblemCard>
           <ProblemCard problem="Update required (mobile)">
             Your device doesn't meet the minimum requirements for the mobile pipeline. Open LENS on a desktop computer (Chrome recommended) for the full experience without restrictions.
@@ -616,24 +649,25 @@ export default function HowItWorksPage() {
             </HelpItem>
             <HelpItem error="This GoPro video cannot be played in this browser." title="GoPro — H.265 video (HEVC)">
               Some GoPro firmware versions allow recording in H.265 via <strong className="text-white">Preferences → Video → Codec → H.265</strong>.
-              Chrome on Windows/Linux cannot play H.265 — the file cannot be converted in the browser because GoPro clips are typically too large for browser-based transcoding.
+              Chrome on Windows/Linux cannot play H.265, and GoPro HEVC files are blocked on mobile due to strict browser memory limits that would cause silent tab crashes.
               <br /><br />
-              <strong className="text-zinc-300">Fix before recording:</strong>
+              <strong className="text-zinc-300">Fix / Workarounds:</strong>
               <ol className="mt-2 space-y-1 list-none">
-                <ExportStep><strong className="text-white">Preferences → Video → Codec → H.264</strong> on the camera</ExportStep>
-                <ExportStep>Record a new clip — LENS will work immediately</ExportStep>
+                <ExportStep>On the camera: <strong className="text-white">Preferences → Video → Codec → H.264</strong> and re-record.</ExportStep>
+                <ExportStep>GoPro Quik App: Export or share your video as <strong className="text-white">1080p</strong> (this automatically encodes to H.264).</ExportStep>
+                <ExportStep>GoPro Files: Use the <strong className="text-white">.lrv</strong> (Low Resolution Video) files directly from the SD card.</ExportStep>
+                <ExportStep>On desktop: Open LENS on <strong className="text-white">Safari or Chrome on a Mac</strong> — HEVC plays natively there.</ExportStep>
               </ol>
-              <p className="mt-3 text-zinc-500">Already recorded in H.265? Open LENS on <strong className="text-white">Safari or Chrome on a Mac</strong> — HEVC plays natively there without any conversion.</p>
             </HelpItem>
             <HelpItem error="H.265 (HEVC) video detected — not supported in Chrome on Windows." title="Pixel phone — H.265 video (HEVC)">
               Google Pixel records in H.265 (HEVC) by default in several modes — Top Shot (<code className="text-amber-400">.TS.mp4</code>), 4K30+, Night Sight, and Motion Video.
-              Chrome on <strong className="text-white">Windows and Linux cannot play H.265</strong> without an OS-level codec. Chrome on macOS supports it.
+              Chrome on <strong className="text-white">Windows and Linux cannot play H.265</strong> without an OS-level codec. Chrome on macOS supports it. On mobile devices, 4K resolutions are blocked.
               <br /><br />
               <strong className="text-zinc-300">Fix on your Pixel:</strong>
               <ol className="mt-2 space-y-1 list-none">
                 <ExportStep>Camera app → <strong className="text-white">Settings</strong> → <strong className="text-white">Video quality</strong></ExportStep>
                 <ExportStep>Disable <strong className="text-white">&ldquo;Efficient video format&rdquo;</strong> (the HEVC option)</ExportStep>
-                <ExportStep>Record a new clip — it will now use H.264, which LENS supports fully</ExportStep>
+                <ExportStep>Record/export in <strong className="text-white">1080p</strong> — LENS supports up to 1080p resolution on mobile.</ExportStep>
               </ol>
               <p className="mt-3 text-zinc-500">Already recorded in HEVC? Convert to H.264 with <strong className="text-white">HandBrake</strong> (free): File → Open Source → Presets → Fast 1080p30 → Start Encode.</p>
             </HelpItem>
@@ -658,6 +692,16 @@ export default function HowItWorksPage() {
             </HelpItem>
             <HelpItem error="Encoding failed. Please try again. (mobile)" title="Mobile encoding error">
               The hardware video encoder encountered an error. This usually happens on older devices below the recommended minimum. Try again, or switch to desktop Chrome for reliable export.
+            </HelpItem>
+            <HelpItem error="Troubleshooting 4K video rendering on mobile" title="Rendering 4K videos on mobile">
+              LENS natively supports 4K videos on modern, high-end mobile devices (with 6GB+ RAM) by using an optimized 30fps canvas pipeline. However, if your browser crashes during render, your device might be running out of memory.
+              <br /><br />
+              <strong className="text-zinc-300">How to prevent memory crashes on older/mid-range devices:</strong>
+              <ol className="mt-2 space-y-1 list-none">
+                <ExportStep>On iPhone: Tap <strong className="text-white">Options</strong> at the bottom of the photos picker and select <strong className="text-white">Most Compatible</strong> before importing to auto-downscale to 1080p H.264.</ExportStep>
+                <ExportStep>On GoPro: Export in <strong className="text-white">1080p</strong> from the GoPro Quik app, or record/copy the file as 1080p H.264.</ExportStep>
+                <ExportStep>On Android: Record or export in 1080p resolution for mobile editing.</ExportStep>
+              </ol>
             </HelpItem>
             <HelpItem error="WhatsApp video — using Activity Portrait mode" title="WhatsApp video detected">
               WhatsApp removes all GPS and timestamp data from videos before sending. LENS detects this automatically and switches to <strong className="text-white">Activity Portrait</strong> mode: your GPX provides all the data, and the video plays as background footage. The output includes your full route, distance, time, speed, elevation, and heart rate. No sync between video frames and GPS is possible — this is a limitation of WhatsApp&rsquo;s privacy processing, not a LENS error.

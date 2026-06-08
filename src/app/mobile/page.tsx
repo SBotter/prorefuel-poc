@@ -449,34 +449,7 @@ export default function MobilePage() {
       fps: null, hasEmbeddedGPS: false, recordedAt: null,
     }));
 
-    // ── Resolution Guard ──────────────────────────────────────────────────────
-    // 4K/Ultra-HD videos exceed the browser's decoding/encoding memory limits
-    // on mobile, causing tab crashes. We block them early to protect the tab.
-    if (vmeta.width && vmeta.height && (vmeta.width > 1920 || vmeta.height > 1920)) {
-      const ctx: ErrorContext = {
-        ...errCtxCam,
-        video_codec:       vmeta.codec !== "unknown" ? vmeta.codec : null,
-        video_width:       vmeta.width,
-        video_height:      vmeta.height,
-        video_fps:         vmeta.fps,
-        video_has_gps:     vmeta.hasEmbeddedGPS || null,
-        video_recorded_at: vmeta.recordedAt ? new Date(vmeta.recordedAt).toISOString() : null,
-      };
-      void trackError(
-        "WRONG_VIDEO_FORMAT",
-        `[${file.name}] Video resolution is unsupported on mobile: ${vmeta.width}x${vmeta.height} (max 1080p).`,
-        "video_upload",
-        ctx
-      );
-      setLoading(false);
-      setUploadError(
-        "4K/Ultra-HD videos are not supported on mobile due to memory limits.\n\n" +
-        "Please select a 1080p (Full HD) video, or in the GoPro Quik app, " +
-        "choose 1080p when exporting. Alternatively, use LENS on a computer."
-      );
-      e.target.value = "";
-      return;
-    }
+
 
     const isGoPro = originalCamDetection.type === "gopro";
 

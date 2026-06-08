@@ -437,6 +437,14 @@ export function MobileCanvasRenderer({
     // ── Hidden video element ─────────────────────────────────────────────────
     const videoEl = document.createElement("video");
     videoEl.muted = true; videoEl.playsInline = true; videoEl.crossOrigin = "anonymous";
+    videoEl.style.position = "absolute";
+    videoEl.style.width = "1px";
+    videoEl.style.height = "1px";
+    videoEl.style.opacity = "0";
+    videoEl.style.pointerEvents = "none";
+    videoEl.style.top = "0";
+    videoEl.style.left = "0";
+    document.body.appendChild(videoEl);
     const videoUrl = URL.createObjectURL(videoFile);
     videoEl.src = videoUrl;
     videoEl.load();
@@ -1265,11 +1273,10 @@ export function MobileCanvasRenderer({
           if (hit.seg.type === "ACTION" && videoEl.paused) videoEl.play().catch(() => {});
         }
 
-        // ── Draw (every rAF for smooth preview) ───────────────────────────────
-        try { drawFrame(elapsed); } catch (err: any) { mlog("ERROR", `drawFrame: ${err?.message}`); }
-
-        // ── Capture at 30fps ─────────────────────────────────────────────────
+        // ── Draw & Capture (throttled to exactly 30fps to reduce 4K GPU load) ─
         if (lastCaptureMs < 0 || now - lastCaptureMs >= CAPTURE_INTERVAL_MS) {
+          try { drawFrame(elapsed); } catch (err: any) { mlog("ERROR", `drawFrame: ${err?.message}`); }
+
           if ((recorder?.encoderQueueSize ?? 0) > 10) {
             skippedFrames++;
           } else {
@@ -1314,7 +1321,14 @@ export function MobileCanvasRenderer({
       window.removeEventListener("error", onWindowError);
       window.removeEventListener("unhandledrejection", onUnhandled);
       URL.revokeObjectURL(videoUrl);
-      videoEl.src = "";
+      try {
+        videoEl.pause();
+        videoEl.src = "";
+        videoEl.load();
+        videoEl.remove();
+      } catch (err: any) {
+        mlog("CLEANUP_ERR", `failed to cleanup videoEl: ${err?.message}`);
+      }
     };
   }, [videoFile, activityPoints.length, storyPlan]);
 
