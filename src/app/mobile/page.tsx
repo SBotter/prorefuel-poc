@@ -20,7 +20,6 @@ import type { ErrorContext } from "@/lib/supabase/tracking";
 import type { VideoUploadInsert } from "@/lib/supabase/types";
 import type { ActionSegment }  from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
-import { RENDER_QUALITY_MESSAGES } from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }     from "@/lib/utils/units";
 import type { MobileCapabilities } from "@/lib/engine/mobile/mobileCapabilities";
 import type { RenderResult }   from "@/components/MapEngine";
@@ -237,9 +236,6 @@ export default function MobilePage() {
   const storyPlanRef           = useRef<StoryPlan | null>(null);
   const gpxMetricsRef          = useRef<ReturnType<typeof computeGpxMetrics> | null>(null);
   const videoMetricsRef        = useRef<Omit<VideoUploadInsert, "app_version" | "processing_session_id"> | null>(null);
-  // true when the video that reached the render pipeline is HEVC (H.265).
-  // Used by MobileCanvasRenderer to select VP9 encoding (no Video Toolbox conflict).
-  const sourceIsHevcRef        = useRef(false);
 
   // H.265 pre-transcoding state — only active when an HEVC video is detected
   const [hevcConverting, setHevcConverting] = useState(false);
@@ -440,17 +436,6 @@ export default function MobilePage() {
       device_model: originalCamDetection.model || null,
     };
 
-    // ── Video metadata scan — runs BEFORE the codec check ────────────────────────
-    // Reading Phase 1 (first 2 MB) + Phase 2 (last 1.5 MB) gives codec, resolution,
-    // fps, creation timestamp and GPS flag. Running it here means vmeta.codec is
-    // available as a redundant HEVC signal in the codec check below.
-    const { parseVideoMeta: _parseVideoMeta } = await import("@/lib/engine/parseVideoMeta");
-    const vmeta = await _parseVideoMeta(file).catch(() => ({
-      codec: "unknown" as const, width: null, height: null,
-      fps: null, hasEmbeddedGPS: false, recordedAt: null,
-    }));
-    mlog("VMETA", `codec=${vmeta.codec} ${vmeta.width}×${vmeta.height} fps=${vmeta.fps} gps=${vmeta.hasEmbeddedGPS}`);
-
     // ── Codec compatibility check ─────────────────────────────────────────────────
     // canBrowserPlay() loads the actual file into a hidden <video> and seeks to
     // trigger real frame decoding. This is more reliable than canPlayType() or UA
@@ -460,119 +445,13 @@ export default function MobilePage() {
     let processFile = file;
     let detectedCodec: "h264" | "hevc" | null = null;
     let transcodeStart: number | null = null;
-
-    // Mobile HEVC transcode size limit: beyond this, FFmpeg.wasm will OOM.
-    // Empirically safe at ~200 MB on iOS 16.4+ (2 GB virtual budget for WASM).
-    const HEVC_TRANSCODE_LIMIT_MB = 200;
-
     try {
       const isGoPro = originalCamDetection.type === "gopro";
-      const { canBrowserPlay, transcodeHevcToH264, isHevcVideo } = await import("@/lib/engine/mobile/hevcTranscoder");
-      const probe = isGoPro
-        ? { canPlay: true, videoWidth: 0, videoHeight: 0 }
-        : await canBrowserPlay(file);
-      const canPlay    = probe.canPlay;
-      const probeW     = probe.videoWidth;
-      const probeH     = probe.videoHeight;
-      const maxDim     = Math.max(probeW, probeH);
+      const { canBrowserPlay, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
+      const canPlay = isGoPro ? true : await canBrowserPlay(file);
+      detectedCodec = canPlay ? "h264" : "hevc";
 
-      mlog("PROBE", `canPlay=${canPlay} resolution=${probeW}x${probeH} maxDim=${maxDim}`);
-
-      // ── HEVC detection — three redundant signals ───────────────────────────────
-      //
-      // Signal A: resolution from canBrowserPlay (most reliable on iOS).
-      //   iPhone records 4K (.mov) EXCLUSIVELY in HEVC — H.264 is capped at 1080p
-      //   in "Most Compatible" mode. So .mov + maxDim > 1920 = HEVC with near-certainty.
-      //   This signal works even when file.slice() PHAsset reads fail for large files.
-      //   NOTE: 4K H.264 on iPhone (rare, "Most Compatible" + 4K mode) would be a
-      //   false positive — but 4K H.264 at 30fps is also extremely slow to render on
-      //   mobile, so HEVC handling (reject if large, transcode if small) is still correct.
-      //
-      // Signal B: vmeta.codec from parseVideoMeta (Phase 1+2, reads last 3 MB).
-      //   May return 'unknown' if iOS PHAsset tail read is unreliable for large files.
-      //
-      // Signal C: isHevcVideo() (Phase 1+2, reads last 3 MB).
-      //   Same potential PHAsset limitation; different code path.
-      //
-      // Any signal independently catching HEVC routes through the HEVC path.
-      // The HEVC path then decides: transcode (small files) or reject (large files).
-      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-      const isResolutionHevc = !isGoPro && ext === 'mov' && maxDim > 1920;
-
-      const isHEVC = isGoPro ? false : (
-        isResolutionHevc ||                                // Signal A
-        vmeta.codec === 'hevc' ||                         // Signal B
-        (canPlay ? await isHevcVideo(file) : true)        // Signal C
-      );
-      detectedCodec = isHEVC ? "hevc" : "h264";
-      // Track for MobileCanvasRenderer — HEVC source → VP9 encoder on iOS
-      sourceIsHevcRef.current = isHEVC;
-
-      mlog("CODEC", `canPlay=${canPlay} isHEVC=${isHEVC} size=${(file.size/1024/1024).toFixed(0)}MB`);
-
-      if (isHEVC) {
-        if (canPlay) {
-          // ── HEVC + canPlay=true: render directly with VP9 encoder ────────────
-          //
-          // iOS can decode HEVC natively. We render directly — no transcoding.
-          //
-          // Encoder strategy: VP9 (libvpx, pure CPU software). VP9 has zero
-          // interaction with iOS Video Toolbox. The HEVC hardware decoder and VP9
-          // CPU encoder run on completely independent paths → no conflict.
-          //
-          // For 4K HEVC: the hardware HEVC decoder occasionally gets suspended by
-          // iOS under memory pressure (readyState drops to 0 for ~1s then recovers).
-          // This causes brief frozen frames in the output, but the render completes.
-          // MobileCanvasRenderer skips frames during the suspension automatically.
-          //
-          // After VP9 encoding, MobileCanvasRenderer post-transcodes VP9→H264 using
-          // FFmpeg.wasm so the output is Photos-compatible on iOS.
-          mlog("CODEC", `HEVC canPlay=true — rendering with VP9 encoder. ${(file.size/1024/1024).toFixed(0)}MB ${probeW}×${probeH}`);
-        } else {
-          // ── HEVC + canPlay=false: device cannot decode → must transcode ─────
-          const fileMB = file.size / 1_048_576;
-          if (fileMB > HEVC_TRANSCODE_LIMIT_MB) {
-            // Too large for FFmpeg.wasm (would OOM)
-            mlog("CODEC", `HEVC canPlay=false, too large to transcode: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB`);
-            const resInfo = probeW > 0 ? ` (${probeW}×${probeH})` : '';
-            void trackError("WRONG_VIDEO_FORMAT",
-              `[${file.name}] HEVC${resInfo} canPlay=false, too large for mobile transcode: ${fileMB.toFixed(0)}MB > ${HEVC_TRANSCODE_LIMIT_MB}MB.`,
-              "video_upload",
-              { ...errCtxCam, video_codec: "hevc", video_width: probeW || null, video_height: probeH || null });
-            setLoading(false);
-            setUploadError(
-              `This video uses H.265 (HEVC) and cannot be played or converted on this device.\n\n` +
-              `To fix:\n` +
-              `• iPhone: Settings → Camera → Formats → "Most Compatible" — records in H.264\n` +
-              `• Open LENS on desktop Chrome — no size limit there`
-            );
-            e.target.value = "";
-            return;
-          }
-
-          // Small HEVC that the browser can't decode — transcode via FFmpeg.wasm
-          mlog("CODEC", `HEVC canPlay=false (${fileMB.toFixed(0)}MB ≤ ${HEVC_TRANSCODE_LIMIT_MB}MB) — transcoding to H.264`);
-          setHevcConverting(true);
-          setHevcProgress(0);
-          setHevcStatus("Loading converter…");
-          transcodeStart = Date.now();
-          processFile = await transcodeHevcToH264(file, (pct, status) => {
-            setHevcProgress(pct);
-            setHevcStatus(status);
-          });
-          const transcodeMs = Date.now() - transcodeStart;
-          mlog("CODEC", `transcoding done in ${(transcodeMs/1000).toFixed(1)}s — ${(processFile.size/1024/1024).toFixed(1)}MB`);
-          void trackHevcTranscode(transcodeMs, {
-            ...errCtxCam,
-            file_size_bytes: file.size,
-            file_extension: "." + (file.name.split(".").pop()?.toLowerCase() ?? "unknown"),
-          });
-          setHevcConverting(false);
-          setHevcProgress(0);
-          setHevcStatus("");
-        }
-      } else if (!canPlay) {
-        // Non-HEVC file that the browser can't play (unusual codec)
+      if (!canPlay) {
         mlog("CODEC", `browser cannot decode file — transcoding to H.264`);
         setHevcConverting(true);
         setHevcProgress(0);
@@ -593,7 +472,7 @@ export default function MobilePage() {
         setHevcProgress(0);
         setHevcStatus("");
       } else {
-        mlog("CODEC", `H.264 natively supported${isGoPro ? " (GoPro)" : ""} — skipping transcode`);
+        mlog("CODEC", `browser can decode file natively${isGoPro ? " (GoPro H.264)" : ""} — skipping transcode`);
       }
     } catch (err: any) {
       setHevcConverting(false);
@@ -613,6 +492,15 @@ export default function MobilePage() {
       e.target.value = "";
       return;
     }
+
+    // Step 3: video metadata scan — runs once, enriches ALL error paths
+    // Reads the first 2 MB (fast, ~5ms) — gives codec, resolution, fps,
+    // embedded GPS flag, and recording timestamp for every error event.
+    const { parseVideoMeta: _parseVideoMeta } = await import("@/lib/engine/parseVideoMeta");
+    const vmeta = await _parseVideoMeta(file).catch(() => ({
+      codec: "unknown" as const, width: null, height: null,
+      fps: null, hasEmbeddedGPS: false, recordedAt: null,
+    }));
 
     const errCtxFull: ErrorContext = {
       ...errCtxCam,
@@ -875,10 +763,6 @@ export default function MobilePage() {
       const sp = StorytellingProcessor.generatePlan(activityPoints, vpts as any, unit, 0, gpsVideoOffsetMs, videoDurationSec);
       mlog("STORY", `segments=${sp.segments.length} totalBudget=${sp.totalBudgetSec?.toFixed(1)}s`);
 
-      // Set render quality level for the user-facing notification
-      if (!segments?.length) sp.renderQuality = 'no_scenes';
-      else sp.renderQuality = 'perfect';
-
       clearInterval(interval);
       setProgress(100);
       storyPlanRef.current = sp;
@@ -1016,14 +900,9 @@ export default function MobilePage() {
       setUploadError(`Export failed: ${result.errorMessage}. Please try again.`);
     }
 
-    // Reset all state — clean slate for next video.
-    // Do NOT clear uploadError here: if an error was just set (lines above), clearing
-    // it in the same synchronous pass means the user never sees it. The error is
-    // cleared naturally when the user selects a new file (handleVideoUpload → setUploadError(null)).
+    // Reset all state — clean slate for next video
     setVideoFile(null);    setHighlights([]);      setStoryPlan(null);
-    setVideoLoaded(false);
-    if (result.status !== "error") setUploadError(null);
-    setGpxError(null);
+    setVideoLoaded(false); setUploadError(null);   setGpxError(null);
     setGpxLoaded(false);   setActivityPoints([]);  setActivityName("YOUR RIDE");
     setProgress(0);        setStatusMsg("");
     gpxNameRef.current             = "";
@@ -1032,7 +911,6 @@ export default function MobilePage() {
     storyPlanRef.current           = null;
     gpxMetricsRef.current          = null;
     videoMetricsRef.current        = null;
-    sourceIsHevcRef.current        = false;
     setStep("UPLOAD");
   };
 
@@ -1065,7 +943,6 @@ export default function MobilePage() {
         unit={unit}
         onRenderComplete={handleRenderComplete}
         activityName={activityName}
-        sourceIsHEVC={sourceIsHevcRef.current}
       />
     );
   }
@@ -1266,21 +1143,6 @@ export default function MobilePage() {
               <div className="h-full bg-amber-500 transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
             </div>
           )}
-
-          {/* Render quality notification — shown when render is not "perfect" */}
-          {storyPlan?.renderQuality && storyPlan.renderQuality !== 'perfect' && (() => {
-            const msg = RENDER_QUALITY_MESSAGES[storyPlan.renderQuality!];
-            if (!msg?.text) return null;
-            return (
-              <div className="flex items-start gap-3 p-4 rounded-2xl bg-amber-500/8 border border-amber-500/20">
-                <span className="text-base shrink-0 mt-0.5">{msg.icon}</span>
-                <div>
-                  <p className="text-amber-400 text-[11px] font-black uppercase tracking-widest mb-1">{msg.text}</p>
-                  <p className="text-zinc-500 text-[11px] leading-relaxed">{msg.detail}</p>
-                </div>
-              </div>
-            );
-          })()}
 
           {/* Generate button */}
           <button

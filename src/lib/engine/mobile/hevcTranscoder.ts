@@ -69,45 +69,30 @@ function findMoovSearch(buf: Uint8Array): [number, number] | null {
   return null;
 }
 
-export interface CanBrowserPlayResult {
-  /** true if the browser can actually decode this file (seeks and renders a frame). */
-  canPlay:     boolean;
-  /** Decoded video width in pixels. 0 if the video could not be loaded. */
-  videoWidth:  number;
-  /** Decoded video height in pixels. 0 if the video could not be loaded. */
-  videoHeight: number;
-}
-
 /**
  * Probes whether the current browser can actually decode the given video file.
  * Creates a hidden <video> element, loads the blob, and seeks to 0.1 s to
  * trigger real frame decoding — not just container parsing.
  *
- * Returns BOTH the canPlay flag AND the video dimensions. The dimensions come
- * from the HTML5 video element and are 100% reliable even for HEVC/HDR files
- * on iOS where file.slice() PHAsset reads can be unreliable for large files.
- * This makes videoWidth/videoHeight the most reliable 4K/HEVC detection signal
- * available on mobile.
- *
  * Why not canPlayType()? It returns "maybe"/"probably" based on codec strings
  * alone and ignores hardware availability. On Android Chrome it claims HEVC
  * support even on devices that silently fail to decode it. This function
  * confirms actual decode success with a 3-second timeout fallback.
+ *
+ * Usage: if canBrowserPlay() returns false, transcode before rendering.
  */
-export async function canBrowserPlay(file: File, timeoutMs = 3000): Promise<CanBrowserPlayResult> {
+export async function canBrowserPlay(file: File, timeoutMs = 3000): Promise<boolean> {
   const url = URL.createObjectURL(file);
   try {
-    return await new Promise<CanBrowserPlayResult>(resolve => {
+    return await new Promise<boolean>(resolve => {
       const video = document.createElement('video');
       let resolved = false;
-      const done = (canPlay: boolean) => {
+      const done = (result: boolean) => {
         if (resolved) return;
         resolved = true;
-        const w = video.videoWidth;
-        const h = video.videoHeight;
         video.src = '';
         video.load();
-        resolve({ canPlay, videoWidth: w, videoHeight: h });
+        resolve(result);
       };
       const timer = setTimeout(() => done(false), timeoutMs);
       video.onerror = () => { clearTimeout(timer); done(false); };
@@ -134,12 +119,10 @@ export async function isHevcVideo(file: File): Promise<boolean> {
     const moovH = findMoovWalk(head, 0, head.length);
     if (moovH) return hasHevcInRange(head, moovH[0], moovH[1]);
 
-    // Phase 2: non-faststart — moov is at EOF (iPhone MOV, some Android MP4).
-    // Read last 3 MB for a larger safety margin. On iOS, file.slice() for large
-    // PHAsset-backed camera roll files can return partial data — a bigger tail
-    // buffer reduces the chance of the moov landing right at the edge and being
-    // missed. 3 MB covers moov boxes for videos up to several hours at 60fps.
-    const tailSize = Math.min(3_000_000, file.size);
+    // Phase 2: non-faststart — moov is at EOF (some older Android recordings).
+    // Read last 1.2 MB. Because the buffer starts mid-mdat we cannot walk from
+    // offset 0 — use a search-and-validate approach instead.
+    const tailSize = Math.min(1_258_291, file.size);
     const tail = new Uint8Array(await file.slice(file.size - tailSize).arrayBuffer());
     const moovT = findMoovSearch(tail);
     if (moovT) return hasHevcInRange(tail, moovT[0], moovT[1]);

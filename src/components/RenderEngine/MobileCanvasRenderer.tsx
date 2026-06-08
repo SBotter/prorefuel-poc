@@ -26,7 +26,6 @@ import type { ActionSegment }  from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }     from "@/lib/utils/units";
 import type { RenderResult }   from "@/components/MapEngine";
-import { computePortraitData } from "@/lib/engine/ActivityPortraitPlanner";
 
 // rAF runs at 60fps on iPhone; we only want 30fps captures.
 const CAPTURE_INTERVAL_MS = 1000 / FPS; // ~33.33ms
@@ -69,12 +68,6 @@ export interface MobileCanvasRendererProps {
   onRenderComplete: (result: RenderResult) => void;
   /** Activity title shown in the INTRO screen. Defaults to "YOUR RIDE". */
   activityName?: string;
-  /**
-   * true when the source video uses HEVC (H.265).
-   * Forces VP9 output on iOS to avoid Video Toolbox hardware conflict between
-   * the HEVC hardware decoder and the H264 VTCompressionSession encoder.
-   */
-  sourceIsHEVC?: boolean;
 }
 
 // ─── Shadow helpers ───────────────────────────────────────────────────────────
@@ -108,7 +101,6 @@ async function shareOrDownload(blob: Blob, filename: string) {
 export function MobileCanvasRenderer({
   activityPoints, highlights, storyPlan, videoFile, unit, onRenderComplete,
   activityName = "YOUR RIDE",
-  sourceIsHEVC = false,
 }: MobileCanvasRendererProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status,   setStatus]   = useState("Preparing…");
@@ -273,57 +265,6 @@ export function MobileCanvasRenderer({
 
     // Max speed tracker for red needle (same as desktop)
     let maxSpeedSeen = 0;
-
-    // ── Cache rebuild — called when iOS HEVC decoder resets ───────────────────
-    // broadmapCache, trailCache and altimetryCache are no longer used for drawing:
-    //   • drawMiniMap     → routePath2D + trailPath2D (Path2D, CPU-resident)
-    //   • drawAltimetryBase → direct draw from altProjX/altProjY (Float32Array, CPU)
-    //   • drawPortraitHUD map → routePath2D (Path2D, CPU-resident)
-    //
-    // Only gaugeCache remains as a GPU-backed offscreen canvas (speed dial static
-    // layer drawn once, blitted each frame). Rebuild only this one on reset.
-    function rebuildCaches() {
-      mlog("CACHE", "rebuilding gaugeCache after decoder reset");
-
-      // Re-draw gaugeCache (speed dial static layer — only remaining GPU cache)
-      const gc = gaugeCache.getContext("2d");
-      if (gc) {
-        gc.clearRect(0, 0, gaugeCacheW, gaugeCacheH);
-        const vg = gc.createRadialGradient(G_CX, G_CY, 0, G_CX, G_CY, W * 0.42);
-        vg.addColorStop(0, "rgba(0,0,0,0.28)"); vg.addColorStop(1, "rgba(0,0,0,0)");
-        gc.fillStyle = vg; gc.fillRect(0, 0, gaugeCacheW, gaugeCacheH);
-        gc.lineWidth = G_LW; gc.lineCap = "round";
-        gc.strokeStyle = "rgba(255,255,255,0.12)";
-        gc.beginPath(); gc.arc(G_CX, G_CY, G_R, G_START, G_END); gc.stroke();
-        gc.lineCap = "butt";
-        for (let spd = 0; spd <= maxGauge; spd += 10) {
-          const a = speedToAngle(spd), cosA = Math.cos(a), sinA = Math.sin(a);
-          const isMajor = spd % 20 === 0;
-          const outer = G_R - Math.round(W * 0.024);
-          const inner = outer - (isMajor ? G_R * 0.12 : G_R * 0.07);
-          gc.strokeStyle = isMajor ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.15)";
-          gc.lineWidth = isMajor ? 2.5 : 1.5;
-          gc.beginPath();
-          gc.moveTo(G_CX + cosA * outer, G_CY + sinA * outer);
-          gc.lineTo(G_CX + cosA * inner, G_CY + sinA * inner);
-          gc.stroke();
-          if (isMajor && spd > 0) {
-            const lr = inner - G_R * 0.12;
-            gc.shadowColor = "rgba(0,0,0,1)"; gc.shadowBlur = 10;
-            gc.font = `700 ${Math.round(W * 0.024)}px sans-serif`;
-            gc.fillStyle = "rgba(255,255,255,0.6)"; gc.textAlign = "center";
-            gc.fillText(String(spd), G_CX + cosA * lr, G_CY + sinA * lr + 5);
-            gc.shadowBlur = 0;
-          }
-        }
-        gc.fillStyle = "#1a1a1a";
-        gc.beginPath(); gc.arc(G_CX, G_CY, W * 0.022, 0, Math.PI * 2); gc.fill();
-        gc.strokeStyle = "rgba(255,255,255,0.15)"; gc.lineWidth = 1.5;
-        gc.beginPath(); gc.arc(G_CX, G_CY, W * 0.022, 0, Math.PI * 2); gc.stroke();
-      }
-
-      mlog("CACHE", "gaugeCache rebuild complete");
-    }
 
     // ── Altimetry — matches desktop MapEngine ─────────────────────────────────
     // Desktop: ALT_H=H*0.12, ALT_PAD_TOP=28, ALT_Y=H-ALT_H-28, full width
@@ -502,94 +443,35 @@ export function MobileCanvasRenderer({
 
     let lastSegIdx = -1;
 
-    // ── Frozen frame cache — survives iOS HEVC decoder resets ────────────────
-    // When the iOS hardware HEVC decoder gets suspended under memory pressure,
-    // videoEl.readyState drops to 0 for 1–2 seconds. Without this cache, the
-    // canvas goes black and the HUD elements (mini-map, elevation) become invisible
-    // because they are drawn semi-transparent over a black background.
-    //
-    // Fix: every time we successfully draw a video frame, copy it to frozenCanvas.
-    // During readyState < 2, we draw the frozen frame instead of nothing. The video
-    // appears "paused at the last frame" rather than blacking out.
-    // The encoder also uses the frozen frame (captureFrame runs normally), so the
-    // output video shows a brief freeze rather than a jump cut.
-    const frozenCanvas = new OffscreenCanvas(W, H);
-    const frozenCtx    = frozenCanvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
-    let   hasFrozenFrame = false;
-
     // ── Drawing: video frame ─────────────────────────────────────────────────
-    function drawVideoFrame(c: CanvasRenderingContext2D): boolean {
+    function drawVideoFrame(c: CanvasRenderingContext2D) {
+      if (videoEl.readyState < 2) return;
       const vW = videoEl.videoWidth || W, vH = videoEl.videoHeight || H;
       const ar = W / H, vAr = vW / vH;
       let sx = 0, sy = 0, sw = vW, sh = vH;
       if (vAr > ar) { sw = Math.round(vH * ar); sx = Math.round((vW - sw) / 2); }
       else          { sh = Math.round(vW / ar); sy = Math.round((vH - sh) / 2); }
-
-      if (videoEl.readyState >= 2) {
-        try {
-          c.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H);
-          // Cache this frame for use during decoder resets
-          frozenCtx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H);
-          hasFrozenFrame = true;
-          return true; // live frame drawn
-        } catch { /* video temporarily not ready */ }
-      }
-
-      // Decoder suspended — use the frozen frame to keep video + HUD visible
-      if (hasFrozenFrame) {
-        try { c.drawImage(frozenCanvas, 0, 0, W, H); } catch { /* unlikely */ }
-      }
-      return hasFrozenFrame; // true = something was drawn, false = truly nothing
+      try { c.drawImage(videoEl, sx, sy, sw, sh, 0, 0, W, H); } catch { /* video not ready */ }
     }
 
-    // ── GPS route as Path2D — CPU-resident, never GPU-evicted ────────────────
-    // On iOS, canvas offscreen GPU textures get evicted when the HEVC hardware
-    // decoder resets under memory pressure. Path2D lives in JS heap (CPU) and is
-    // immune to GPU eviction. Drawing via ctx.stroke(path) re-rasterises from
-    // CPU data each frame — trivial cost on A15 Bionic (~2ms for 6287 points).
-    const routePath2D = (() => {
-      const p = new Path2D();
-      pts.forEach((pt: any, i: number) =>
-        i === 0 ? p.moveTo(toMMX(pt.lon), toMMY(pt.lat)) : p.lineTo(toMMX(pt.lon), toMMY(pt.lat)));
-      return p;
-    })();
-
-    // Trail grows incrementally as Path2D (also CPU-resident)
-    const trailPath2D  = new Path2D();
-    let   trailPath2DIdx = -1;
-
-    // ── Drawing: GPS mini-map ─────────────────────────────────────────────────
-    // Draws directly from Path2D / data arrays — no GPU-backed canvas textures,
-    // so map stays visible even during iOS HEVC decoder resets (GPU eviction).
+    // ── Drawing: GPS mini-map — matches desktop drawBroadMap exactly ─────────
+    // No background box. Route has drop shadow. Incremental trail cache.
     function drawMiniMap(c: CanvasRenderingContext2D, gpsIdx: number) {
+      // Layer 1: pre-cached route (no background box — shadow gives depth)
       c.save();
+      c.drawImage(broadmapCache, MM_X, MM_Y, MM_W, MM_H);
 
-      // Layer 1: full GPS route (Path2D, CPU-resident)
-      c.save();
-      c.translate(MM_X, MM_Y);
-      c.shadowColor = "rgba(0,0,0,0.90)"; c.shadowBlur = 10;
-      c.shadowOffsetX = 3; c.shadowOffsetY = 4;
-      c.strokeStyle = "rgba(255,255,255,0.85)"; c.lineWidth = 2.5;
-      c.lineJoin = "round"; c.lineCap = "round";
-      c.stroke(routePath2D);
-      c.restore();
-
-      // Layer 2: amber progress trail (Path2D, grows incrementally)
-      if (gpsIdx > trailPath2DIdx) {
-        if (trailPath2DIdx < 0) {
-          trailPath2D.moveTo(MM_X + toMMX((pts[0] as any).lon), MM_Y + toMMY((pts[0] as any).lat));
-        }
-        for (let i = Math.max(trailPath2DIdx + 1, 1); i <= gpsIdx; i++) {
-          trailPath2D.lineTo(MM_X + toMMX((pts[i] as any).lon), MM_Y + toMMY((pts[i] as any).lat));
-        }
-        trailPath2DIdx = gpsIdx;
+      // Layer 2: amber progress trail — incremental (O(delta) not O(idx))
+      if (gpsIdx > lastTrailIdx) {
+        const from = Math.max(lastTrailIdx, 0);
+        trailCtx.beginPath();
+        trailCtx.moveTo(toMMX(pts[from].lon), toMMY(pts[from].lat));
+        for (let i = from + 1; i <= gpsIdx; i++)
+          trailCtx.lineTo(toMMX((pts[i] as any).lon), toMMY((pts[i] as any).lat));
+        trailCtx.stroke();
+        lastTrailIdx = gpsIdx;
       }
-      c.strokeStyle = "rgba(245,158,11,0.95)"; c.lineWidth = 3;
-      c.lineJoin = "round"; c.lineCap = "round";
-      c.shadowColor = "rgba(0,0,0,0.85)"; c.shadowBlur = 8;
-      c.shadowOffsetX = 2; c.shadowOffsetY = 3;
-      c.stroke(trailPath2D);
-      c.shadowColor = "transparent"; c.shadowBlur = 0; c.shadowOffsetX = 0; c.shadowOffsetY = 0;
+      c.drawImage(trailCache, 0, 0, MM_W, MM_H, MM_X, MM_Y, MM_W, MM_H);
 
       // Layer 3: current position dot + glow
       const cx = MM_X + toMMX((pts[gpsIdx] as any).lon);
@@ -597,10 +479,9 @@ export function MobileCanvasRenderer({
       c.shadowBlur = 18; c.shadowColor = "rgba(245,158,11,0.8)";
       c.fillStyle = "#f59e0b";
       c.beginPath(); c.arc(cx, cy, 8, 0, Math.PI * 2); c.fill();
-      c.shadowBlur = 0; c.shadowColor = "transparent";
+      c.shadowBlur = 0;
       c.fillStyle = "#fff";
       c.beginPath(); c.arc(cx, cy, 4, 0, Math.PI * 2); c.fill();
-
       c.restore();
     }
 
@@ -717,21 +598,9 @@ export function MobileCanvasRenderer({
       c.restore();
     }
 
-    // ── Drawing: INTRO phase ─────────────────────────────────────────────────────
-    // Background: solid dark fill (no video).
-    //
-    // WHY no video background on mobile:
-    //   On iOS, the hardware video decoder and the hardware VideoEncoder share the
-    //   same Video Toolbox pool (VTCompressionSession). Activating the decoder during
-    //   the INTRO (via drawVideoFrame or early videoEl.play()) while the encoder is
-    //   initialising causes "Encoding task did not complete" in 1–2 seconds.
-    //   Even when prefer-software encoding is requested, WebKit may fall back to
-    //   hardware, reintroducing the conflict.
-    //
-    //   Solution: keep the hardware decoder completely idle during INTRO.
-    //   videoEl.play() is only called at ACTION start (main render loop), by which
-    //   time the encoder is fully warm and the decoder/encoder interleave is safe.
-    //   The INTRO is primarily a text+animation screen; the dark background is fine.
+    // ── Drawing: INTRO phase — identical to desktop MapEngine drawIntro() ────────
+    // Background: frozen grayscale video frame (mobile substitute for Mapbox satellite).
+    // All overlay elements match the desktop exactly: timing, layout, animations.
     let introLoggedOnce = false;
     function drawIntroPhase(c: CanvasRenderingContext2D, localTime: number, _segDur: number) {
       const elapsed = localTime * 1000; // ms from intro start (matches desktop timing)
@@ -741,17 +610,44 @@ export function MobileCanvasRenderer({
 
       if (!introLoggedOnce) {
         introLoggedOnce = true;
-        mlog("INTRO", `drawIntroPhase called — elapsed=${elapsed.toFixed(0)}ms`);
+        mlog("INTRO", `drawIntroPhase called — elapsed=${elapsed.toFixed(0)}ms grayFrameReady=${grayFrameReady} vidW=${videoEl.videoWidth}`);
       }
 
-      // textAlpha fades out in the last 25% of INTRO so elements exit smoothly.
+      // ── Transition-out parameters ──────────────────────────────────────────────
+      // Starts at 75% of segment duration, completes at 100%.
+      // grayIntensity: 1→0 (grayscale fades to color — NO black flash)
+      // textAlpha:     1→0 (text/overlay elements fade out)
+      // The video frame is ALWAYS visible in color by the time ACTION starts,
+      // so the intro→ACTION cut is seamless.
       const transOutProg = eo(cl((elapsed - (_segDur * 1000 * 0.75)) / (_segDur * 1000 * 0.25)));
-      const textAlpha    = 1 - transOutProg;
+      const grayIntensity = 1 - transOutProg;   // 1=grayscale, 0=full color
+      const textAlpha     = 1 - transOutProg;   // 1=visible,   0=transparent
+
+      // ── Start video playing the moment grayscale begins fading to color ──────
+      // videoEl.play() is normally called when ACTION starts, but the color reveal
+      // happens 1.6s before ACTION. Without this, the color frame is frozen until
+      // ACTION begins — the user sees ~1.6s of a colorized but motionless frame.
+      // Starting play() here means the video is already moving when fully revealed.
+      // The decoder is already warm from pre-warm, so this is instant with no OOM risk.
+      if (transOutProg > 0.01 && videoEl.paused) {
+        videoEl.play().catch(() => {});
+      }
 
       c.save();
 
-      // ── 0. Solid dark background — no video, no decoder activation ────────────
+      // ── 0. Video background: grayscale during intro, color during transition ──
       c.fillStyle = "#050505"; c.fillRect(0, 0, W, H);
+      if (grayFrameReady) {
+        c.save();
+        c.globalAlpha = 0.82;
+        drawVideoFrame(c);
+        if (grayIntensity > 0.01) {
+          c.globalCompositeOperation = "color"; // GPU-side desaturation
+          c.globalAlpha = grayIntensity;
+          c.fillStyle = "#808080"; c.fillRect(0, 0, W, H);
+        }
+        c.restore();
+      }
 
       // ── All overlay elements — wrapped in textAlpha so they fade out together ─
       if (textAlpha < 0.01) { c.restore(); return; }
@@ -1035,45 +931,19 @@ export function MobileCanvasRenderer({
       c.restore();
     }
 
-    // ── Drawing: altimetry — drawn directly from data arrays (no GPU cache) ───
-    // altimetryCache (canvas offscreen) gets GPU-evicted during iOS HEVC decoder
-    // resets, making the elevation chart invisible permanently. Drawing directly
-    // from altProjX/altProjY (CPU Float32Arrays) eliminates this dependency.
+    // ── Drawing: altimetry — extracted so portrait template can call it too ────
     function drawAltimetryBase(c: CanvasRenderingContext2D, gpsIdx: number) {
       const altCursorX = altProjX[gpsIdx];
       const altCursorY = altProjY[gpsIdx];
-
       c.save();
       c.globalAlpha = 0.45;
-
-      // Background dark fade strip
-      const bgG = c.createLinearGradient(0, ALT_Y, 0, ALT_Y + ALT_PT + ALT_H);
-      bgG.addColorStop(0, "rgba(5,5,5,0)"); bgG.addColorStop(0.3, "rgba(5,5,5,0.75)"); bgG.addColorStop(1, "rgba(5,5,5,0.97)");
-      c.fillStyle = bgG; c.fillRect(0, ALT_Y, W, ALT_PT + ALT_H);
-
-      // Amber area fill
-      const altG = c.createLinearGradient(0, ALT_Y + ALT_PT, 0, ALT_Y + ALT_PT + ALT_H);
-      altG.addColorStop(0, "rgba(245,158,11,0.45)"); altG.addColorStop(1, "rgba(245,158,11,0)");
-      c.fillStyle = altG;
-      c.beginPath(); c.moveTo(ALT_PAD_X, ALT_Y + ALT_PT + ALT_H);
-      pts.forEach((_: any, i: number) => c.lineTo(altProjX[i], altProjY[i]));
-      c.lineTo(W - ALT_PAD_X, ALT_Y + ALT_PT + ALT_H); c.closePath(); c.fill();
-
-      // Elevation curve with amber glow
-      c.strokeStyle = "#f59e0b"; c.lineWidth = 2.5; c.lineJoin = "round";
-      c.shadowColor = "rgba(245,158,11,0.45)"; c.shadowBlur = 8;
-      c.beginPath();
-      pts.forEach((_: any, i: number) =>
-        i === 0 ? c.moveTo(altProjX[i], altProjY[i]) : c.lineTo(altProjX[i], altProjY[i]));
-      c.stroke(); c.shadowBlur = 0;
-
+      c.drawImage(altimetryCache, 0, ALT_Y);
       c.restore();
-
       // Dashed cursor line
       c.strokeStyle = "rgba(255,255,255,0.4)"; c.lineWidth = 1.5; c.setLineDash([4, 4]);
       c.beginPath(); c.moveTo(altCursorX, ALT_Y); c.lineTo(altCursorX, ALT_Y + ALT_PT + ALT_H); c.stroke();
       c.setLineDash([]);
-      // Amber cursor dot
+      // Amber dot
       c.fillStyle = "#f59e0b"; c.shadowColor = "rgba(245,158,11,0.6)"; c.shadowBlur = 8;
       c.beginPath(); c.arc(altCursorX, altCursorY, 5, 0, Math.PI * 2); c.fill();
       c.shadowBlur = 0;
@@ -1089,16 +959,10 @@ export function MobileCanvasRenderer({
       if (!pd) return;
 
       // ── Map: centered, no trail, no cursor ─────────────────────────────────
-      // Uses routePath2D (CPU Path2D) — same GPU-eviction immunity as drawMiniMap.
       const mapX = Math.round((W - MM_W) / 2);
       c.save();
       c.globalAlpha = Math.min(revealFrac / 0.08, 1) * 0.88;
-      c.translate(mapX, MM_Y);
-      c.shadowColor = "rgba(0,0,0,0.90)"; c.shadowBlur = 10;
-      c.shadowOffsetX = 3; c.shadowOffsetY = 4;
-      c.strokeStyle = "rgba(255,255,255,0.85)"; c.lineWidth = 2.5;
-      c.lineJoin = "round"; c.lineCap = "round";
-      c.stroke(routePath2D);
+      c.drawImage(broadmapCache, mapX, MM_Y, MM_W, MM_H);
       c.globalAlpha = 1;
       c.restore();
 
@@ -1205,10 +1069,7 @@ export function MobileCanvasRenderer({
           if (videoEl.paused) videoEl.play().catch(() => {});
         }
 
-        // drawVideoFrame returns true when something was drawn (live or frozen).
-        // During iOS HEVC decoder resets (readyState=0), hasFrozenFrame=true means
-        // we draw the last cached frame, keeping video + HUD visible.
-        const frameDrawn = drawVideoFrame(ctx);
+        drawVideoFrame(ctx);
 
         // Soft vignette
         const vig = ctx.createRadialGradient(W / 2, H / 2, H * 0.08, W / 2, H / 2, H * 0.72);
@@ -1244,32 +1105,8 @@ export function MobileCanvasRenderer({
     window.addEventListener("error", onWindowError);
     window.addEventListener("unhandledrejection", onUnhandled);
 
-    // ── Screen Wake Lock ──────────────────────────────────────────────────────
-    // Prevents the device screen from dimming or locking during encoding.
-    // On iOS, screen lock revokes the VTCompressionSession (hardware encoder) and
-    // causes VideoEncoder.flush() to throw "Encoding task did not complete".
-    // The Wake Lock ensures the hardware encoder session stays alive for the full
-    // duration of the render (30–36s).
-    //
-    // Available: iOS 16.4+ (Safari), Android Chrome 84+.
-    // Automatically released by the browser if the tab is hidden or backgrounded.
-    let wakeLock: { release: () => Promise<void> } | null = null;
-
     // ── Main recording loop ────────────────────────────────────────────────────
     async function startRecordingLoop() {
-      // Acquire Screen Wake Lock before encoding starts.
-      // Must be called inside an async function (browser requirement).
-      if ('wakeLock' in navigator) {
-        try {
-          wakeLock = await (navigator as any).wakeLock.request('screen');
-          mlog("WAKELOCK", "acquired — screen will stay on during encoding");
-        } catch (e: any) {
-          mlog("WAKELOCK", `could not acquire: ${e?.message ?? e} — encoding may fail if screen dims`);
-        }
-      } else {
-        mlog("WAKELOCK", "not supported on this browser");
-      }
-
       // Do NOT mlogClear() here — upload logs (SEG_CALC, HIGHLIGHTS, etc.) are valuable
       // for diagnosing sync issues. Just append a separator.
       mlog("---", "=== RENDER START ===");
@@ -1284,31 +1121,6 @@ export function MobileCanvasRenderer({
       const firstActionSeg = trimmedSegments.find(
         (s: any) => s.type === "ACTION" && typeof s.videoStartTime === "number" && s.videoStartTime > 0.5,
       );
-
-      // ── iOS HEVC: always start from position 0 ────────────────────────────────
-      // ROOT CAUSE of crashes: pre-seeking to a later position (e.g. 23s) forces the
-      // iOS hardware HEVC decoder to build up a large reference frame context in GPU
-      // memory before the encoder even starts. When the encoder then runs and the
-      // decoder's look-ahead hits dense frames further into the video, there's no
-      // GPU memory left → OOM → decoder reset.
-      //
-      // PROOF: IMG_9582.MOV (same 4K HEVC, same device) renders successfully from
-      // position 0 with frames up to 1811KB. IMG_9576.MOV crashes from position 23s
-      // with frames up to 628KB. Both would work fine from position 0 because the
-      // decoder starts with zero accumulated GPU state.
-      //
-      // Fix: for iOS HEVC, always render from video position 0. The GPS overlay data
-      // is still correct (it progresses based on elapsed render time from the video's
-      // creation timestamp). The user gets a full quality video with Template A HUD.
-      if (firstActionSeg && sourceIsHEVC && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-        const orig = (firstActionSeg as any).videoStartTime;
-        if (orig > 0.5) {
-          mlog("HEVC_FIX", `iOS HEVC: overriding videoStartTime ${orig.toFixed(1)}s → 0 (clean decoder state, avoids GPU OOM)`);
-          (firstActionSeg as any).videoStartTime = 0;
-          if (storyPlan) (storyPlan as any).renderQuality = 'alternative_segment';
-        }
-      }
-
       if (firstActionSeg) {
         const target = firstActionSeg.videoStartTime!;
         mlog("PRESEEK", `seeking to ${target.toFixed(2)}s before encoder starts`);
@@ -1332,25 +1144,31 @@ export function MobileCanvasRenderer({
         }
         mlog("PRESEEK", `done — readyState=${videoEl.readyState} currentTime=${videoEl.currentTime.toFixed(2)}s`);
 
-        // ── Post-seek cool-down on iOS ────────────────────────────────────────
-        // Seeking to a keyframe in a high-resolution video (especially HEVC 4K)
-        // causes iOS Video Toolbox to allocate hardware decoder resources that
-        // persist briefly even after the seek completes and the video is paused.
-        //
-        // Creating the VideoEncoder immediately after (even in prefer-software mode)
-        // risks conflicting with these residual decoder hardware resources. A brief
-        // pause lets the VTCompressionSession infrastructure settle before encoder init.
-        //
-        // The pre-warm (play → pause) was REMOVED — it was far more aggressive than a
-        // static delay and caused consistent 1-second crashes.
+        // ── Pre-warm the video decoder — iOS only ──────────────────────────────
+        // On iOS, Video Toolbox shares hardware with the VideoEncoder. A cold-start
+        // play() for 200ms warms the decoder so the first ACTION clip doesn't show
+        // a frozen frame. On Android, the decoder and encoder are independent —
+        // this play/pause cycle is unnecessary and adds 600ms of dead time.
         if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-          await new Promise<void>(r => setTimeout(r, 600));
-          mlog("PRESEEK", "post-seek cool-down done — creating encoder");
+          mlog("PRESEEK", "pre-warming iOS Video Toolbox decoder…");
+          videoEl.play().catch(() => {});
+          await new Promise<void>(r => setTimeout(r, 200));
+          videoEl.pause();
+          await new Promise<void>(r => setTimeout(r, 400));
+          mlog("PRESEEK", "iOS decoder warm");
         }
       } else {
-        // No pre-seek, no probe.
-        // The decoder will initialise when ACTION starts via videoEl.play() in the loop.
-        mlog("PRESEEK", "no seek needed — skipping warm-up to avoid Video Toolbox conflict");
+        // No pre-seek needed (videoStartTime=0)
+        // iOS only: pre-warm decoder at position 0 to avoid frozen first frame
+        if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+          mlog("PRESEEK", "no seek needed — pre-warming iOS decoder at position 0");
+          videoEl.play().catch(() => {});
+          await new Promise<void>(r => setTimeout(r, 200));
+          videoEl.pause();
+          videoEl.currentTime = 0;
+          await new Promise<void>(r => setTimeout(r, 300));
+          mlog("PRESEEK", "iOS decoder pre-warmed");
+        }
       }
 
       // Always mark gray frame as ready once the video element has content.
@@ -1361,14 +1179,8 @@ export function MobileCanvasRenderer({
       mlog("GRAY", `grayFrameReady=${grayFrameReady} readyState=${videoEl.readyState} videoWidth=${videoEl.videoWidth}`);
 
       setStatus("Initializing encoder…");
-      // Codec selection — see MobileRecorder.ts for full rationale:
-      //   iOS + HEVC source → VP9/libvpx (zero Video Toolbox → no conflict with HEVC decoder)
-      //   iOS + H264 source → H264 prefer-software (VT software path, lighter hardware use)
-      //   Android           → H264 no-preference   (MediaCodec: decoder/encoder are separate)
-      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-      mlog("ENCODER", `isIOS=${isIOS} sourceIsHEVC=${sourceIsHEVC}`);
       try {
-        recorder = await MobileRecorder.create(canvas as HTMLCanvasElement, { isIOS, sourceIsHEVC });
+        recorder = await MobileRecorder.create(canvas as HTMLCanvasElement);
         mlog("INIT", "MobileRecorder created ok");
       } catch (err: any) {
         mlog("ERROR", `MobileRecorder.create failed: ${err.message}`);
@@ -1381,17 +1193,10 @@ export function MobileCanvasRenderer({
       recStartMs = performance.now();
       mlog("REC", "loop started");
 
-      let lastCaptureMs    = -1;
-      let lastLogSec       = -1;
-      let lastSegIdxLog    = -99;
-      let skippedFrames    = 0;
-      let prevVideoReady      = 4;   // track readyState to detect decoder resets
-      let decoderResetCount   = 0;   // total reset count
-      let lastResetMs         = 0;   // wall-clock ms of the most recent reset
-      // Rapid-reset threshold: if 2 resets occur within this window,
-      // GPU memory is fragmenting fast enough to crash the browser tab.
-      // Videos with a single reset (or resets > 5s apart) are fine.
-      const RAPID_RESET_WINDOW_MS = 5_000;
+      let lastCaptureMs  = -1;
+      let lastLogSec     = -1;
+      let lastSegIdxLog  = -99;
+      let skippedFrames  = 0;
 
       const loop = (now: number) => {
         if (isStopped) return;
@@ -1399,78 +1204,10 @@ export function MobileCanvasRenderer({
         const elapsed = (now - recStartMs) / 1000;
         setProgress(Math.round(c01(elapsed / totalDurSec) * 90));
 
-        // ── iOS HEVC decoder reset detection & cache rebuild ─────────────────
-        // When readyState drops from ≥2 to <2, the iOS GPU has evicted the
-        // backing textures of broadmapCache, gaugeCache, altimetryCache and
-        // trailCache. Rebuild them immediately using CPU-resident data arrays.
-        const curReady = videoEl.readyState;
-        if (curReady < 2 && prevVideoReady >= 2) {
-          const nowMs = performance.now();
-          const msSinceLast = decoderResetCount > 0 ? nowMs - lastResetMs : Infinity;
-          decoderResetCount++;
-          lastResetMs = nowMs;
-          mlog("DECODER_RESET", `t=${elapsed.toFixed(1)}s reset #${decoderResetCount} gap=${msSinceLast < 9999 ? msSinceLast.toFixed(0)+'ms' : 'first'} readyState ${prevVideoReady}→${curReady}`);
-          rebuildCaches();
-
-          // Rapid resets (2nd reset within RAPID_RESET_WINDOW_MS of the 1st) signal
-          // that the iOS GPU memory is fragmenting fast enough to crash the browser tab
-          // ("repeated errors on lens.prorefuel.app" Safari message).
-          // Single resets, or resets > 5s apart, are fine — video recovers normally.
-          // Only abort when two resets are rapidly consecutive.
-          if (decoderResetCount >= 2 && msSinceLast < RAPID_RESET_WINDOW_MS) {
-            mlog("ABORT_REASON", `rapid resets: gap=${msSinceLast.toFixed(0)}ms < ${RAPID_RESET_WINDOW_MS}ms threshold`);
-            isStopped = true;
-            mlog("EARLY_STOP", `2 decoder resets — stopping early to prevent browser OOM crash. frames=${recorder?.framesCaptured}`);
-            wakeLock?.release().catch(() => {}); wakeLock = null;
-            setStatus("Finalizing…");
-            const earlyStartMs = recStartMs;
-            recorder!.stop()
-              .then(async (vp9Blob) => {
-                const totalMs = Math.round(performance.now() - earlyStartMs);
-                renderDurationMsRef.current = totalMs;
-                mlog("EARLY_STOP", `partial blob=${( vp9Blob.size/1_048_576).toFixed(1)}MB wasVP9=${recorder?.wasVP9}`);
-                let finalBlob = vp9Blob;
-                if (recorder?.wasVP9 && vp9Blob.size > 5_000) {
-                  setStatus("Optimizing for Photos…");
-                  try {
-                    const { FFmpeg }    = await import("@ffmpeg/ffmpeg");
-                    const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
-                    const ff = new FFmpeg();
-                    const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
-                    await ff.load({
-                      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`,   "text/javascript"),
-                      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
-                    });
-                    await ff.writeFile("in.mp4", await fetchFile(vp9Blob));
-                    const exit = await ff.exec(["-i","in.mp4","-c:v","libx264","-preset","ultrafast","-crf","23","-pix_fmt","yuv420p","-movflags","+faststart","out.mp4"]);
-                    if (exit === 0) {
-                      const raw = await ff.readFile("out.mp4") as Uint8Array<ArrayBuffer>;
-                      finalBlob = new Blob([raw], { type: "video/mp4" });
-                      mlog("EARLY_STOP", `H264 output: ${(finalBlob.size/1_048_576).toFixed(1)}MB`);
-                    }
-                  } catch (te: any) { mlog("EARLY_STOP", `transcode failed: ${te?.message} — using VP9`); }
-                }
-                setProgress(100); setStatus("Video ready!");
-                setReadyBlob({ blob: finalBlob, filename: `LENS_${makeTimestamp()}.mp4` });
-              })
-              .catch((err: any) => {
-                mlog("EARLY_STOP", `stop failed: ${err?.message}`);
-                setStatus("Export failed. Please try again.");
-                onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error",
-                  errorMessage: "4K video exceeded device memory limits. Record in 1080p: Settings → Camera → Record Video → 1080p HD." });
-              });
-            return;
-          }
-        }
-        prevVideoReady = curReady;
-
         // ── Encoder / muxer death check ───────────────────────────────────────
         if (recorder?.error) {
           isStopped = true;
           mlog("ABORT", `t=${elapsed.toFixed(1)}s err=${recorder.error.name}: ${recorder.error.message}`);
-          // Release Wake Lock on encoder abort
-          wakeLock?.release().catch(() => {});
-          wakeLock = null;
           setStatus("Encoding failed. Please try again.");
           onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: recorder.error.message ?? "Encoder died" });
           return;
@@ -1499,60 +1236,20 @@ export function MobileCanvasRenderer({
           // Total duration = recording loop + flush (recStartMs is performance.now())
           const totalStartMs = recStartMs;
           recorder!.stop()
-            .then(async (vp9OrH264Blob) => {
+            .then((blob) => {
               const totalMs = Math.round(performance.now() - totalStartMs);
               renderDurationMsRef.current = totalMs;
-              mlog("STOP", `done flush=${Date.now()-flushStart}ms total=${totalMs}ms blob=${(vp9OrH264Blob.size/1_048_576).toFixed(1)}MB wasVP9=${recorder?.wasVP9}`);
-
-              // ── VP9 → H264 post-transcode (iOS Photos compatibility) ──────────
-              // VP9/libvpx encoding avoids the Video Toolbox conflict with HEVC
-              // hardware decode. But iOS Photos only accepts H264/HEVC in MP4.
-              // Re-encode the small VP9 output (~9 MB) to H264 via FFmpeg.wasm.
-              // This is fast (9 MB input, no HEVC decode, ultrafast preset) ≈ 10–15s.
-              let finalBlob = vp9OrH264Blob;
-              if (recorder?.wasVP9) {
-                setStatus("Optimizing for Photos…");
-                mlog("TRANSCODE", `VP9→H264: ${(vp9OrH264Blob.size/1_048_576).toFixed(1)}MB input`);
-                try {
-                  const { FFmpeg }    = await import("@ffmpeg/ffmpeg");
-                  const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
-                  const ff = new FFmpeg();
-                  const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
-                  await ff.load({
-                    coreURL: await toBlobURL(`${base}/ffmpeg-core.js`,   "text/javascript"),
-                    wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
-                  });
-                  await ff.writeFile("in.mp4", await fetchFile(vp9OrH264Blob));
-                  const exitCode = await ff.exec([
-                    "-i", "in.mp4",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-                    "-pix_fmt", "yuv420p",
-                    "-movflags", "+faststart",
-                    "out.mp4",
-                  ]);
-                  if (exitCode === 0) {
-                    const raw = await ff.readFile("out.mp4") as Uint8Array<ArrayBuffer>;
-                    finalBlob = new Blob([raw], { type: "video/mp4" });
-                    mlog("TRANSCODE", `done: ${(finalBlob.size/1_048_576).toFixed(1)}MB H264`);
-                  } else {
-                    mlog("TRANSCODE", `FFmpeg exit=${exitCode} — using VP9 blob as fallback`);
-                  }
-                } catch (transErr: any) {
-                  mlog("TRANSCODE", `failed: ${transErr?.message} — using VP9 blob as fallback`);
-                }
-              }
-
-              // Release Wake Lock now that all encoding/transcoding is complete
-              wakeLock?.release().catch(() => {});
-              wakeLock = null;
+              mlog("STOP", `done flush=${Date.now()-flushStart}ms total=${totalMs}ms blob=${(blob.size/1_048_576).toFixed(1)}MB`);
               setProgress(100); setStatus("Video ready!");
-              setReadyBlob({ blob: finalBlob, filename: `LENS_${makeTimestamp()}.mp4` });
+              // Store blob — show "Video Ready!" screen. onRenderComplete is called
+              // only when the user taps "Done", not here, so the screen stays visible.
+              setReadyBlob({ blob, filename: `LENS_${makeTimestamp()}.mp4` });
+              // Notify parent about the completed render for tracking purposes only.
+              // Navigation (setStep → "READY") must NOT happen yet — user still needs to save.
+              // The "Done" button inside readyBlob UI calls onRenderComplete to navigate.
             })
             .catch((err: any) => {
               mlog("ERROR", `stop() failed: ${err?.message ?? err}`);
-              // Release Wake Lock on encode failure
-              wakeLock?.release().catch(() => {});
-              wakeLock = null;
               setStatus("Export failed. Please try again.");
               onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: err?.message ?? "unknown" });
             });
@@ -1576,11 +1273,7 @@ export function MobileCanvasRenderer({
           if ((recorder?.encoderQueueSize ?? 0) > 10) {
             skippedFrames++;
           } else {
-            // During iOS HEVC decoder reset: drawFrame drew the frozen frame.
-            // We can still encode it (frozen = visible frame, not blank).
-            // videoEl.readyState < 2 but hasFrozenFrame=true → capture as normal.
-            // This avoids jump cuts in the output — shows a brief freeze instead.
-            const videoReady = videoEl.readyState >= 2 || hasFrozenFrame;
+            const videoReady = videoEl.readyState >= 2;
             if (!videoReady) skippedFrames++;
             const tsUs = Math.round((now - recStartMs) * 1000);
             try { recorder?.captureFrame(videoReady, tsUs); } catch (err: any) { mlog("ERROR", `captureFrame: ${err?.message}`); }
@@ -1622,9 +1315,6 @@ export function MobileCanvasRenderer({
       window.removeEventListener("unhandledrejection", onUnhandled);
       URL.revokeObjectURL(videoUrl);
       videoEl.src = "";
-      // Release Wake Lock on unmount (success path releases it via recorder.stop() handler)
-      wakeLock?.release().catch(() => {});
-      wakeLock = null;
     };
   }, [videoFile, activityPoints.length, storyPlan]);
 

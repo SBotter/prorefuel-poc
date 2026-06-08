@@ -24,7 +24,6 @@ import type { VideoUploadInsert } from "@/lib/supabase/types";
 // Type-only imports — zero runtime cost, erased by TypeScript compiler
 import type { ActionSegment }   from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }       from "@/lib/engine/StorytellingProcessor";
-import { RENDER_QUALITY_MESSAGES } from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }      from "@/lib/utils/units";
 import type { GPXProfile }      from "@/lib/engine/GPXAnalyzer";
 import type { VideoGPSProfile } from "@/lib/engine/VideoGPSAnalyzer";
@@ -557,7 +556,7 @@ export default function ProRefuelPage() {
     // other codec the browser claims to support but cannot hardware-decode.
     if (isMP4 || isMOV) {
       const { canBrowserPlay, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
-      const { canPlay } = await canBrowserPlay(file);  // destructure — desktop ignores videoWidth/videoHeight
+      const canPlay = await canBrowserPlay(file);
       if (!canPlay) {
         if (earlyDetection.type === "gopro") {
           // GoPro files are often 400MB-2GB — WASM transcoding would OOM.
@@ -991,9 +990,6 @@ export default function ProRefuelPage() {
 
       const sp = StorytellingProcessor.generatePlan(activityPoints, vpts as any, unit, clockOffsetMs, gpsVideoOffsetMs, videoDurationSec);
       sp.segments.forEach((s) => { if (s.videoStartTime !== undefined) s.videoStartTime += VIDEO_SEEK_WORKAROUND_SEC; });
-      // Set render quality for user-facing notification
-      if (!segments || segments.length === 0) sp.renderQuality = 'no_scenes';
-      else sp.renderQuality = 'perfect';
       setStoryPlan(sp);
       clearInterval(interval);
       setProgress(100);
@@ -1585,21 +1581,6 @@ export default function ProRefuelPage() {
                       <Zap size={18} fill={storyPlan !== null ? "black" : "none"} />
                       Generate &amp; Download
                     </button>
-
-                    {/* Render quality notification */}
-                    {storyPlan?.renderQuality && storyPlan.renderQuality !== 'perfect' && (() => {
-                      const msg = RENDER_QUALITY_MESSAGES[storyPlan.renderQuality!];
-                      if (!msg?.text) return null;
-                      return (
-                        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-amber-500/8 border border-amber-500/20">
-                          <span className="text-sm shrink-0 mt-0.5">{msg.icon}</span>
-                          <div>
-                            <p className="text-amber-400 text-[10px] font-black uppercase tracking-widest mb-0.5">{msg.text}</p>
-                            <p className="text-zinc-500 text-[10px] leading-relaxed">{msg.detail}</p>
-                          </div>
-                        </div>
-                      );
-                    })()}
 
                     <div className="flex justify-center gap-6 pt-6 border-t border-zinc-800/60">
                       <div className="flex items-center gap-1.5 text-zinc-600"><Shield size={12} /><span className="text-[10px] font-black uppercase tracking-widest">Private</span></div>
