@@ -51,6 +51,7 @@ async function selectH264Codec(): Promise<string | null> {
 
 export class MobileRecorder {
   private _encoder: VideoEncoder;
+  private _audioEncoder: AudioEncoder | null = null;
   private _muxer: InstanceType<typeof Muxer>;
   private _canvas: HTMLCanvasElement;
   private _frameCount = 0;
@@ -58,16 +59,18 @@ export class MobileRecorder {
 
   private constructor(
     encoder: VideoEncoder,
+    audioEncoder: AudioEncoder | null,
     muxer: InstanceType<typeof Muxer>,
     canvas: HTMLCanvasElement,
   ) {
     this._encoder = encoder;
+    this._audioEncoder = audioEncoder;
     this._muxer   = muxer;
     this._canvas  = canvas;
   }
 
   /** Creates and configures the encoder. Throws if H264 is not available. */
-  static async create(canvas: HTMLCanvasElement): Promise<MobileRecorder> {
+  static async create(canvas: HTMLCanvasElement, audioSampleRate?: number): Promise<MobileRecorder> {
     const codec = await selectH264Codec();
     if (!codec) throw new Error('H264 video encoding is not supported on this device.');
 
@@ -75,6 +78,11 @@ export class MobileRecorder {
     const muxer  = new Muxer({
       target,
       video:      { codec: 'avc', width: MOBILE_W, height: MOBILE_H },
+      audio: audioSampleRate ? {
+        codec: 'aac',
+        numberOfChannels: 2,
+        sampleRate: audioSampleRate,
+      } : undefined,
       fastStart:  false,
       // Wall-clock timestamps start at ~37ms (not 0) because the first rAF tick
       // fires slightly after recStartMs. 'offset' subtracts the first timestamp
@@ -113,7 +121,32 @@ export class MobileRecorder {
       latencyMode: 'realtime',
     });
 
-    self = new MobileRecorder(encoder, muxer, canvas);
+    let audioEncoder: AudioEncoder | null = null;
+    if (audioSampleRate) {
+      audioEncoder = new AudioEncoder({
+        output: (chunk: EncodedAudioChunk, meta: any) => {
+          if (self._error) return;
+          try { muxer.addAudioChunk(chunk, meta ?? undefined); }
+          catch (e) {
+            mlog('AUDIO_MUXER_ERR', String(e));
+            self._error = e as Error;
+          }
+        },
+        error: (e: DOMException) => {
+          mlog('AUDIO_ENCODER_ERR', `${e.name}: ${e.message}`);
+          if (self) self._error = e;
+        },
+      });
+
+      audioEncoder.configure({
+        codec: 'mp4a.40.2', // AAC LC
+        numberOfChannels: 2,
+        sampleRate: audioSampleRate,
+        bitrate: 128000,
+      });
+    }
+
+    self = new MobileRecorder(encoder, audioEncoder, muxer, canvas);
     return self;
   }
 
@@ -162,13 +195,36 @@ export class MobileRecorder {
   }
 
   /**
-   * Flushes the encoder, finalizes the MP4 container, and returns the blob.
+   * Encodes a single audio block.
+   */
+  encodeAudio(audioData: AudioData): void {
+    if (this._error) return;
+    if (!this._audioEncoder) return;
+    if (this._audioEncoder.state !== 'configured') {
+      mlog('AUDIO_CAPTURE_SKIP', `audio encoder state=${this._audioEncoder.state}`);
+      return;
+    }
+    this._audioEncoder.encode(audioData);
+    audioData.close();
+  }
+
+  /**
+   * Flushes the encoders, finalizes the MP4 container, and returns the blob.
    * Must be called exactly once, after the last captureFrame().
    */
   async stop(): Promise<Blob> {
     if (this._error) throw this._error;
-    await this._encoder.flush();
+
+    const promises: Promise<void>[] = [this._encoder.flush()];
+    if (this._audioEncoder) {
+      promises.push(this._audioEncoder.flush());
+    }
+    await Promise.all(promises);
+
     this._encoder.close();
+    if (this._audioEncoder) {
+      this._audioEncoder.close();
+    }
     if (this._error) throw this._error;
 
     this._muxer.finalize();

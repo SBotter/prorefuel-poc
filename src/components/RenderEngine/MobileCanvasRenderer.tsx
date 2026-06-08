@@ -26,6 +26,12 @@ import type { ActionSegment }  from "@/lib/engine/TelemetryCrossRef";
 import type { StoryPlan }      from "@/lib/engine/StorytellingProcessor";
 import type { UnitSystem }     from "@/lib/utils/units";
 import type { RenderResult }   from "@/components/MapEngine";
+import {
+  playIntroWithDataImpacts,
+  playBrandExit,
+  initTone,
+  stopAll,
+} from "@/lib/audio/AudioEngine";
 
 // rAF runs at 60fps on iPhone; we only want 30fps captures.
 const CAPTURE_INTERVAL_MS = 1000 / FPS; // ~33.33ms
@@ -119,6 +125,10 @@ export function MobileCanvasRenderer({
     let rafId       = 0;
     let isStopped   = false;
     let recStartMs  = 0;
+    let audioProcessor: ScriptProcessorNode | null = null;
+    let dummyGain: GainNode | null = null;
+    let hasPlayedIntro = false;
+    let hasPlayedBrand = false;
 
     // Pre-load images (same as desktop MapEngine)
     const logoImg = new Image();
@@ -1186,15 +1196,81 @@ export function MobileCanvasRenderer({
       grayFrameReady = videoEl.readyState >= 2 && videoEl.videoWidth > 0;
       mlog("GRAY", `grayFrameReady=${grayFrameReady} readyState=${videoEl.readyState} videoWidth=${videoEl.videoWidth}`);
 
+      // ── Audio Setup ─────────────────────────────────────────────────────────
+      setStatus("Initializing audio…");
+      let sampleRate: number | undefined = undefined;
+      try {
+        await initTone();
+        const Tone = await import("tone");
+        const rawCtx = Tone.getContext().rawContext as AudioContext;
+        sampleRate = rawCtx.sampleRate;
+        mlog("AUDIO", `Tone.js initialized, sampleRate=${sampleRate}`);
+      } catch (err: any) {
+        mlog("AUDIO_ERR", `initTone failed: ${err.message}`);
+      }
+
       setStatus("Initializing encoder…");
       try {
-        recorder = await MobileRecorder.create(canvas as HTMLCanvasElement);
+        recorder = await MobileRecorder.create(canvas as HTMLCanvasElement, sampleRate);
         mlog("INIT", "MobileRecorder created ok");
       } catch (err: any) {
         mlog("ERROR", `MobileRecorder.create failed: ${err.message}`);
         setStatus("Video encoding is not supported on this device.");
         onRenderComplete({ durationMs: 0, outputFormat: "mp4", outputSizeBytes: 0, status: "error", errorMessage: err.message });
         return;
+      }
+
+      if (sampleRate && recorder) {
+        try {
+          const Tone = await import("tone");
+          const rawCtx = Tone.getContext().rawContext as AudioContext;
+          
+          audioProcessor = rawCtx.createScriptProcessor(4096, 2, 2);
+          Tone.getDestination().connect(audioProcessor);
+          
+          dummyGain = rawCtx.createGain();
+          dummyGain.gain.value = 0;
+          audioProcessor.connect(dummyGain);
+          dummyGain.connect(rawCtx.destination);
+          
+          let audioTimeSec = 0;
+          audioProcessor.onaudioprocess = (e) => {
+            if (isStopped || !recorder) return;
+            
+            const inputBuffer = e.inputBuffer;
+            const len = inputBuffer.length;
+            const chans = inputBuffer.numberOfChannels;
+            const dataBuf = new Float32Array(len * chans);
+            
+            dataBuf.set(inputBuffer.getChannelData(0), 0);
+            if (chans > 1) {
+              dataBuf.set(inputBuffer.getChannelData(1), len);
+            }
+            
+            const tsUs = Math.round(audioTimeSec * 1_000_000);
+            audioTimeSec += inputBuffer.duration;
+            
+            try {
+              const audioData = new AudioData({
+                format: 'f32-planar',
+                sampleRate: inputBuffer.sampleRate,
+                numberOfFrames: len,
+                numberOfChannels: chans,
+                timestamp: tsUs,
+                data: dataBuf
+              });
+              recorder.encodeAudio(audioData);
+            } catch (err: any) {
+              if (audioTimeSec < inputBuffer.duration * 5) {
+                mlog("AUDIO_ENC_ERR", err.message);
+              }
+            }
+          };
+          
+          mlog("AUDIO", "Audio processor connected successfully");
+        } catch (err: any) {
+          mlog("AUDIO_ERR", `Setup processor failed: ${err.message}`);
+        }
       }
 
       setStatus("Recording…");
@@ -1211,6 +1287,19 @@ export function MobileCanvasRenderer({
 
         const elapsed = (now - recStartMs) / 1000;
         setProgress(Math.round(c01(elapsed / totalDurSec) * 90));
+
+        // ── Audio Triggers ─────────────────────────────────────────────────────
+        if (!hasPlayedIntro) {
+          hasPlayedIntro = true;
+          mlog("AUDIO", "playing intro");
+          playIntroWithDataImpacts().catch((err: any) => mlog("AUDIO_ERR", `intro: ${err.message}`));
+        }
+
+        if (!hasPlayedBrand && elapsed >= totalDurSec - 5) {
+          hasPlayedBrand = true;
+          mlog("AUDIO", "playing brand exit");
+          playBrandExit(2).catch((err: any) => mlog("AUDIO_ERR", `brand: ${err.message}`));
+        }
 
         // ── Encoder / muxer death check ───────────────────────────────────────
         if (recorder?.error) {
@@ -1321,6 +1410,18 @@ export function MobileCanvasRenderer({
       window.removeEventListener("error", onWindowError);
       window.removeEventListener("unhandledrejection", onUnhandled);
       URL.revokeObjectURL(videoUrl);
+
+      if (audioProcessor) {
+        try {
+          audioProcessor.onaudioprocess = null;
+          audioProcessor.disconnect();
+        } catch {}
+      }
+      if (dummyGain) {
+        try { dummyGain.disconnect(); } catch {}
+      }
+      stopAll().catch(() => {});
+
       try {
         videoEl.pause();
         videoEl.src = "";

@@ -97,16 +97,16 @@ export default function HowItWorksPage() {
             <ul className="space-y-2">
               <FeatureRow icon="✅" label="iPhone + Android (1080p limit)" />
               <FeatureRow icon="✅" label="GoPro videos (1080p H.264 / LRV)" />
-              <FeatureRow icon="⏳" label="Audio: coming soon (currently silent)" muted />
+              <FeatureRow icon="✅" label="Audio: Cinematic intro & brand exit sounds (Tone.js)" />
               <FeatureRow icon="✅" label="Up to 30s highlight reel" />
               <FeatureRow icon="✅" label="Saves to Photos / Gallery" />
             </ul>
             <p className="text-[11px] text-zinc-600 mt-3 leading-relaxed">Best for: quick edits on the go from your phone.</p>
           </div>
         </div>
-        <div className="p-4 rounded-2xl bg-blue-500/8 border border-blue-500/25 mb-14">
-          <p className="text-blue-300 text-[12px] font-bold leading-relaxed">
-            <span className="font-black text-blue-200">📢 Audio note:</span> Mobile video exports are currently silent. Original video audio and cinematic music will be added in a future update for iOS 18+ and Android Chrome 94+.
+        <div className="p-4 rounded-2xl bg-green-500/8 border border-green-500/25 mb-14">
+          <p className="text-green-300 text-[12px] font-bold leading-relaxed">
+            <span className="font-black text-green-200">🔊 Audio support:</span> Mobile video exports now include the cinematic soundtrack (intro/brand exit thuds and swells) rendered entirely on-device via Tone.js.
           </p>
         </div>
 
