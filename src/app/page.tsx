@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import Link from "next/link";
 import {
   Upload,
   CheckCircle2,
@@ -1423,14 +1424,14 @@ export default function ProRefuelPage() {
               <div className="bg-[#0f0f0f] rounded-[2.8rem] border border-zinc-800/80 p-7 md:p-9 shadow-2xl relative ring-1 ring-white/4">
                 {(mounted && isMobileDevice) ? (
                   <div className="flex flex-col items-center gap-4 py-8 text-center">
-                    <div className="w-14 h-14 rounded-2xl bg-zinc-800 flex items-center justify-center text-2xl">🖥️</div>
-                    <p className="font-black text-white text-base uppercase tracking-wide">Desktop only</p>
+                    <div className="w-14 h-14 rounded-2xl bg-zinc-800 flex items-center justify-center text-2xl">📱</div>
+                    <p className="font-black text-white text-base uppercase tracking-wide">LENS Mobile</p>
                     <p className="text-zinc-400 text-sm leading-relaxed max-w-xs">
-                      LENS requires Chrome on a desktop computer to process your video.
+                      LENS is compatible with mobile! For videos recorded on your phone (iOS/Android) or GoPro clips.
                     </p>
-                    <a href="https://lens.prorefuel.app" className="px-5 py-3 rounded-xl bg-amber-500 text-black font-black text-sm uppercase tracking-widest">
-                      lens.prorefuel.app
-                    </a>
+                    <Link href="/mobile" className="px-5 py-3 rounded-xl bg-amber-500 text-black font-black text-sm uppercase tracking-widest hover:scale-105 transition-transform shadow-[0_10px_30px_rgba(245,158,11,0.3)]">
+                      Open Mobile Editor
+                    </Link>
                   </div>
                 ) : step !== "EXPERIENCE" ? (
                   <div className="space-y-5 relative z-10">
@@ -1750,7 +1751,7 @@ export default function ProRefuelPage() {
           </div>
           <div className="mt-14 text-center">
             <p className="text-zinc-500 text-sm mb-1">No account. No subscription. No upload.</p>
-            <p className="text-zinc-300 font-black text-base">Just open Chrome on your desktop and go. ↑</p>
+            <p className="text-zinc-300 font-black text-base">Just open LENS on your desktop or mobile browser and go. ↑</p>
           </div>
         </div>
       </section>

@@ -373,10 +373,13 @@ export default function MobilePage() {
     };
 
     const nameLc = file.name.toLowerCase();
-    if (!nameLc.endsWith(".mp4") && !nameLc.endsWith(".mov")) {
+    const isMP4  = nameLc.endsWith(".mp4");
+    const isMOV  = nameLc.endsWith(".mov");
+    const isLRV  = nameLc.endsWith(".lrv");
+    if (!isMP4 && !isMOV && !isLRV) {
       const mobileExt = file.name.split(".").pop()?.toLowerCase() ?? "unknown";
-      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${mobileExt}" on mobile. LENS mobile accepts .mp4 and .mov only. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload", errCtxBase);
-      setUploadError("Only .mp4 and .mov files are supported."); e.target.value = ""; return;
+      void trackError("WRONG_VIDEO_FORMAT", `[${file.name}] Unsupported extension ".${mobileExt}" on mobile. LENS mobile accepts .mp4, .mov, and .lrv only. Size: ${(file.size/1024/1024).toFixed(1)}MB.`, "video_upload", errCtxBase);
+      setUploadError("Only .mp4, .mov, and .lrv files are supported."); e.target.value = ""; return;
     }
 
     // ── File size guard (device-aware) ──────────────────────────────────────────
@@ -436,17 +439,56 @@ export default function MobilePage() {
       device_model: originalCamDetection.model || null,
     };
 
+    // ── Video metadata scan ───────────────────────────────────────────────────
+    // Reads the first 2 MB (fast, ~5ms) — gives codec, resolution, fps,
+    // embedded GPS flag, and recording timestamp. We do this BEFORE the transcoding
+    // check so we can reject 4K or GoPro HEVC files immediately.
+    const { parseVideoMeta: _parseVideoMeta } = await import("@/lib/engine/parseVideoMeta");
+    const vmeta = await _parseVideoMeta(file).catch(() => ({
+      codec: "unknown" as const, width: null, height: null,
+      fps: null, hasEmbeddedGPS: false, recordedAt: null,
+    }));
+
+
+
+    const isGoPro = originalCamDetection.type === "gopro";
+
+    // ── GoPro HEVC Guard ──────────────────────────────────────────────────────
+    // GoPro HEVC files cannot be transcoded on mobile (FFmpeg WASM would OOM on large files)
+    // and playing them natively in 4K/HEVC causes memory crashes.
+    if (isGoPro && vmeta.codec === "hevc") {
+      const ctx: ErrorContext = {
+        ...errCtxCam,
+        video_codec:       vmeta.codec,
+        video_width:       vmeta.width,
+        video_height:      vmeta.height,
+        video_fps:         vmeta.fps,
+        video_has_gps:     vmeta.hasEmbeddedGPS || null,
+        video_recorded_at: vmeta.recordedAt ? new Date(vmeta.recordedAt).toISOString() : null,
+      };
+      void trackError(
+        "UNSUPPORTED_CAMERA",
+        `[${file.name}] GoPro HEVC (H.265) videos are not supported on mobile. Size: ${(file.size/1024/1024).toFixed(1)}MB.`,
+        "video_upload",
+        ctx
+      );
+      setLoading(false);
+      setUploadError(
+        "GoPro HEVC (H.265) videos are not supported on mobile.\n\n" +
+        "Please select a GoPro H.264 video, or export in 1080p from the GoPro Quik app."
+      );
+      e.target.value = "";
+      return;
+    }
+
     // ── Codec compatibility check ─────────────────────────────────────────────────
     // canBrowserPlay() loads the actual file into a hidden <video> and seeks to
-    // trigger real frame decoding. This is more reliable than canPlayType() or UA
-    // sniffing — Android Chrome claims HEVC support on devices that silently fail.
-    //
-    // GoPro always records H.264 — skip the probe entirely (saves ~0.5s).
+    // trigger real frame decoding.
+    // GoPro H.264 (<= 1080p) is natively playable — skip the probe.
     let processFile = file;
     let detectedCodec: "h264" | "hevc" | null = null;
     let transcodeStart: number | null = null;
     try {
-      const isGoPro = originalCamDetection.type === "gopro";
       const { canBrowserPlay, transcodeHevcToH264 } = await import("@/lib/engine/mobile/hevcTranscoder");
       const canPlay = isGoPro ? true : await canBrowserPlay(file);
       detectedCodec = canPlay ? "h264" : "hevc";
@@ -457,10 +499,11 @@ export default function MobilePage() {
         setHevcProgress(0);
         setHevcStatus("Loading converter…");
         transcodeStart = Date.now();
+        // Downscale to 1080p during transcoding on mobile to preserve memory!
         processFile = await transcodeHevcToH264(file, (pct, status) => {
           setHevcProgress(pct);
           setHevcStatus(status);
-        });
+        }, { maxHeight: 1080 });
         const transcodeMs = Date.now() - transcodeStart;
         mlog("CODEC", `transcoding done in ${(transcodeMs/1000).toFixed(1)}s — ${(processFile.size/1024/1024).toFixed(1)}MB`);
         void trackHevcTranscode(transcodeMs, {
@@ -492,15 +535,6 @@ export default function MobilePage() {
       e.target.value = "";
       return;
     }
-
-    // Step 3: video metadata scan — runs once, enriches ALL error paths
-    // Reads the first 2 MB (fast, ~5ms) — gives codec, resolution, fps,
-    // embedded GPS flag, and recording timestamp for every error event.
-    const { parseVideoMeta: _parseVideoMeta } = await import("@/lib/engine/parseVideoMeta");
-    const vmeta = await _parseVideoMeta(file).catch(() => ({
-      codec: "unknown" as const, width: null, height: null,
-      fps: null, hasEmbeddedGPS: false, recordedAt: null,
-    }));
 
     const errCtxFull: ErrorContext = {
       ...errCtxCam,
@@ -898,11 +932,13 @@ export default function MobilePage() {
     // silently and the user lands on the upload form with no explanation.
     if (result.status === "error" && result.errorMessage) {
       setUploadError(`Export failed: ${result.errorMessage}. Please try again.`);
+    } else {
+      setUploadError(null);
     }
 
     // Reset all state — clean slate for next video
     setVideoFile(null);    setHighlights([]);      setStoryPlan(null);
-    setVideoLoaded(false); setUploadError(null);   setGpxError(null);
+    setVideoLoaded(false);                         setGpxError(null);
     setGpxLoaded(false);   setActivityPoints([]);  setActivityName("YOUR RIDE");
     setProgress(0);        setStatusMsg("");
     gpxNameRef.current             = "";
